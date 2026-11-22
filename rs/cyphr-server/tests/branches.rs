@@ -3087,6 +3087,10 @@ enum Cap {
     /// E is signed by a key the witness holds revoked, so its answer is
     /// neither `BranchLimit` nor `Errored` (frame 11.3, condition 3).
     DeadSigner,
+    /// A hostile authority signs a held report naming F as its head, and
+    /// its patch ends the branch with F's own bytes and declares F as the
+    /// head: condition 1 holds for a commit that does not extend the line.
+    Hostile,
 }
 
 async fn sync_over_cap(mode: Cap) -> cyphr_server::sync::SyncOutcome {
@@ -3141,9 +3145,34 @@ async fn sync_over_cap(mode: Cap) -> cyphr_server::sync::SyncOutcome {
 
     // An on-path party rewrites the branches of every patch answer; the
     // authority's signed held report is left as it signed it.
+    let e_id = commit_id_at(&e, t.n + 2);
+    let signer = identity.clone();
     let mutate = std::sync::Arc::new(move |body: &mut serde_json::Value| {
-        if mode != Cap::Forge && mode != Cap::OnlyLast {
+        if mode != Cap::Forge && mode != Cap::OnlyLast && mode != Cap::Hostile {
             return;
+        }
+        if mode == Cap::Hostile {
+            let f_id = f_entry["commit_id"].clone();
+            let statement = &mut body["statement"]["coz"];
+            for head in statement["pay"]["heads"]
+                .as_array_mut()
+                .expect("held report heads")
+            {
+                if head["commit_id"] == e_id {
+                    head["commit_id"] = f_id.clone();
+                }
+            }
+            let pay = serde_json::to_vec(&statement["pay"]).expect("pay");
+            let (sig, _) = signer.sign(&pay).expect("the authority signs");
+            statement["sig"] = Base64UrlUnpadded::encode_string(&sig).into();
+            for b in body["payload"]["branches"]
+                .as_array_mut()
+                .expect("branches")
+                .iter_mut()
+                .filter(|b| b["canonical"] == true)
+            {
+                b["head"] = f_id.clone();
+            }
         }
         let branches = body["payload"]["branches"]
             .as_array_mut()
@@ -3316,4 +3345,29 @@ async fn a_cap_refused_head_needs_the_line_held_and_a_cap_answer() {
             "{why}: {outcome:?}"
         );
     }
+}
+
+/// Backs the head binding against a hostile authority (frame 11.3): its
+/// signed held report names F as a head, and its patch ends the branch A,
+/// D with F's own bytes and declares F. F is a genuine signed commit, but it
+/// extends the witness's own chain, not the branch it is named the head of,
+/// and the witness does not hold it. A witness must not take it as the head
+/// of that branch: the entries must chain, and the second must extend the
+/// first. Turns red if conditions 1 to 3 as checked (the head's id is the
+/// last entry's, the first two entries are held, the last was answered
+/// `Errored`) accept an unconnected commit.
+#[tokio::test]
+async fn a_signed_commit_that_does_not_extend_the_line_is_no_head() {
+    use cyphr_server::sync::{SyncFailure, SyncOutcome};
+
+    let outcome = sync_over_cap(Cap::Hostile).await;
+    assert!(
+        matches!(
+            outcome,
+            SyncOutcome::Failed {
+                reason: SyncFailure::EntryCommitmentMismatch
+            }
+        ),
+        "an unconnected commit was accepted as a head: {outcome:?}"
+    );
 }
