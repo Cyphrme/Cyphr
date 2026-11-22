@@ -529,7 +529,10 @@ impl Bundle {
             crate::transaction_root::compute_tx(&czds, &algs)
         };
         let (commit_tx, mutations) = self.txs.split_last()?;
-        let mutations: Vec<_> = mutations.iter().filter_map(|tx| tx_id(tx)).collect();
+        let mutations: Vec<_> = mutations
+            .iter()
+            .map(|tx| tx_id(tx))
+            .collect::<Option<Vec<_>>>()?;
         let refs: Vec<&crate::multihash::MultihashDigest> = mutations.iter().collect();
         let tcr = crate::transaction_root::TransactionCommitRoot(tx_id(commit_tx)?);
         crate::transaction_root::compute_tr(&refs, &tcr, &algs)?

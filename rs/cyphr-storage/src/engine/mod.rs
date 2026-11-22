@@ -736,6 +736,18 @@ fn has_slot(kept: &[Retained], pre: Option<&str>, sequence: u64, signer: &str) -
     lines < BRANCH_LIMIT && by_signer < BRANCH_PER_KEY
 }
 
+/// What `retain_pair` did with an offered pair.
+enum PairKept {
+    /// Neither commit was kept: the pair verifies as no fork participant,
+    /// or its root is already held.
+    No,
+    /// Both commits are retained.
+    Kept,
+    /// The fork rule selected the extension, and its line became the
+    /// canonical chain.
+    Promoted(Box<IngestResult>),
+}
+
 /// A fork of a stored principal: two distinct commits that both verify at
 /// the same `pre`, as the wire blobs of each. One is the canonical commit
 /// at `sequence`, the other a retained rival.
@@ -4135,12 +4147,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                             ))
                             .await
                             {
-                                Ok(true) => {
+                                Ok(PairKept::Promoted(resolved)) => {
+                                    return Ok((*resolved, false));
+                                },
+                                Ok(PairKept::Kept) => {
                                     return Err(EngineError::Protocol(
                                         cyphr::Error::CommitMismatch,
                                     ));
                                 },
-                                Ok(false) => {},
+                                Ok(PairKept::No) => {},
                                 Err(
                                     refusal @ (EngineError::BranchLimit { .. }
                                     | EngineError::Errored { .. }),
@@ -4860,7 +4875,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         parent: &WireBundle,
         bundle: &WireBundle,
         tip: &cyphr::PrincipalState,
-    ) -> Result<bool, EngineError> {
+    ) -> Result<PairKept, EngineError> {
         let hashes: Vec<Blake3Hash> = parent
             .cozies()
             .map(|b| Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))
@@ -4868,14 +4883,19 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if self.is_retained(principal_id, &hashes, &Shape::of(parent))
             || self.is_already_stored(principal_id, parent).await?
         {
-            return Ok(false);
+            return Ok(PairKept::No);
         }
         let retained = self.retained_keys(principal_id);
+        // The extension may be signed by a key its root introduces, as one
+        // over a held root is (it is authenticated against that root's
+        // keys): the pair carries them.
+        let mut with_root = retained.clone();
+        with_root.extend(parent.keys.iter().cloned());
         let (Some(root_signers), Some(_)) = (
             authenticated_signers(parent, tip, &retained),
-            authenticated_signers(bundle, tip, &retained),
+            authenticated_signers(bundle, tip, &with_root),
         ) else {
-            return Ok(false);
+            return Ok(PairKept::No);
         };
         let stored = self.stored_entries(principal_id, None).await?;
         let entries = &stored.entries;
@@ -4942,11 +4962,32 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     {
                         return Err(EngineError::BranchLimit { key: signer });
                     }
+                    // Whether the fork rule over the held commits plus the
+                    // pair selects the extension: the same two commits
+                    // pushed one by one would promote it, so the pair does
+                    // too (the served tip is the assessment's head).
+                    let selects_extension = {
+                        let lowest = Some(root_commit.sequence);
+                        let mut after = self.held_with(principal_id, lowest).await?;
+                        after.push(held_of(&root_commit));
+                        after.push(held_of(&ext_commit));
+                        let after = assessment(&after);
+                        after.consensus == Consensus::Active
+                            && after.heads
+                                == [ext_commit.commit_ids.first().cloned().unwrap_or_default()]
+                    };
                     self.keep_branch_with(parent, root_commit, &root_embedded, true)
                         .await?;
+                    if selects_extension
+                        && let Some(resolved) = self
+                            .resolve_fork(principal_id, genesis, bundle, tip)
+                            .await?
+                    {
+                        return Ok(PairKept::Promoted(Box::new(resolved)));
+                    }
                     self.keep_branch_with(bundle, ext_commit, &ext_embedded, true)
                         .await?;
-                    return Ok(true);
+                    return Ok(PairKept::Kept);
                 }
             }
             if position + 1 < entries.len() {
@@ -4956,7 +4997,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .await?;
             }
         }
-        Ok(false)
+        Ok(PairKept::No)
     }
 
     /// Test a refused `bundle` as the extension of a retained rival, the
