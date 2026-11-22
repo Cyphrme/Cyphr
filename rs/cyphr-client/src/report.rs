@@ -320,7 +320,7 @@ impl HeldReport {
     }
 }
 
-/// The `fork_point` of `v`, and the tied `heads` it names, if any: a
+/// The `fork_point` of `v`, and the `heads` it names, if any: a
 /// patch's branches name their heads themselves.
 pub(crate) fn parse_fork_point(
     v: &Value,

@@ -319,13 +319,30 @@ async fn round_principal(
     // The engine refuses a rival as a tip but retains it as a branch (I2: a
     // fork is evidence, never merged), and accepts a forked peer's later
     // commits only if they verify (SPEC 15.8).
-    for bundle in branch_bundles(&record, &report, &dialled).await {
-        match state
-            .engine
-            .submit_commit(principal_id, None, &bundle)
-            .await
-        {
+    let offered = branch_bundles(&record, &report, &dialled).await;
+    for (i, bundle) in offered.iter().enumerate() {
+        match state.engine.submit_commit(principal_id, None, bundle).await {
             Ok(_) => info!(principal = %principal_id, "gossip: a branch commit adopted"),
+            // A cap refused the entry alone, but it may be a line root whose
+            // extension makes the standing or the fork point: offer the two
+            // together (rule X).
+            Err(
+                err @ (cyphr_storage::engine::EngineError::BranchLimit { .. }
+                | cyphr_storage::engine::EngineError::Errored { .. }),
+            ) => {
+                let Some(next) = offered.get(i + 1) else {
+                    refused(principal_id, &err, "gossip: branch commit answered");
+                    continue;
+                };
+                match state
+                    .engine
+                    .submit_pair(principal_id, None, bundle, next)
+                    .await
+                {
+                    Ok(_) => info!(principal = %principal_id, "gossip: a branch pair adopted"),
+                    Err(err) => refused(principal_id, &err, "gossip: branch pair answered"),
+                }
+            },
             Err(err) => refused(principal_id, &err, "gossip: branch commit answered"),
         }
     }

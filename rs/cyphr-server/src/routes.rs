@@ -79,6 +79,13 @@ pub struct PushRequest {
     /// both are present, wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// The commit this bundle extends, for a bundle that extends a rival
+    /// line root the server does not hold and whose quota refused (the
+    /// `branch_limit` answer): the root and the bundle are one offer, kept
+    /// both or neither. Optional and additive; the same wire form as the
+    /// bundle, without `principal_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<cyphr::replay::WireBundle>,
     /// The bundle.
     #[serde(flatten)]
     pub bundle: cyphr::replay::WireBundle,
@@ -1120,11 +1127,24 @@ pub async fn push(
 
     // Genesis auto-detection: the engine resolves genesis from stored
     // state (existing principal) or from the submitted blobs (new principal).
-    let result = state
-        .engine
-        .submit_commit(&request.principal_id, None, &request.bundle)
-        .await
-        .map_err(AppError::engine)?;
+    let result = match &request.parent {
+        Some(parent) if parent.is_empty() => {
+            return Err(AppError::bad_request("empty parent bundle"));
+        },
+        Some(parent) => {
+            state
+                .engine
+                .submit_pair(&request.principal_id, None, parent, &request.bundle)
+                .await
+        },
+        None => {
+            state
+                .engine
+                .submit_commit(&request.principal_id, None, &request.bundle)
+                .await
+        },
+    }
+    .map_err(AppError::engine)?;
 
     let tip = result.tip.as_ref().ok_or_else(|| {
         AppError::bad_request("bundle formed no commit and the principal has no committed state")

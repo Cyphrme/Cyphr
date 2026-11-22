@@ -1729,7 +1729,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             None
         };
         // In Error the common chain ends below the fork point: the chain
-        // the index serves past it is one branch among the tied ones.
+        // the index serves past it is one branch among several.
         let to = match &error {
             Some((point, _)) => point
                 .height
@@ -3823,7 +3823,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         {
             // The extension is no rival of any chain held: its root is
             // held, or can be admitted alone, and the extension follows.
-            Err(EngineError::Protocol(_)) => {
+            Err(
+                EngineError::Protocol(_)
+                | EngineError::Errored { .. }
+                | EngineError::BranchLimit { .. },
+            ) => {
                 match self
                     .submit_commit(principal_id, genesis.clone(), parent)
                     .await
@@ -4165,6 +4169,24 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                                 "could not retain a refused rival; answering the original refusal"
                             ),
                         }
+                    }
+                    // In Error every write the principal's own key signed is
+                    // answered by the Error, whether or not it could be
+                    // kept: a commit over a parent the engine does not hold
+                    // (one past a cap) cannot be verified, and the answer
+                    // does not depend on that.
+                    if matches!(refused, EngineError::Protocol(_))
+                        && authenticated_signers(
+                            bundle,
+                            principal.state(),
+                            &self.retained_keys(principal_id),
+                        )
+                        .is_some()
+                        && self.is_errored(principal_id).await.unwrap_or(false)
+                    {
+                        return Err(EngineError::Errored {
+                            principal_id: principal_id.to_string(),
+                        });
                     }
                     return Err(refused);
                 },

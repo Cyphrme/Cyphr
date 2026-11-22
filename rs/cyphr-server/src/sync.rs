@@ -338,24 +338,26 @@ async fn sync_locked(
     // witness holds them all as evidence of the fork, the canonical one
     // included: a witness ahead of the fork has its own head past them.
     let mut branch_bundles = Vec::new();
-    // Each branch's head and the position of its last bundle among the
-    // bundles submitted below: a head the witness's caps refuse is read
-    // from the answer to that bundle.
-    let mut head_at: Vec<(String, usize)> = Vec::new();
+    // Each branch's entries as positions among the bundles submitted
+    // below: a head the witness's caps refuse is bound to the bytes of its
+    // branch's last entry and the answers to those entries.
+    let mut branch_at: Vec<Vec<usize>> = Vec::new();
     let first_branch = bundles.len();
     for branch in patch.fork.iter().flat_map(|f| &f.branches) {
+        let mut positions = Vec::new();
         for entry in &branch.entries {
             match &entry.bundle {
-                Ok(bundle) => branch_bundles.push(bundle.clone()),
+                Ok(bundle) => {
+                    positions.push(first_branch + branch_bundles.len());
+                    branch_bundles.push(bundle.clone());
+                },
                 Err(defect) => {
                     warn!(principal_id = %principal_id, ?defect, "branch entry undecodable; skipping");
                     rejected += 1;
                 },
             }
         }
-        if !branch.entries.is_empty() {
-            head_at.push((branch.head.clone(), first_branch + branch_bundles.len() - 1));
-        }
+        branch_at.push(positions);
     }
     bundles.extend(branch_bundles.iter().cloned());
     let mut cap_refused: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -390,15 +392,36 @@ async fn sync_locked(
             // same answer a push gets, 409 or 422); whether the witness
             // holds every head is checked after the loop.
             //
-            // A branch commit the witness's caps refuse (a line past its
-            // depth, or no line left) is no wedge either: a witness holds a
-            // line only to the cap, so that commit is recorded and a head
-            // it names is accepted below.
+            // A branch commit the witness's caps refuse is no wedge either:
+            // it may be a line root whose extension changes the verdict, so
+            // it is offered again with the next entry; one still refused is
+            // recorded, and a head past a cap is bound to its branch's last
+            // entry below.
             Err(
                 cyphr_storage::engine::EngineError::BranchLimit { .. }
                 | cyphr_storage::engine::EngineError::Errored { .. },
             ) if i >= main => {
-                cap_refused.insert(i);
+                let next_in_branch = branch_at
+                    .iter()
+                    .any(|b| b.contains(&i) && b.contains(&(i + 1)));
+                let paired = match bundles.get(i + 1).filter(|_| next_in_branch) {
+                    Some(next) => {
+                        state
+                            .engine
+                            .submit_pair(principal_id, None, bundle, next)
+                            .await
+                    },
+                    None => Err(cyphr_storage::engine::EngineError::Errored {
+                        principal_id: principal_id.to_string(),
+                    }),
+                };
+                if matches!(
+                    paired,
+                    Err(cyphr_storage::engine::EngineError::BranchLimit { .. }
+                        | cyphr_storage::engine::EngineError::Errored { .. })
+                ) {
+                    cap_refused.insert(i);
+                }
             },
             Err(cyphr_storage::engine::EngineError::Protocol(_)) if i >= main => {},
             Err(err) => {
@@ -461,13 +484,20 @@ async fn sync_locked(
                 .await
             {
                 Ok(true) => {},
-                // The authority supplied that head and the witness's own
-                // caps refused it: the line is held as far as the witness
-                // keeps one, which is not withholding.
+                // The authority supplied the head, the witness holds its
+                // branch to the caps, and the entries past them were
+                // answered by the caps: held as far as the witness keeps
+                // one, which is not withholding.
                 Ok(false)
-                    if head_at.iter().any(|(id, at)| {
-                        *id == head.commit_id.to_string() && cap_refused.contains(at)
-                    }) => {},
+                    if head_bound_to_a_capped_branch(
+                        state,
+                        principal_id,
+                        &head.commit_id,
+                        &branch_at,
+                        &bundles,
+                        &cap_refused,
+                    )
+                    .await => {},
                 Ok(false) => {
                     warn!(principal = %principal_id, head = %head.commit_id,
                         "witness sync: a head of the authority is not held");
@@ -668,4 +698,75 @@ mod tests {
             "a binding refusal must not be reported as an unreachable upstream"
         );
     }
+}
+
+/// Whether the head `head`, which the witness does not hold, is the end of
+/// a branch the witness's caps cut short (frame 11.3): all of
+/// 1. `head` is the commit id computed from the bytes of the last entry of one branch of the patch;
+/// 2. the witness holds that branch to the cap: its first entry off the witness's own chain, and
+///    the entry after it if there is one;
+/// 3. the entries past the cap were answered by the cap (`BranchLimit` or `Errored`, recorded in
+///    `cap_refused`).
+///
+/// What this does not check is that the entries past the cap chain to each
+/// other: a commit's `pre` is bound only inside its arrow. Its harm is
+/// bounded: the witness's own standing and fork point do not depend on it.
+async fn head_bound_to_a_capped_branch(
+    state: &Arc<AppState>,
+    principal_id: &str,
+    head: &cyphr::state::TaggedDigest,
+    branch_at: &[Vec<usize>],
+    bundles: &[cyphr::replay::WireBundle],
+    cap_refused: &std::collections::HashSet<usize>,
+) -> bool {
+    let Ok(branches) = state.engine.list_branches(principal_id).await else {
+        return false;
+    };
+    let retained: std::collections::HashSet<&str> = branches
+        .iter()
+        .filter(|b| !b.canonical)
+        .map(|b| b.tip.as_str())
+        .collect();
+    for positions in branch_at {
+        let ids: Vec<Option<String>> = positions
+            .iter()
+            .map(|&at| {
+                bundles
+                    .get(at)?
+                    .decode()
+                    .ok()?
+                    .commit_id(head.alg())
+                    .map(|d| d.to_string())
+            })
+            .collect();
+        if ids.last().and_then(Option::as_ref).map(String::as_str) != Some(&head.to_string()) {
+            continue;
+        }
+        let mut held = Vec::with_capacity(ids.len());
+        for id in &ids {
+            held.push(match id {
+                Some(id) => state
+                    .engine
+                    .holds_commit(principal_id, id)
+                    .await
+                    .unwrap_or(false),
+                None => false,
+            });
+        }
+        let on_chain =
+            |i: usize| held[i] && ids[i].as_deref().is_some_and(|id| !retained.contains(id));
+        let Some(first_off) = (0..ids.len()).find(|&i| !on_chain(i)) else {
+            continue;
+        };
+        let line_held = held[first_off] && held.get(first_off + 1).is_none_or(|h| *h);
+        let past_cap_answered = positions
+            .iter()
+            .skip(first_off + cyphr_storage::engine::BRANCH_DEPTH)
+            .all(|at| cap_refused.contains(at));
+        let has_past_cap = ids.len() > first_off + cyphr_storage::engine::BRANCH_DEPTH;
+        if line_held && has_past_cap && past_cap_answered {
+            return true;
+        }
+    }
+    false
 }

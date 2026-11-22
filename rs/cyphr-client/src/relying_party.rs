@@ -61,8 +61,10 @@ pub const BRANCH_COMMIT_LIMIT: usize = 16;
 
 /// How many of those commits one signing key may hold: the engine's
 /// `BRANCH_PER_KEY` (2). A key that forked once is already proven to
-/// equivocate, so a small quota loses no evidence, and a key that floods
-/// rivals cannot starve the rivals of the principal's other keys.
+/// equivocate, so a small quota loses no evidence. A key that floods
+/// rivals can fill its own quota, so the quota bounds what is kept as
+/// junk; a commit that changes the standing is still kept by the engine,
+/// and here it fails closed ([`Refusal::Forked`]).
 pub const BRANCH_COMMITS_PER_KEY: usize = 2;
 
 /// A relying party's own settings.

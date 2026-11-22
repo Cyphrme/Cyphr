@@ -140,15 +140,19 @@ impl Harness {
                     "verdict branches differ from the peers' live heads"
                 );
             } else {
+                // A branch is a head or rival tip some holder keeps, or a
+                // commit of a holder's chain at or above the agreed fork
+                // point: below it the chain is common to every branch, so
+                // a commit there is no contest child's branch.
+                let fork_height = erred
+                    .iter()
+                    .find_map(|(_, t)| t.fork_point.as_ref()?["height"].as_u64())
+                    .unwrap_or(0);
                 let mut known: BTreeSet<Tip> = live_heads.clone();
                 for name in &live {
-                    known.extend(
-                        self.chain_read(name, p)
-                            .await
-                            .commit_ids
-                            .into_iter()
-                            .map(Tip),
-                    );
+                    let chain = self.chain_read(name, p).await;
+                    let from = usize::try_from(fork_height).unwrap_or(usize::MAX);
+                    known.extend(chain.commit_ids.into_iter().skip(from).map(Tip));
                 }
                 assert!(
                     claimed_branches.iter().all(|b| known.contains(b)),

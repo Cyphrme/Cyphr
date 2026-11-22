@@ -590,8 +590,21 @@ Body: JSON object.
 | `keys`         | array of `{alg,pub,tmb}`  | no       | Public keys the cozies in `txs` introduce.                                                                       |
 | `actions`      | array of string           | one of   | Data actions (base64url coz JSON) recorded before the transactions. A bundle of `actions` alone forms no commit. |
 | `token`        | string                    | no       | A bearer token, for a carrier with no `Authorization` header (the Noise transport). The header wins.             |
+| `parent`       | object                    | no       | The commit the bundle extends, in the same bundle wire form without `principal_id`. See below.                   |
 
 An empty bundle (no `txs`, `keys` or `actions`) is `400`.
+
+**`parent`.** A server keeps a bounded number of rival lines per principal
+(a line is a rival commit and at most one commit over it). A rival the
+quota refuses (`409`, `kind` `branch_limit`, or `423` while the principal is
+in Error) can still be what makes the fork two extended branches, which
+only its extension shows. A sender sends the extension with the refused
+root as `parent`: the two are one offer, kept both or neither. The server
+keeps the pair when its quotas allow it or when it changes the principal's
+consensus state or fork point, and refuses it whole otherwise. A `parent`
+the server already holds, or can admit alone, changes nothing about how the
+bundle is answered. The field is additive and absent from the normative
+specification of `POST /push`.
 
 **Authentication.** No bearer token is required: the bundle's own signatures
 are its authorization, including a new principal's genesis. A token is an

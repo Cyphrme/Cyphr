@@ -36,7 +36,7 @@ fn wire_id(identity: &str) -> crate::Result<String> {
 }
 
 /// The position in `local` of the commit the peer's answer says it holds:
-/// its tip, or while it is in Error (SPEC 15.5) the highest of its tied
+/// its tip, or while it is in Error (SPEC 15.5) the highest of its
 /// heads that `local` holds. A commit extending a head resolves the fork
 /// while neither branch is extended (SPEC 15.8), so one such head is enough
 /// to push from; once both are, the peer refuses it as Errored.
@@ -91,16 +91,20 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         // What the peer holds decides what to send; a tip the local
         // history does not contain means the peer is ahead of, or on a
         // different branch from, this sender: refuse, never overwrite.
+        // A tip the local history does not contain is a peer on another
+        // branch (a thief's line, say): the sender's own commits are a fork
+        // there, and a fork is sent, never refused here, so the principal
+        // can answer it. The peer keeps it as a rival, refuses it by its
+        // caps, or reads Error; none of that is for this sender to judge.
+        let mut forking = false;
+        let mut in_error = false;
         let start = match peer.tip(&wire).await? {
             None => 0,
             Some(tip) => match held_position(&tip, &local) {
                 Some(i) => i + 1,
                 None => {
-                    return Err(PeerError::Stale {
-                        peer: peer.url().to_owned(),
-                        detail: format!("{} is not in the local history", describe(&tip)),
-                    }
-                    .into());
+                    forking = true;
+                    0
                 },
             },
         };
@@ -111,9 +115,31 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             .map(|a| Ok(serde_json::to_vec(a.raw())?))
             .collect::<crate::Result<Vec<_>>>()?;
         let mut sent_actions = 0usize;
+        // The commit a fork's previous answer left unplaced: a root the
+        // peer's caps refused alone is offered again with its extension.
+        let mut parent: Option<&WireBundle> = None;
         for (i, commit) in local.iter().enumerate().skip(start) {
-            match peer.push_commit(&wire, &commit.bundle).await {
+            match peer
+                .push_commit_with_parent(&wire, &commit.bundle, parent.take())
+                .await
+            {
                 Ok(()) => {},
+                // A fork over the peer's tip: the commits below the fork are
+                // held (COZ_REUSE), and a commit above it is kept as a
+                // rival, or refused by the caps or the Error state (409,
+                // 423), so the next one goes with this as its `parent`.
+                Err(PeerError::Refused { message, .. })
+                    if forking && message.contains("COZ_REUSE") => {},
+                Err(PeerError::Stale { .. }) if forking => {
+                    parent = Some(&commit.bundle);
+                },
+                // The peer is in Error: it refuses what does not resolve
+                // its fork (or cannot keep it past its caps), and the next
+                // commit may be the extension that shows the pair.
+                Err(PeerError::Status { status: 423, .. }) => {
+                    in_error = true;
+                    parent = Some(&commit.bundle);
+                },
                 // The peer took this commit from another peer (gossip) between
                 // the tip read and the send, so it already holds it: the
                 // push's goal is met, and the next commits still go.
@@ -128,19 +154,32 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             }
         }
         for blob in actions {
-            peer.push_commit(&wire, &WireBundle::actions(vec![blob]))
-                .await?;
-            sent_actions += 1;
+            match peer
+                .push_commit(&wire, &WireBundle::actions(vec![blob]))
+                .await
+            {
+                Ok(()) => sent_actions += 1,
+                // An action is refused while the peer is in Error.
+                Err(PeerError::Status { status: 423, .. }) => in_error = true,
+                Err(e) => return Err(e.into()),
+            }
         }
         Ok::<_, Error>((
             local.len() - start,
             sent_actions,
             local.last().map(|c| c.commit_id.clone()),
+            in_error,
         ))
     })??;
 
-    let (count, actions, tip) = pushed;
-    let status = if count == 0 { "up_to_date" } else { "accepted" };
+    let (count, actions, tip, in_error) = pushed;
+    let status = if in_error {
+        "peer_in_error"
+    } else if count == 0 {
+        "up_to_date"
+    } else {
+        "accepted"
+    };
     let out = json!({"identity": identity, "peer": peer_url, "pushed": count,
         "actions": actions, "tip": tip, "status": status});
     emit(cli, &out, || {
@@ -701,7 +740,7 @@ mod tests {
     /// nothing to extend. Red if Error's heads are ignored, the lowest is
     /// taken, or an unheld head is found.
     #[test]
-    fn push_start_follows_the_peer_tip_or_a_tied_head() {
+    fn push_start_follows_the_peer_tip_or_a_head() {
         let chain = local(&[1, 2, 3, 4]);
         assert_eq!(
             held_position(

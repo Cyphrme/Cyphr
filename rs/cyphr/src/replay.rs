@@ -513,6 +513,31 @@ impl Bundle {
         Ok(Self { actions, txs, keys })
     }
 
+    /// The commit id the bundle's transactions name in `alg`: its
+    /// Transaction Root, `TR = MR(TX0?, ..., TXc)` with the commit
+    /// transaction last (SPEC 3.7.5). A function of the bundle's own
+    /// bytes, with no chain state: it names the commit whether or not the
+    /// holder can replay it. `None` for a bundle of no transaction.
+    #[must_use]
+    pub fn commit_id(&self, alg: HashAlg) -> Option<crate::state::TaggedDigest> {
+        let algs = [alg];
+        let tx_id = |tx: &[StoredCoz]| {
+            let czds: Vec<crate::state::TaggedCzd<'_>> = tx
+                .iter()
+                .map(|c| crate::state::TaggedCzd::new(c.czd(), c.hash_alg()))
+                .collect();
+            crate::transaction_root::compute_tx(&czds, &algs)
+        };
+        let (commit_tx, mutations) = self.txs.split_last()?;
+        let mutations: Vec<_> = mutations.iter().filter_map(|tx| tx_id(tx)).collect();
+        let refs: Vec<&crate::multihash::MultihashDigest> = mutations.iter().collect();
+        let tcr = crate::transaction_root::TransactionCommitRoot(tx_id(commit_tx)?);
+        crate::transaction_root::compute_tr(&refs, &tcr, &algs)?
+            .0
+            .tagged(alg)
+            .ok()
+    }
+
     /// The actions recorded before the transactions.
     #[must_use]
     pub fn action_cozies(&self) -> &[StoredCoz] {
