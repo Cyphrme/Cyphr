@@ -107,6 +107,10 @@ clocks correct.
   is Error again when anyone holding a key that was active at the
   parting point extends the abandoned branch. A stale offline device that
   wakes up and signs on the old branch does this without any attacker.
+  Pinned by `one_extended_selects_and_the_other_extended_reopens`
+  (`rs/cyphr/tests/fork_rule.rs:246`) and
+  `one_extension_resolves_and_the_abandoned_branch_reopens_it`
+  (`rs/cyphr-storage/tests/fork_rule.rs:309`).
 - **Any once-active key can backdate a commit to re-open or lock a
   principal.** A commit signed by a revoked key is refused only if
   its own `now` is at or after the server's receipt time of the revoke
@@ -134,7 +138,7 @@ clocks correct.
   the authority's cap refused them (`BranchLimit` or `Errored`), and does
   not check that they chain to each other, because a commit's `pre` is
   bound only inside its own arrow (`head_is_bound`,
-  `rs/cyphr-server/src/sync.rs:621-760`). The witness's own standing and
+  `rs/cyphr-server/src/sync.rs:639`, called at `:498`). The witness's own standing and
   fork point do not depend on those entries.
 - **Retained rivals are capped.** An engine keeps at most 16 rival
   lines per principal and 2 lines per signing key, and a line holds at
@@ -146,7 +150,12 @@ clocks correct.
   its extension, is retained anyway when it changes the principal's
   standing or its fork point, so a thief who adds keys cannot keep out a
   commit that matters. What the store keeps by offer is bounded by
-  32 + 2h commits, h the principal's chain length. A relying party that
+  32 + 2h commits, h the principal's chain length. That bound is argued
+  from rule X and tested on small generated histories
+  (`retained_commits_stay_within_the_bound`,
+  `rs/cyphr-storage/tests/rule_x.rs:426`), not proved.
+  A storage fault between the two writes of an offered pair can leave the
+  root kept without its extension; offering the pair again heals it. A relying party that
   cannot record a fork refuses sign-in until it is rebuilt from a fresh
   view.
 - **A revoke never ends a fork already held.** It gates later arrivals

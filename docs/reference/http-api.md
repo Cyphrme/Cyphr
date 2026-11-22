@@ -599,7 +599,7 @@ An empty bundle (no `txs`, `keys` or `actions`) is `400`.
 quota refuses (`409`, `kind` `branch_limit`, or `423` while the principal is
 in Error) can still be what makes the fork two extended branches, which
 only its extension shows. A sender sends the extension with the refused
-root as `parent`: the two are one offer, kept both or neither. The server
+root as `parent`: the two are one offer, kept both or neither (a storage fault between the two writes can leave the root kept alone; it heals when the pair is offered again). The server
 keeps the pair when its quotas allow it or when it changes the principal's
 consensus state or fork point, and refuses it whole otherwise. A `parent`
 the server already holds, or can admit alone, changes nothing about how the

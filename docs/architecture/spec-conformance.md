@@ -48,10 +48,10 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   63 |
+| `covered`      |   64 |
 | `red-existing` |    0 |
 | `red-new`      |    0 |
-| `not-testable` |   11 |
+| `not-testable` |   10 |
 | `out-of-scope` |    2 |
 | `total`        |   76 |
 
@@ -1070,14 +1070,18 @@ evaluator: none
 
 ### [sc-l2814]
 
-SPEC 15.8, line 2814. Disposition: `not-testable`.
+SPEC 15.8, line 2814. Disposition: `covered`.
 
 - spec-line: 2814
 - source: supplement
-- disposition: not-testable
+- disposition: covered
 - spec-text: An invalid fork is resolved when the principal unambiguously selects one
-- tests: none
-- reason: The commit exit is implemented (`assessment`, `rs/cyphr/src/fork.rs`): a new commit resolves a fork only when it leaves exactly one branch extended, a fork with both branches extended stays Error at any height, and an extended abandoned branch re-opens it. The proof-of-possession exit (`resync/create`) is not implemented, so the line as a whole is not testable.
+- tests:
+  - `rs/cyphr/tests/fork_rule.rs::both_extended_is_error_at_any_heights`
+  - `rs/cyphr/tests/fork_rule.rs::building_on_a_both_extended_fork_never_leaves_error`
+  - `rs/cyphr/tests/fork_rule.rs::one_extended_selects_and_the_other_extended_reopens`
+  - `rs/cyphr-storage/tests/fork_rule.rs::one_extension_resolves_and_the_abandoned_branch_reopens_it`
+- fails when: The commit exit is implemented (`assessment`, `rs/cyphr/src/fork.rs`): a new commit resolves a fork only when it leaves exactly one branch extended, a fork with both branches extended stays Error at any height, or an extended abandoned branch fails to re-open it. The proof-of-possession exit (`resync/create`) is not implemented and is mapped at sc-l2822.
 
 ```claim
 kind: requirement
