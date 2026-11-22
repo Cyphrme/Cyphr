@@ -99,7 +99,10 @@ half of this guide applies to one.
 Make something to publish. The `cyphr` CLI can push to a server itself
 (`cyphr push --identity="$PR" --peer=http://127.0.0.1:4100`); this guide
 builds the request by hand with `curl`, so that you hold the raw response
-and its receipt:
+and its receipt. The CLI reports `status` `accepted` when it sent commits,
+`up_to_date` when the peer already held everything, and `peer_in_error`
+when the peer answered `423` because the principal is in Error there
+(`rs/cyphr-cli/src/commands/network.rs:221-227`):
 
 ```sh
 PR=$(cyphr --output json key generate --algo ES256 | jq -r .tmb)
@@ -860,13 +863,17 @@ reasoning. If you want the shape of the disagreement across a set,
 collect the verdicts yourself.
 
 **Ask the principal to resolve it.** A fork is resolved when the principal
-publishes a commit whose predecessor is the tip of one branch, abandoning
-the other. Only the principal can do it, and no server does it for her
+publishes a commit whose predecessor is the tip of one branch, and no
+commit yet stands over the other. If both branches already have a commit
+over them, the principal stays in Error whatever the heights, and a new
+commit on either branch does not leave it. A branch the principal
+abandoned re-opens the fork if anyone extends it later. Only the principal
+can resolve it, and no server does it for them
 ([the architecture page states
 why](../architecture/equivocation-detection.md#arch-principal-resolves)).
 A resolving commit is a push like any other, and no server forwards a
 push to other servers: it reaches exactly the servers the principal
-pushes it to. A server she does not push it to keeps serving whatever
+pushes it to. A server they do not push it to keeps serving whatever
 branch it holds. Building a third commit on the branch server `4101`
 holds and pushing it to both. `4100` was never shown that branch, which
 matters below:

@@ -116,15 +116,22 @@ hand. Two limits apply to the check as it exists:
 
 ## When the owner's record forked
 
-Only the owner resolves a fork in her own record. She signs one more
-entry on the branch she chooses: a commit whose `pre` is that branch's
-tip, or a `resync/create` proof of possession re-asserting a tip (the Rust
-implementation has no such message yet)
+Only the owner resolves a fork in their own record. They sign a commit
+whose `pre` is the tip of one branch, where the other branch has no
+commit over it; that settles the fork on the extended branch. A
+`resync/create` proof of possession re-asserting a tip is the other exit
+the spec names, and the Rust implementation has no such message yet
 ([SPEC §15.8](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#158-fork-resolution)).
-No server, witness or reader resolves it for her. Until she does, SPEC
+No server, witness or reader resolves it for them. Until they do, SPEC
 puts the record in the Error state: no new transactions are processed
 ([§15.5](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#155-principal-consensus-states)),
 and both branches are kept as proof (§15.8).
+
+Height decides nothing. If both branches already have a commit over them,
+the record stays in Error whichever branch is taller and whichever gets
+another commit, and an abandoned branch that someone extends later
+re-opens a fork the owner had settled. Every holder of the same commits
+reads the same verdict (`assessment`, `rs/cyphr/src/fork.rs:120`).
 
 A resolution is checked by signature, not by identity. When the fork
 came from a stolen key, whoever holds that key can sign a resolution as
@@ -135,16 +142,16 @@ does not hold
 
 A server does track a fork it is shown. It refuses a commit that
 verifies on a predecessor its chain has already moved past, with a `409`,
-and keeps that commit as evidence (up to 16 per record, at most 2 per
-signing key). The record is then in Error: the server refuses everything
+and keeps that commit as evidence (up to 16 lines per record, at most 2
+per signing key). The record is then in Error: the server refuses everything
 but a resolution with a `423`, answers `GET /tip` with a signed held
-statement that names the tied heads and when each was first seen, and
+statement that names the branch heads and when each was first seen, and
 lists the branches at `GET /branches` and `GET /evidence`. What a server
 cannot do is see a branch it was never given. A server that took one
 branch and a server that took the other each keep serving their own
 record as Active until the two exchange commits, so a fork still shows
 only to someone who compares the two. The owner's resolution reaches only
-the servers she pushes it to.
+the servers they push it to.
 
 What a verdict of Active does and does not mean is in
 [Known limits](../guides/known-limits.md).
@@ -177,7 +184,7 @@ collect it.
 2. **Make it known.** The proof is portable, so any venue works: a court
    filing, a news story, a page anyone can check. The venue is yours to
    find.
-3. **Ask the owner to resolve a fork.** Only she can, and only by
+3. **Ask the owner to resolve a fork.** Only they can, and only by
    signing.
 4. **Break the tie yourself.** Two conflicting answers convict without
    telling you which history the record's owner stands behind. More

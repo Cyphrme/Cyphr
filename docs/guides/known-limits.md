@@ -88,22 +88,61 @@ clocks correct.
   resolution race (SPEC 15.8: the abandoned branch is permanently invalid).
 - **A fork resolves only by a commit.** The proof-of-possession
   resolution (`resync/create`, SPEC 15.8 item 2) is not implemented: the
-  Rust code has no coz kind for it.
+  Rust code has no coz kind for it. A commit resolves a fork only by
+  extending exactly one of its branches
+  (`assessment`, `rs/cyphr/src/fork.rs:120`).
+- **A fork with both branches extended locks until resolved.** Height
+  does not decide it: the taller branch does not win, and a new commit on
+  either branch leaves the principal in Error, because the walk still
+  finds two extended branches (`rs/cyphr/src/fork.rs:120`). Holders of the
+  same commits reach the same verdict. The explicit proof-of-possession exit is future work, so
+  nothing at Levels 1 to 4 settles this state yet.
+- **A resolved fork can re-open.** The verdict is a function of the
+  commits held, so a fork the principal settled by extending one branch
+  is Error again when anyone holding a key that was active at the
+  parting point extends the abandoned branch. A stale offline device that
+  wakes up and signs on the old branch does this without any attacker.
+- **Any once-active key can backdate a commit to re-open or lock a
+  principal.** A commit is checked against a key's revoke by its own
+  `now` (`dead_key_in`, `rs/cyphr-storage/src/engine/mod.rs:3996`), so a
+  holder of a key that was ever active can date a commit before the
+  revoke cutoff, extend an abandoned branch, and put the principal back
+  in Error. This is a liveness cost, not a forged history, and it is a
+  known limit until the spec author rules on timestamp monotonicity.
+- **The CLI sends a fork only as an answering pair.** `cyphr push`
+  offers commits that part from a peer's tip only when at least two local
+  commits lie past the parting point (`rs/cyphr-cli/src/commands/network.rs:107-130`).
+  An owner with one commit past it must sign a second before the CLI will
+  send the answer; a lone commit over a peer's tip is refused as stale,
+  because it would move the peer to Error without settling anything.
 - **An Active verdict means no fork was seen, not that none exists.** The
   verdict covers the peers that answered. A peer that serves one head is
   not asked for fork evidence (`sync.rs` asks only when a peer reports
   more than one head), and branch heads are hints, never proof. A peer
   can also bury genuine evidence under junk: a verifier reads at most 32
   evidence items per peer per pull, before checking them.
-- **Retained rivals are capped.** An engine keeps at most 16 rivals per
-  principal and 2 per signing key. A rival past the cap is refused with a
-  `409` of kind `branch_limit` and is not retained, so a thief who adds
-  keys can fill the 16. A relying party that cannot record a fork refuses
-  sign-in until it is rebuilt from a fresh view.
+- **A witness does not check that entries past the cap chain.** A witness
+  binds an attested head to the branch that names it and checks that the
+  entries it holds chain to each other. Entries the authority holds past
+  the retention cap are not held by the witness, so the binding does not
+  check that they chain to each other.
+- **Retained rivals are capped.** An engine keeps at most 16 rival
+  lines per principal and 2 lines per signing key, and a line holds at
+  most 2 commits (`BRANCH_LIMIT`, `BRANCH_PER_KEY`, `BRANCH_DEPTH`,
+  `rs/cyphr-storage/src/engine/mod.rs:492-505`; the check is `has_slot`,
+  `:703`). An offer past a cap is refused and not retained, with a `409`
+  of kind `branch_limit` while the principal is Active and a `423` of kind
+  `errored` while it is in Error. A refused offer, alone or as a root with
+  its extension, is retained anyway when it changes the principal's
+  standing or its fork point, so a thief who adds keys cannot keep out a
+  commit that matters. What the store keeps by offer is bounded by
+  32 + 2h commits, h the principal's chain length. A relying party that
+  cannot record a fork refuses sign-in until it is rebuilt from a fresh
+  view.
 - **A revoke never ends a fork already held.** It gates later arrivals
   only (SPEC 14.12), so a thief's commit held before the revoke stays
-  counted. The owner exits by committing on the branch she chooses, or by
-  recovery.
+  counted. The owner exits by extending exactly one branch, where that settles
+  the fork, or by recovery.
 
 ## Embedded principals
 
