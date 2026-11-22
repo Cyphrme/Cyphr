@@ -20,7 +20,8 @@
 //!   ask this server;
 //! - a resync proof a peer holds (SPEC 15.8 item 2) is offered to the engine with the peer's chain
 //!   from the first commit this server lacks, so a fork the principal resolved by proof resolves
-//!   here too. Like the revoke probe, it is never skipped: a proof moves no head.
+//!   here too. A proof moves no head, so a principal in Error is never idle: it is pulled, and its
+//!   peers asked for proofs, every round until it resolves.
 //!
 //! Peers are dialled at the address configured, so a deployment (or the
 //! scenario proxy) can carry and cut the link.
@@ -144,9 +145,6 @@ impl Gossip {
             let id = &summary.principal_id;
             if let Some(keys) = self.idle_keys(state, peers, id).await {
                 probe_revokes(state, peers, &keys).await;
-                for (name, connector) in peers {
-                    offer_peer_resyncs(state, name, connector, id).await;
-                }
                 continue;
             }
             match round_principal(state, peers, id).await {
@@ -162,7 +160,9 @@ impl Gossip {
     /// The remembered revoke-probe keys of `principal_id` when the gate
     /// says idle: the engine's tip is the one the keys were read at, and
     /// every peer lists only heads the engine holds (a 404 lists none).
-    /// `None` when any of that cannot be shown, which runs the full pull.
+    /// `None` when any of that cannot be shown, which runs the full pull,
+    /// and for a principal in Error, whose exit (a resync proof) moves no
+    /// head.
     async fn idle_keys(
         &self,
         state: &Arc<AppState>,
@@ -170,6 +170,9 @@ impl Gossip {
         principal_id: &str,
     ) -> Option<Vec<Thumbprint>> {
         let tip = state.engine.get_tip(principal_id).await.ok()??;
+        if state.engine.is_errored(principal_id).await.ok()? {
+            return None;
+        }
         let memo = self
             .keys
             .get(principal_id)
