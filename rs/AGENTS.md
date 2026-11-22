@@ -61,8 +61,8 @@ level if and where possible."
 - Delete a test that cannot fail for a real defect: green by
   construction, re-asserting a mock, or duplicating a stronger test.
 - Show each new test failing for the right reason before implementing.
-- While iterating run targeted tests (`cargo test -p <crate>`); run the
-  full suite once, before reporting.
+- Run only targeted tests (`cargo test -p <crate>`) while working; the
+  full suite runs once, at the merge gate.
 
 ## Gates
 
