@@ -22,8 +22,8 @@
 //!   from the first commit this server lacks, so a fork the principal resolved by proof resolves
 //!   here too. A proof moves no head, so a principal in Error here, or that a peer reads in Error
 //!   (it lists more heads than this server), is never idle: it takes the full round, which asks for
-//!   proofs. A peer that holds a proof selecting a branch this server holds, with no more heads,
-//!   is not seen by the gate; the proof reaches this server from its sender or a later full round.
+//!   proofs. A peer that holds a proof selecting a branch this server holds, with no more heads, is
+//!   not seen by the gate; the proof reaches this server from its sender or a later full round.
 //!
 //! Peers are dialled at the address configured, so a deployment (or the
 //! scenario proxy) can carry and cut the link.
