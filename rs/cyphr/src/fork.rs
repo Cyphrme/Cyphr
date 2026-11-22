@@ -63,6 +63,10 @@ pub struct Contest {
     /// extending the kept one. `None` while the fork stands, or when no
     /// commit settled it (a revoke left the kept commit alone).
     pub by: Option<String>,
+    /// For each commit here the walk passed over, the tips of its branch:
+    /// the held leaves at or above it, sorted. Empty while the fork
+    /// stands.
+    pub abandoned: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// A commit a holder keeps, canonical or retained, as [`assessment`] reads
@@ -220,6 +224,24 @@ pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
         children = children_of(next.sequence + 1, Some(next.pr.as_str()));
     }
 
+    // The held leaves at or above `start`, each once.
+    let leaves_above = |start: Vec<&Held>| -> BTreeSet<String> {
+        let mut leaves: BTreeSet<String> = BTreeSet::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut frontier = start;
+        while let Some(c) = frontier.pop() {
+            if !seen.insert(c.id.as_str()) {
+                continue;
+            }
+            let below = children_of(c.sequence + 1, Some(c.pr.as_str()));
+            if below.is_empty() {
+                leaves.insert(c.id.clone());
+            }
+            frontier.extend(below);
+        }
+        leaves
+    };
+
     let forks = over
         .iter()
         .filter(|(_, c)| c.len() > 1)
@@ -228,12 +250,25 @@ pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
                 .values()
                 .copied()
                 .find(|h| walked.contains(h.id.as_str()));
+            let abandoned = kept
+                .map(|k| {
+                    commits
+                        .values()
+                        .filter(|h| h.id != k.id)
+                        .map(|h| {
+                            let tips = leaves_above(vec![*h]);
+                            (h.id.clone(), tips.into_iter().collect())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             Contest {
                 sequence,
                 pre: pre.map(str::to_owned),
                 commits: commits.keys().map(|id| (*id).to_owned()).collect(),
                 kept: kept.map(|k| k.id.clone()),
                 by: kept.and_then(|k| settled_by_extension(held, k, &walked)),
+                abandoned,
             }
         })
         .collect();
@@ -246,23 +281,9 @@ pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
             fork_point: None,
         };
     };
-    // The leaves at or above the rivals, each once.
-    let mut leaves: BTreeSet<String> = BTreeSet::new();
-    let mut seen: HashSet<&str> = HashSet::new();
-    let mut frontier = rivals;
-    while let Some(c) = frontier.pop() {
-        if !seen.insert(c.id.as_str()) {
-            continue;
-        }
-        let below = children_of(c.sequence + 1, Some(c.pr.as_str()));
-        if below.is_empty() {
-            leaves.insert(c.id.clone());
-        }
-        frontier.extend(below);
-    }
     Assessment {
         consensus: Consensus::Error,
-        heads: leaves.into_iter().collect(),
+        heads: leaves_above(rivals).into_iter().collect(),
         forks,
         fork_point: Some(ForkPoint { height, pre }),
     }
