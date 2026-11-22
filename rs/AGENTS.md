@@ -66,7 +66,9 @@ level if and where possible."
 
 ## Gates
 
-- `cargo test --workspace` — green (~3 min; slowest: persistent-engine proptest).
+- `cargo test --workspace` — green; run once, at the merge gate. A worker
+  runs only the tests pertinent to its change (slowest: persistent-engine
+  proptest).
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean; CI
   runs it with `-D warnings`.
 - `cargo fmt --check` — green, on stable or nightly (forge #28, resolved by
