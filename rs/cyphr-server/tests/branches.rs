@@ -3075,13 +3075,32 @@ async fn push_with_a_parent_lands_a_pair_at_a_quota_full_server() {
 /// A, D, E as its canonical branch with B, C beside it, and the witness's
 /// sync of that authority, the patch's branches rewritten by `mutate`.
 /// The witness keeps A and D of the other branch and its caps refuse E.
-async fn sync_over_cap(forge: bool) -> cyphr_server::sync::SyncOutcome {
+#[derive(Clone, Copy, PartialEq)]
+enum Cap {
+    /// The authority's patch as it served it.
+    Honest,
+    /// E is swapped for F, a genuine commit the witness answers `Errored`.
+    Forge,
+    /// Only E is sent: the declared head is E's own commit, but the witness
+    /// is given nothing of the line below it (frame 11.3, condition 2).
+    OnlyLast,
+    /// E is signed by a key the witness holds revoked, so its answer is
+    /// neither `BranchLimit` nor `Errored` (frame 11.3, condition 3).
+    DeadSigner,
+}
+
+async fn sync_over_cap(mode: Cap) -> cyphr_server::sync::SyncOutcome {
     use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
 
     let t = theft(false).await;
     let pool = load_pool();
     let mut e = t.d.fork().await.expect("fork");
-    create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
+    let e_signer = if mode == Cap::DeadSigner {
+        "eve_ed25519"
+    } else {
+        "golden"
+    };
+    create_key(&mut e, &kp(&pool, e_signer), &kp(&pool, "alice"), NOW + 7).await;
 
     let (astate, identity, adir) = common::attestor_server().await;
     let app = cyphr_server::build_app_router(astate.clone()).expect("authority router");
@@ -3123,7 +3142,7 @@ async fn sync_over_cap(forge: bool) -> cyphr_server::sync::SyncOutcome {
     // An on-path party rewrites the branches of every patch answer; the
     // authority's signed held report is left as it signed it.
     let mutate = std::sync::Arc::new(move |body: &mut serde_json::Value| {
-        if !forge {
+        if mode != Cap::Forge && mode != Cap::OnlyLast {
             return;
         }
         let branches = body["payload"]["branches"]
@@ -3131,6 +3150,11 @@ async fn sync_over_cap(forge: bool) -> cyphr_server::sync::SyncOutcome {
             .expect("branches");
         for b in branches.iter_mut().filter(|b| b["canonical"] == true) {
             let entries = b["entries"].as_array_mut().expect("entries");
+            if mode == Cap::OnlyLast {
+                let last = entries.last().expect("entry").clone();
+                *entries = vec![last];
+                continue;
+            }
             let (id, seq, pr) = (
                 f_entry["commit_id"].clone(),
                 f_entry["sequence"].clone(),
@@ -3214,6 +3238,9 @@ async fn sync_over_cap(forge: bool) -> cyphr_server::sync::SyncOutcome {
         !errored(&wstate, &t.id).await,
         "premise: only B is extended"
     );
+    if mode == Cap::DeadSigner {
+        revoke_eve(&wstate, NOW + 7).await;
+    }
     cyphr_server::sync::sync_from_authority(&wstate, &t.id).await
 }
 
@@ -3235,7 +3262,7 @@ impl Theft {
 async fn a_cap_refused_head_must_be_the_last_entrys_own_commit() {
     use cyphr_server::sync::{SyncFailure, SyncOutcome};
 
-    let honest = sync_over_cap(false).await;
+    let honest = sync_over_cap(Cap::Honest).await;
     assert!(
         !matches!(honest, SyncOutcome::Failed { .. }),
         "a real head past the cap whose bytes are the last entry: {honest:?}"
@@ -3244,7 +3271,7 @@ async fn a_cap_refused_head_must_be_the_last_entrys_own_commit() {
     // The canonical branch of the authority is A, D, E; swap E for F, a
     // genuine commit over the witness's head that the witness answers
     // `Errored`, leaving the declared head E.
-    let swapped = sync_over_cap(true).await;
+    let swapped = sync_over_cap(Cap::Forge).await;
     assert!(
         matches!(
             swapped,
@@ -3254,4 +3281,39 @@ async fn a_cap_refused_head_must_be_the_last_entrys_own_commit() {
         ),
         "a head no entry hashes to must not be accepted: {swapped:?}"
     );
+}
+
+/// Backs conditions 2 and 3 of the head binding (frame 11.3), each with the
+/// declared head equal to the last entry's own commit (condition 1 holds):
+/// a head is accepted only when the witness holds the branch to the cap
+/// (here the line is not given, only its last entry), and only when the
+/// entries past the cap were answered `BranchLimit` or `Errored` (here the
+/// entry's signer is revoked at the witness, so it is refused as a dead
+/// key). Both are `EntryCommitmentMismatch`. Turns red if either condition
+/// is dropped.
+#[tokio::test]
+async fn a_cap_refused_head_needs_the_line_held_and_a_cap_answer() {
+    use cyphr_server::sync::{SyncFailure, SyncOutcome};
+
+    for (mode, why) in [
+        (
+            Cap::OnlyLast,
+            "the witness holds nothing of the branch below E",
+        ),
+        (
+            Cap::DeadSigner,
+            "E was refused for a reason other than the cap",
+        ),
+    ] {
+        let outcome = sync_over_cap(mode).await;
+        assert!(
+            matches!(
+                outcome,
+                SyncOutcome::Failed {
+                    reason: SyncFailure::EntryCommitmentMismatch
+                }
+            ),
+            "{why}: {outcome:?}"
+        );
+    }
 }
