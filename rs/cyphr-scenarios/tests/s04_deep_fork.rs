@@ -256,3 +256,175 @@ async fn a_taller_thief_branch_does_not_settle_a_both_extended_fork() {
 async fn two_against_two_holds_both_true_tips_at_every_server() {
     both_extended(2, 2).await;
 }
+
+/// A peer's raw `/tip` answer for `pr`, or `None` while it cannot be read.
+async fn raw_tip(h: &Harness, peer: &str, pr: &Principal) -> Option<serde_json::Value> {
+    let resp = h
+        .http
+        .get(format!("http://{}/tip", h.peer(peer).addr()))
+        .query(&[("pr", pr.0.as_str())])
+        .send()
+        .await
+        .ok()?;
+    resp.json::<serde_json::Value>().await.ok()
+}
+
+/// A signing key outside any pool.
+struct K {
+    alg: String,
+    prv: Vec<u8>,
+    pubb: Vec<u8>,
+    tmb: coz::Thumbprint,
+}
+
+fn fresh_k() -> K {
+    let g = coz::Alg::Ed25519.generate_keypair();
+    let tmb = g.alg.compute_thumbprint(&g.pub_bytes).expect("tmb");
+    K {
+        alg: g.alg.name().to_owned(),
+        prv: g.prv_bytes.clone(),
+        pubb: g.pub_bytes.clone(),
+        tmb,
+    }
+}
+
+const T: i64 = 1_700_000_000;
+
+fn key_of(k: &K) -> cyphr::Key {
+    cyphr::Key::new(k.alg.clone(), k.tmb.clone(), k.pubb.clone())
+        .expect("key binds its tmb")
+        .with_first_seen(T)
+}
+
+fn signer_of(k: &K) -> cyphr::signer::SoftwareSigner {
+    cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb)
+}
+
+/// `by` creates `new` over `p` at `now`; the commit's wire bundle.
+async fn create(p: &mut cyphr::Principal, by: &K, new: &K, now: i64) -> cyphr::replay::WireBundle {
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": by.alg, "id": new.tmb.to_b64(), "now": now,
+        "tmb": by.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create",
+    }))
+    .expect("pay");
+    let (sig, cad) = coz::sign_json(&pay, &by.alg, &by.prv, &by.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &by.alg).expect("czd");
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, Some(key_of(new)))
+        .expect("apply");
+    scope
+        .finalize_with_software(&signer_of(by), now, "cyphr.me")
+        .await
+        .expect("finalize");
+    cyphr::replay::WireBundle::of_commit(p.commits().last().expect("commit")).expect("bundle")
+}
+
+/// POST `bundle` to peer `name` directly (the proxy carries only gossip),
+/// and the status the peer answered.
+async fn post(h: &Harness, name: &str, id: &str, bundle: &cyphr::replay::WireBundle) -> u16 {
+    let mut body = serde_json::to_value(bundle).expect("bundle json");
+    body["principal_id"] = id.into();
+    h.http
+        .post(format!("http://{}/push", h.peer(name).addr()))
+        .json(&body)
+        .send()
+        .await
+        .expect("push request")
+        .status()
+        .as_u16()
+}
+
+/// The thief and the owner sign with one key, and the thief fills that
+/// key's retention quota at every server: two junk rivals X and Y beside
+/// the canonical line at p1 and p2 (the owner's O_3, O_4 canonical) and the
+/// same two at p3 (the thief's J_3, J_4 canonical, the tip taken). Gossip
+/// then offers each side's line to the other, where the quota is full: a
+/// root alone is refused by the cap, so only a root offered with its
+/// extension can land. Built from signed commits pushed straight to each
+/// server, since the CLI never sends a fork over a tip the peer holds.
+///
+/// Catches a cap that splits standing: every server must end in state
+/// Error at one fork point, not Active on whichever line it saw first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_thief_prefilling_the_shared_keys_quota_cannot_keep_a_server_active() {
+    let h = Harness::start_gossiping(&["p1", "p2", "p3"], 1)
+        .await
+        .expect("start peers");
+    h.require(CAPS).await;
+    let all = ["p1", "p2", "p3"];
+
+    // One key K: the genesis key, which every line below is signed by.
+    let k = fresh_k();
+    let mut cur = cyphr::Principal::implicit(key_of(&k))
+        .await
+        .expect("genesis");
+    cur.commit_genesis(&signer_of(&k), &[], T, "cyphr.me")
+        .await
+        .expect("genesis commit");
+    let mut chain = vec![cur.fork().await.expect("fork")];
+    let mut bundles = vec![
+        cyphr::replay::WireBundle::of_commit(cur.commits().last().expect("commit"))
+            .expect("bundle"),
+    ];
+    for i in 1..3 {
+        bundles.push(create(&mut cur, &k, &fresh_k(), T + i).await);
+        chain.push(cur.fork().await.expect("fork"));
+    }
+    let id = k.tmb.to_b64();
+    // A line of `n` commits over chain[over]; each commit's bundle.
+    let line = async |over: usize, n: usize, now: i64| {
+        let mut p = chain[over].fork().await.expect("fork");
+        let mut out = Vec::new();
+        for i in 0..n {
+            out.push(create(&mut p, &k, &fresh_k(), now + i as i64).await);
+        }
+        out
+    };
+    let (j, o) = (line(2, 2, T + 100).await, line(2, 2, T + 200).await);
+    let (x, y) = (line(1, 1, T + 300).await, line(1, 1, T + 301).await);
+
+    for name in all {
+        for (i, b) in bundles.iter().enumerate() {
+            assert_eq!(post(&h, name, &id, b).await, 201, "{name}: C_{i}");
+        }
+    }
+    h.proxy.partition("p1", "p3");
+    h.proxy.partition("p2", "p3");
+    // p3: the thief takes the tip, then fills the quota.
+    assert_eq!(post(&h, "p3", &id, &j[0]).await, 201, "J_3");
+    assert_eq!(post(&h, "p3", &id, &j[1]).await, 201, "J_4");
+    for junk in [&x[0], &y[0]] {
+        assert_eq!(post(&h, "p3", &id, junk).await, 409, "junk is retained");
+    }
+    // p1, p2: the owner's answer is canonical, and the quota is filled.
+    for name in ["p1", "p2"] {
+        assert_eq!(post(&h, name, &id, &o[0]).await, 201, "{name}: O_3");
+        assert_eq!(post(&h, name, &id, &o[1]).await, 201, "{name}: O_4");
+        for junk in [&x[0], &y[0]] {
+            assert_eq!(post(&h, name, &id, junk).await, 409, "{name}: junk");
+        }
+    }
+    h.proxy.heal("p1", "p3");
+    h.proxy.heal("p2", "p3");
+
+    let pr = Principal(id.clone());
+    h.eventually(
+        "every server to read Error at one fork point",
+        CONVERGE,
+        || async {
+            let mut points = Vec::new();
+            for peer in all {
+                let Some(tip) = raw_tip(&h, peer, &pr).await else {
+                    return Ok(false);
+                };
+                if tip["payload"]["state"] != "error" {
+                    return Ok(false);
+                }
+                points.push(tip["payload"]["fork_point"].clone());
+            }
+            Ok(points.iter().all(|p| !p.is_null() && p == &points[0]))
+        },
+    )
+    .await;
+}
