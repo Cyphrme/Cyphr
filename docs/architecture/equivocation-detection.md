@@ -217,7 +217,12 @@ evaluator: test
 
 Only the principal resolves its own fork, by one of the two acts SPEC
 §15.8 names: a new commit whose `pre` is the tip of the chosen branch,
-or a `resync/create` proof of possession re-asserting a tip. No server,
+or a `resync/create` proof of possession re-asserting a tip. The
+implementation takes only the first: a new commit resolves a fork only
+when it leaves exactly one branch extended. A fork whose branches both
+have a commit over them stays in Error at any heights, an abandoned
+branch that is extended later re-opens a resolved fork, and the
+proof-of-possession exit is not yet implemented. No server,
 witness or verifier resolves a fork, and none chooses a branch on the
 principal's behalf. After a resolution a verifier's verdict follows the
 chosen branch, names the key that signed the resolution, and keeps the

@@ -144,18 +144,18 @@ Routes that call the storage engine (`/tip`, `/patch`, `/branches`,
 principal lookups) map its failures through one function,
 `AppError::engine` (`rs/cyphr-server/src/error.rs`):
 
-| Engine failure                                                       | Status | `kind`                                           |
-| :------------------------------------------------------------------- | :----- | :----------------------------------------------- |
-| not found                                                            | `404`  | `not_found`                                      |
-| ambiguous (a digest held at several positions)                       | `409`  | `ambiguous`                                      |
-| invalid input; malformed blob                                        | `400`  | `invalid_input`, `malformed_blob`                |
-| protocol: state mismatch; commit mismatch                            | `409`  | `state_mismatch`, `commit_mismatch`              |
-| branch limit reached                                                 | `409`  | `branch_limit`                                   |
-| a signing key was revoked                                            | `401`  | none                                             |
-| principal is in Error: only a fork resolution is admitted            | `423`  | `errored`                                        |
-| any other protocol refusal                                           | `422`  | `coz_reuse`, `genesis_incomplete`, or `protocol` |
-| protocol storage failure; blob store, index, load or storage failure | `500`  | none                                             |
-| a sync of the record failed, now or earlier (durability lost)        | `500`  | none                                             |
+| Engine failure                                                         | Status | `kind`                                           |
+| :--------------------------------------------------------------------- | :----- | :----------------------------------------------- |
+| not found                                                              | `404`  | `not_found`                                      |
+| ambiguous (a digest held at several positions)                         | `409`  | `ambiguous`                                      |
+| invalid input; malformed blob                                          | `400`  | `invalid_input`, `malformed_blob`                |
+| protocol: state mismatch; commit mismatch                              | `409`  | `state_mismatch`, `commit_mismatch`              |
+| branch limit reached (principal Active; in Error the refusal is `423`) | `409`  | `branch_limit`                                   |
+| a signing key was revoked                                              | `401`  | none                                             |
+| principal is in Error: only a fork resolution is admitted              | `423`  | `errored`                                        |
+| any other protocol refusal                                             | `422`  | `coz_reuse`, `genesis_incomplete`, or `protocol` |
+| protocol storage failure; blob store, index, load or storage failure   | `500`  | none                                             |
+| a sync of the record failed, now or earlier (durability lost)          | `500`  | none                                             |
 
 A failed sync of the record is a `500` with the generic body
 `{"error":"internal storage error"}`. The engine then refuses every later
@@ -298,7 +298,7 @@ another principal is `404`, and one held at several positions is `409`.
   the commits cover (SPEC 4.8.1).
 - While the principal is in Error, `entries` stop below the fork point and
   two more payload fields appear: `fork_point` (`{height, pre}`) and
-  `branches` (`[{head, canonical, entries:[…]}]`, one per tied branch).
+  `branches` (`[{head, canonical, entries:[…]}]`, one per branch).
 - Statement: see "Signed statements". A bounded response (`to` present) is
   never signed in Active; in Error it is served unsigned when bounded.
 
@@ -599,11 +599,13 @@ An empty bundle (no `txs`, `keys` or `actions`) is `400`.
 quota refuses (`409`, `kind` `branch_limit`, or `423` while the principal is
 in Error) can still be what makes the fork two extended branches, which
 only its extension shows. A sender sends the extension with the refused
-root as `parent`: the two are one offer, kept both or neither. The server
+root as `parent`: the two are one offer, kept both or neither (a storage fault between the two writes can leave the root kept alone; it heals when the pair is offered again). The server
 keeps the pair when its quotas allow it or when it changes the principal's
 consensus state or fork point, and refuses it whole otherwise. A `parent`
 the server already holds, or can admit alone, changes nothing about how the
-bundle is answered. The field is additive and absent from the normative
+bundle is answered. In Error a refused offer answers `423` (`errored`);
+`409` applies only outside Error, or to a verified rival root the server retains while in Error; an offer the quotas refuse answers `423`
+(`slots_one_key_cannot_crowd_out_another`, `rs/cyphr-server/tests/evidence.rs:412`). The field is additive and absent from the normative
 specification of `POST /push`.
 
 **Authentication.** No bearer token is required: the bundle's own signatures

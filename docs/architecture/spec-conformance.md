@@ -48,10 +48,10 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   63 |
+| `covered`      |   64 |
 | `red-existing` |    0 |
 | `red-new`      |    0 |
-| `not-testable` |   11 |
+| `not-testable` |   10 |
 | `out-of-scope` |    2 |
 | `total`        |   76 |
 
@@ -1070,18 +1070,22 @@ evaluator: none
 
 ### [sc-l2814]
 
-SPEC 15.8, line 2814. Disposition: `not-testable`.
+SPEC 15.8, line 2814. Disposition: `covered`.
 
 - spec-line: 2814
 - source: supplement
-- disposition: not-testable
+- disposition: covered
 - spec-text: An invalid fork is resolved when the principal unambiguously selects one
-- tests: none
-- reason: Witness-side consensus states (Error until the principal resolves its own fork) have no implementation in `rs/cyphr` or `rs/cyphr-server`; the text stands and the work belongs to the consensus nodes (D1 and the gossip nodes).
+- tests:
+  - `rs/cyphr/tests/fork_rule.rs::both_extended_is_error_at_any_heights`
+  - `rs/cyphr/tests/fork_rule.rs::building_on_a_both_extended_fork_never_leaves_error`
+  - `rs/cyphr/tests/fork_rule.rs::one_extended_selects_and_the_other_extended_reopens`
+  - `rs/cyphr-storage/tests/fork_rule.rs::one_extension_resolves_and_the_abandoned_branch_reopens_it`
+- fails when: a commit takes the principal out of Error while both branches of a fork are extended, a fork is resolved by height, a commit resolves a fork without leaving exactly one branch extended, or an extended abandoned branch does not re-open a resolved fork. The proof-of-possession exit is mapped at sc-l2822.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
 ### [sc-l2822]
@@ -1093,7 +1097,7 @@ SPEC 15.8, line 2822. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: - **2. PoP assertion** - The principal signs a `resync/create` message
 - tests: none
-- reason: Depends on `resync/create`, which `rs/cyphr` has no coz kind for; the same witness-side surface as line 2814.
+- reason: Depends on `resync/create`, which `rs/cyphr` has no coz kind for; the PoP exit is not implemented (see line 2814).
 
 ```claim
 kind: requirement
