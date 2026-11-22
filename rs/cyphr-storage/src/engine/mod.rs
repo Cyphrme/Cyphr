@@ -3791,8 +3791,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         genesis: Option<crate::Genesis>,
         bundle: &WireBundle,
     ) -> Result<IngestResult, EngineError> {
-        self.submit_commit_with(principal_id, genesis, bundle, None)
-            .await
+        // Type-erased: the write path's future is deep enough that proving
+        // it `Send` at a caller that spawns a push overflows the compiler's
+        // limit, so it is proved once, here.
+        let write: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<IngestResult, EngineError>> + Send + '_>,
+        > = Box::pin(self.submit_commit_with(principal_id, genesis, bundle, None));
+        write.await
     }
 
     /// Offer a rival line root `parent` together with its one extension
@@ -4118,9 +4123,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                             ),
                         }
                         if let Some(parent) = &parent {
-                            match self
-                                .retain_pair(principal_id, &genesis, parent, bundle, principal.state())
-                                .await
+                            // Boxed: this future's type is already deep, and
+                            // the auto-trait check of a spawned push would
+                            // otherwise overflow the compiler's limit.
+                            match Box::pin(self.retain_pair(
+                                principal_id,
+                                &genesis,
+                                parent,
+                                bundle,
+                                principal.state(),
+                            ))
+                            .await
                             {
                                 Ok(true) => {
                                     return Err(EngineError::Protocol(

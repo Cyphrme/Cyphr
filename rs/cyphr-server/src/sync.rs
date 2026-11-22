@@ -620,6 +620,77 @@ fn named_keys(bundles: &[cyphr::replay::WireBundle]) -> Vec<coz::Thumbprint> {
     keys
 }
 
+/// Whether the head `head`, which the witness does not hold, is the end of
+/// a branch the witness's caps cut short (frame 11.3): all of
+/// 1. `head` is the commit id computed from the bytes of the last entry of one branch of the patch;
+/// 2. the witness holds that branch to the cap: its first entry off the witness's own chain, and
+///    the entry after it if there is one;
+/// 3. the entries past the cap were answered by the cap (`BranchLimit` or `Errored`, recorded in
+///    `cap_refused`).
+///
+/// What this does not check is that the entries past the cap chain to each
+/// other: a commit's `pre` is bound only inside its arrow. Its harm is
+/// bounded: the witness's own standing and fork point do not depend on it.
+async fn head_bound_to_a_capped_branch(
+    state: &Arc<AppState>,
+    principal_id: &str,
+    head: &cyphr::state::TaggedDigest,
+    branch_at: &[Vec<usize>],
+    bundles: &[cyphr::replay::WireBundle],
+    cap_refused: &std::collections::HashSet<usize>,
+) -> bool {
+    let Ok(branches) = state.engine.list_branches(principal_id).await else {
+        return false;
+    };
+    let retained: std::collections::HashSet<&str> = branches
+        .iter()
+        .filter(|b| !b.canonical)
+        .map(|b| b.tip.as_str())
+        .collect();
+    for positions in branch_at {
+        let ids: Vec<Option<String>> = positions
+            .iter()
+            .map(|&at| {
+                bundles
+                    .get(at)?
+                    .decode()
+                    .ok()?
+                    .commit_id(head.alg())
+                    .map(|d| d.to_string())
+            })
+            .collect();
+        if ids.last().and_then(Option::as_ref).map(String::as_str) != Some(&head.to_string()) {
+            continue;
+        }
+        let mut held = Vec::with_capacity(ids.len());
+        for id in &ids {
+            held.push(match id {
+                Some(id) => state
+                    .engine
+                    .holds_commit(principal_id, id)
+                    .await
+                    .unwrap_or(false),
+                None => false,
+            });
+        }
+        let on_chain =
+            |i: usize| held[i] && ids[i].as_deref().is_some_and(|id| !retained.contains(id));
+        let Some(first_off) = (0..ids.len()).find(|&i| !on_chain(i)) else {
+            continue;
+        };
+        let line_held = held[first_off] && held.get(first_off + 1).is_none_or(|h| *h);
+        let past_cap_answered = positions
+            .iter()
+            .skip(first_off + cyphr_storage::engine::BRANCH_DEPTH)
+            .all(|at| cap_refused.contains(at));
+        let has_past_cap = ids.len() > first_off + cyphr_storage::engine::BRANCH_DEPTH;
+        if line_held && has_past_cap && past_cap_answered {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use cyphr::HashAlg;
@@ -698,75 +769,4 @@ mod tests {
             "a binding refusal must not be reported as an unreachable upstream"
         );
     }
-}
-
-/// Whether the head `head`, which the witness does not hold, is the end of
-/// a branch the witness's caps cut short (frame 11.3): all of
-/// 1. `head` is the commit id computed from the bytes of the last entry of one branch of the patch;
-/// 2. the witness holds that branch to the cap: its first entry off the witness's own chain, and
-///    the entry after it if there is one;
-/// 3. the entries past the cap were answered by the cap (`BranchLimit` or `Errored`, recorded in
-///    `cap_refused`).
-///
-/// What this does not check is that the entries past the cap chain to each
-/// other: a commit's `pre` is bound only inside its arrow. Its harm is
-/// bounded: the witness's own standing and fork point do not depend on it.
-async fn head_bound_to_a_capped_branch(
-    state: &Arc<AppState>,
-    principal_id: &str,
-    head: &cyphr::state::TaggedDigest,
-    branch_at: &[Vec<usize>],
-    bundles: &[cyphr::replay::WireBundle],
-    cap_refused: &std::collections::HashSet<usize>,
-) -> bool {
-    let Ok(branches) = state.engine.list_branches(principal_id).await else {
-        return false;
-    };
-    let retained: std::collections::HashSet<&str> = branches
-        .iter()
-        .filter(|b| !b.canonical)
-        .map(|b| b.tip.as_str())
-        .collect();
-    for positions in branch_at {
-        let ids: Vec<Option<String>> = positions
-            .iter()
-            .map(|&at| {
-                bundles
-                    .get(at)?
-                    .decode()
-                    .ok()?
-                    .commit_id(head.alg())
-                    .map(|d| d.to_string())
-            })
-            .collect();
-        if ids.last().and_then(Option::as_ref).map(String::as_str) != Some(&head.to_string()) {
-            continue;
-        }
-        let mut held = Vec::with_capacity(ids.len());
-        for id in &ids {
-            held.push(match id {
-                Some(id) => state
-                    .engine
-                    .holds_commit(principal_id, id)
-                    .await
-                    .unwrap_or(false),
-                None => false,
-            });
-        }
-        let on_chain =
-            |i: usize| held[i] && ids[i].as_deref().is_some_and(|id| !retained.contains(id));
-        let Some(first_off) = (0..ids.len()).find(|&i| !on_chain(i)) else {
-            continue;
-        };
-        let line_held = held[first_off] && held.get(first_off + 1).is_none_or(|h| *h);
-        let past_cap_answered = positions
-            .iter()
-            .skip(first_off + cyphr_storage::engine::BRANCH_DEPTH)
-            .all(|at| cap_refused.contains(at));
-        let has_past_cap = ids.len() > first_off + cyphr_storage::engine::BRANCH_DEPTH;
-        if line_held && has_past_cap && past_cap_answered {
-            return true;
-        }
-    }
-    false
 }

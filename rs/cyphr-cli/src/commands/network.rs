@@ -149,10 +149,12 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                     }
                     .into());
                 },
-                // The peer is in Error: it refuses what does not resolve
-                // its fork (or cannot keep it past its caps), and the next
-                // commit may be the extension that shows the pair.
-                Err(PeerError::Status { status: 423, .. }) => {
+                // Over the peer's tip, a peer that turned to Error answers
+                // 423 to a root its caps refuse, and the next commit may be
+                // the extension that shows the pair. Pushed from a head the
+                // peer holds, a 423 is the peer refusing a commit that does
+                // not resolve its fork: a failure of this push.
+                Err(PeerError::Status { status: 423, .. }) if forking.is_some() => {
                     in_error = true;
                     parent = Some(&commit.bundle);
                 },
