@@ -52,18 +52,16 @@ fn bundles(ps: &[cyphr::Principal]) -> Vec<WireBundle> {
 }
 
 impl Rig {
-    /// The seam FR2 fills: `StorageEngine::submit_resync(principal_id,
-    /// genesis, pop, line)` under the principal lock. `line` carries the
-    /// commits from a held commit up to the asserted tip when the tip is
-    /// not held.
+    /// `StorageEngine::submit_resync` under the principal lock. `line`
+    /// carries the commits from a held commit up to the asserted tip when
+    /// the tip is not held.
     async fn submit_resync(
         &self,
         e: &Engine,
         pop: &serde_json::Value,
         line: &[WireBundle],
     ) -> Result<(), EngineError> {
-        let _ = (e, pop, line);
-        todo!("StorageEngine::submit_resync (FR2 12.3)")
+        e.submit_resync(&self.id, pop, line).await.map(|_| ())
     }
 
     /// Every blob the engine holds.

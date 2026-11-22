@@ -567,13 +567,7 @@ impl ResyncRecord {
     /// at the tip was checked on acceptance; like a retained branch's
     /// manifest, the record is not replayed on rebuild.
     fn check(&self) -> Result<(), String> {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        let public = Base64UrlUnpadded::decode_vec(&self.key.pub_key)
-            .map_err(|e| format!("key is not base64url: {e}"))?;
-        let tmb = Base64UrlUnpadded::decode_vec(&self.key.tmb)
-            .map(coz::Thumbprint::from_bytes)
-            .map_err(|e| format!("tmb is not base64url: {e}"))?;
-        let key = cyphr::Key::new(self.key.alg.clone(), tmb, public).map_err(|e| e.to_string())?;
+        let key = self.key.to_key().map_err(|e| e.to_string())?;
         let resync = cyphr::resync::verify_resync(&self.evidence, &key).map_err(|e| e.to_string())?;
         if resync.id != self.tip {
             return Err("the record's tip is not the proof's id".into());
@@ -786,6 +780,29 @@ struct ReplayedLine {
     line: Vec<Retained>,
     /// Each as the replay built it, for the index.
     line_commits: Vec<IndexableCommit>,
+}
+
+/// What [`StorageEngine::submit_resync`] did with a PoP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResyncReceipt {
+    /// The principal's storage key.
+    pub principal_id: String,
+    /// The asserted tip's PR.
+    pub id: String,
+    /// `false` when a PoP for this tip was already held: nothing was
+    /// stored.
+    pub stored: bool,
+    /// The PoP made the line it asserts the principal's chain.
+    pub promoted: bool,
+}
+
+/// A PoP's line replayed onto the held commit its first commit extends.
+struct Attached {
+    /// The principal after the line's last commit.
+    principal: cyphr::Principal,
+    /// Each commit as the replay built it, with the embedded principals it
+    /// was authorized through.
+    commits: Vec<(IndexableCommit, Vec<EmbeddedPin>)>,
 }
 
 /// What `retain_pair` did with an offered pair.
@@ -2483,7 +2500,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .and_then(|r| r.check().map(|()| r));
                 match checked {
                     Ok(r) => {
-                        resyncs.entry(r.principal_id).or_default().insert(r.tip);
+                        resyncs
+                            .entry(r.principal_id)
+                            .or_default()
+                            .insert(r.tip, r.evidence);
                     },
                     Err(why) => quarantined.push(QuarantinedManifest {
                         manifest: hash,
@@ -5295,7 +5315,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
         }
         let displaced_chain = self.chain(principal_id, Some(base), None).await?;
-        if displaced_chain.is_empty() {
+        // A line that extends the chain's own tip displaces nothing.
+        if displaced_chain.is_empty()
+            && self
+                .indexer
+                .get_tip(principal_id)
+                .await?
+                .is_none_or(|tip| tip.commit_count != base)
+        {
             return Err(EngineError::NotFound(format!(
                 "no commit at {base} of {principal_id}"
             )));
@@ -5473,6 +5500,372 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .unwrap_or_else(|p| p.into_inner())
             .insert(tmb, death);
         Ok(())
+    }
+
+    /// Accept a resync proof of possession (SPEC 13, 15.8 item 2) for the
+    /// tip it asserts, and keep the record: one blob per asserted PR. The
+    /// proof names a tip's Principal Root as its `id` and is signed, `now`
+    /// required and no window tested, by a key active in the state at that
+    /// tip. The tip is held, or `line` carries the commits from a held
+    /// commit up to it; a line is verified as any commit is, and its
+    /// commits not yet held are kept within the caps, or past them when
+    /// the proof would change the standing or the fork point (rule X).
+    /// Where the fork rule over everything held, the proof included, is
+    /// Active on a line that is not the chain, that line becomes the chain
+    /// outside the caps and the displaced chain is retained.
+    ///
+    /// The signer's key must not be dead at `now` (the revoke gate that
+    /// applies to any arrival, SPEC 6.4). A PoP for a tip that already
+    /// has one stores nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::InvalidInput`] for a malformed proof,
+    /// [`EngineError::NotFound`] for a principal not stored or a tip not
+    /// held and not carried, a [`EngineError::Protocol`] error when the
+    /// signer is no active key at the tip or its signature does not
+    /// verify, [`EngineError::DeadKey`] for a revoked signer, and
+    /// [`EngineError::BranchLimit`] for a line whose commits the caps
+    /// refuse and that changes nothing. A refusal stores nothing of the
+    /// proof.
+    pub async fn submit_resync(
+        &self,
+        principal_id: &str,
+        pop: &serde_json::Value,
+        line: &[WireBundle],
+    ) -> Result<ResyncReceipt, EngineError> {
+        self.writable()?;
+        self.ensure_healed().await?;
+        let resync = cyphr::resync::parse_resync(pop)
+            .map_err(|e| EngineError::InvalidInput(e.to_string()))?;
+        let signer = resync.tmb.to_b64();
+        if self
+            .revoked()
+            .get(&signer)
+            .is_some_and(|death| resync.now >= death.wrt)
+        {
+            return Err(EngineError::DeadKey { key: signer });
+        }
+        let principal_id = self.stored_id(principal_id).await?.ok_or_else(|| {
+            EngineError::NotFound(format!("no principal {principal_id} is stored"))
+        })?;
+        let principal_id = principal_id.as_str();
+        let genesis = self.genesis_of_stored(principal_id).await?;
+        let lock = self.principal_lock(principal_id);
+        let write = Self::lock_writes(&lock, principal_id).await;
+        let line = line
+            .iter()
+            .map(canonical_bundle)
+            .collect::<Result<Vec<_>, _>>()?;
+        let receipt = |stored, promoted| ResyncReceipt {
+            principal_id: principal_id.to_string(),
+            id: resync.id.clone(),
+            stored,
+            promoted,
+        };
+        if self.asserted_of(principal_id).contains(&resync.id) {
+            return Ok(receipt(false, false));
+        }
+
+        // The state at the asserted tip, where the signer is read.
+        let stored = self.stored_entries(principal_id, None).await?;
+        let rivals = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .cloned()
+            .unwrap_or_default();
+        let by_pr: HashMap<(u64, &str), &Retained> = rivals
+            .iter()
+            .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
+            .collect();
+        let mut carried: Vec<(IndexableCommit, Vec<EmbeddedPin>)> = Vec::new();
+        let state = if let Some(at) = stored.prs.iter().position(|pr| *pr == resync.id) {
+            let mut principal =
+                Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new())
+                    .await?;
+            let source = PinSource::stored();
+            for (position, (entry, pins)) in stored
+                .entries
+                .iter()
+                .zip(&stored.pins)
+                .enumerate()
+                .take(at + 1)
+            {
+                self.replay_pinned(&mut principal, &source, entry, pins, position, EMBED_DEPTH)
+                    .await?;
+            }
+            principal
+        } else if let Some(rival) = rivals.iter().find(|r| r.pr == resync.id) {
+            self.replay_line(principal_id, &genesis, &stored, &by_pr, rival)
+                .await?
+                .ok_or_else(|| {
+                    EngineError::MalformedBlob(format!(
+                        "the retained line to {} no longer replays",
+                        resync.id
+                    ))
+                })?
+                .principal
+        } else if line.is_empty() {
+            return Err(EngineError::NotFound(format!(
+                "the asserted tip {} is not held and no line carries it",
+                resync.id
+            )));
+        } else {
+            let tip = self.indexer.get_tip(principal_id).await?.ok_or_else(|| {
+                EngineError::NotFound(format!("principal {principal_id} has no tip"))
+            })?;
+            let verified = self
+                .verified(principal_id, Some(&genesis), &tip, &write)
+                .await?;
+            let attached = self
+                .attach_line(
+                    principal_id,
+                    &genesis,
+                    &stored,
+                    &rivals,
+                    &by_pr,
+                    verified.principal.state(),
+                    &line,
+                    &resync.id,
+                )
+                .await?
+                .ok_or_else(|| {
+                    EngineError::NotFound(format!(
+                        "the line does not extend a held commit up to {}",
+                        resync.id
+                    ))
+                })?;
+            // Arrivals pass the revoke gate; a commit already held is
+            // not judged again (SPEC 14.12).
+            let revoked = self.revoked();
+            for bundle in line.iter().take(attached.commits.len()) {
+                let hashes: Vec<Blake3Hash> = bundle
+                    .cozies()
+                    .map(|b| Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))
+                    .collect();
+                let held = self.is_retained(principal_id, &hashes, &Shape::of(bundle))
+                    || self.is_already_stored(principal_id, bundle).await?;
+                if !held && let Some(dead) = dead_key_in(bundle, &revoked) {
+                    return Err(dead);
+                }
+            }
+            carried = attached.commits;
+            attached.principal
+        };
+        let key = state
+            .state()
+            .get_key(&resync.tmb)
+            .filter(|_| state.is_key_active(&resync.tmb))
+            .ok_or(EngineError::Protocol(cyphr::Error::UnknownKey))?;
+        cyphr::resync::verify_resync(pop, key)
+            .map_err(|_| EngineError::Protocol(cyphr::Error::InvalidSignature))?;
+        let record_key = KeyEntry::of(key);
+
+        // What the proof does to the verdict over everything held.
+        let lowest = carried.iter().map(|(c, _)| c.sequence).min();
+        let mut asserted = self.asserted_of(principal_id);
+        let held = self.held_with(principal_id, lowest).await?;
+        let before = assessment(&held, &asserted);
+        let mut with_line = held;
+        with_line.extend(carried.iter().map(|(c, _)| held_of(c)));
+        asserted.push(resync.id.clone());
+        let after = assessment(&with_line, &asserted);
+        let chain_tip = self
+            .indexer
+            .get_tip(principal_id)
+            .await?
+            .map(|t| t.commit_id);
+        let promote = after.consensus == Consensus::Active
+            && after.heads.first().map(String::as_str) != chain_tip.as_deref();
+        let force = promote
+            || after.consensus != before.consensus
+            || after.fork_point != before.fork_point;
+
+        // I1 order: the carried commits, then the record, then the chain.
+        for ((commit, embedded), bundle) in carried.into_iter().zip(&line) {
+            if let Err(refusal) = self
+                .keep_branch_with(bundle, commit, embedded.as_slice(), force)
+                .await
+            {
+                return Err(self.answer_in_error(principal_id, refusal).await);
+            }
+        }
+        let mut bytes = RESYNC_RECORD_PREFIX.to_vec();
+        serde_json::to_writer(
+            &mut bytes,
+            &ResyncRecord {
+                principal_id: principal_id.to_string(),
+                tip: resync.id.clone(),
+                evidence: pop.clone(),
+                key: record_key,
+            },
+        )
+        .map_err(|e| EngineError::MalformedBlob(format!("resync record serialize: {e}")))?;
+        self.blob_store.put(&bytes).await?;
+        self.persist_record().await?;
+        self.resyncs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(principal_id.to_string())
+            .or_default()
+            .insert(resync.id.clone(), pop.clone());
+        if !promote {
+            return Ok(receipt(true, false));
+        }
+
+        let head = after.heads.first().cloned().unwrap_or_default();
+        let rivals = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .cloned()
+            .unwrap_or_default();
+        let by_pr: HashMap<(u64, &str), &Retained> = rivals
+            .iter()
+            .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
+            .collect();
+        let rival = rivals.iter().find(|r| r.tip.tip == head).ok_or_else(|| {
+            EngineError::Indexer(crate::index::IndexerError::Consistency(format!(
+                "the head {head} of {principal_id} is neither the chain's tip nor retained"
+            )))
+        })?;
+        let ReplayedLine {
+            line,
+            mut line_commits,
+            ..
+        } = self
+            .replay_line(principal_id, &genesis, &stored, &by_pr, rival)
+            .await?
+            .ok_or_else(|| {
+                EngineError::MalformedBlob(format!("the retained line to {head} no longer replays"))
+            })?;
+        self.promote_branch(principal_id, &line, &mut line_commits, None)
+            .await?;
+        Ok(receipt(true, true))
+    }
+
+    /// Replay `line` onto the held commit its first commit extends, each
+    /// commit through the admission path's own [`Self::build_commit`]: the
+    /// canonical states in turn, then each retained rival's. The replay
+    /// ends at the commit whose Principal Root is `target`; commits past
+    /// it are not read, so a peer's whole chain from a fork can be offered
+    /// as the line to any tip on it. `None` when no held commit takes it,
+    /// the line never reaches `target`, or no key of the principal signed
+    /// its first commit (checked first, so a stranger's line costs its own
+    /// size). Caller holds the principal's write lock.
+    #[allow(clippy::too_many_arguments)]
+    async fn attach_line(
+        &self,
+        principal_id: &str,
+        genesis: &crate::Genesis,
+        stored: &StoredChain,
+        rivals: &[Retained],
+        by_pr: &HashMap<(u64, &str), &Retained>,
+        tip: &cyphr::PrincipalState,
+        line: &[WireBundle],
+        target: &str,
+    ) -> Result<Option<Attached>, EngineError> {
+        let retained: Vec<KeyEntry> = rivals.iter().flat_map(|r| r.keys.clone()).collect();
+        let Some(first) = line.first() else {
+            return Ok(None);
+        };
+        let Some(signers) = authenticated_signers(first, tip, &retained) else {
+            return Ok(None);
+        };
+        let source = PinSource::stored();
+        let mut held = HeldCache::new();
+        let mut principal =
+            Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new())
+                .await?;
+        for position in 0..=stored.entries.len() {
+            let tried = signers.iter().all(|t| {
+                principal.is_key_active(t)
+                    || (tip.key_ever_held(t).is_none() && principal.has_kt_digests())
+            });
+            if tried
+                && let Some(attached) = self
+                    .try_line(
+                        principal_id,
+                        &principal,
+                        position as u64,
+                        line,
+                        target,
+                        &mut held,
+                    )
+                    .await?
+            {
+                return Ok(Some(attached));
+            }
+            if let Some((entry, pins)) = stored.entries.get(position).zip(stored.pins.get(position))
+            {
+                self.replay_pinned(&mut principal, &source, entry, pins, position, EMBED_DEPTH)
+                    .await?;
+            }
+        }
+        for rival in rivals {
+            let Some(replayed) = self
+                .replay_line(principal_id, genesis, stored, by_pr, rival)
+                .await?
+            else {
+                continue;
+            };
+            let sequence = rival.tip.sequence + 1;
+            if let Some(attached) = self
+                .try_line(
+                    principal_id,
+                    &replayed.principal,
+                    sequence,
+                    line,
+                    target,
+                    &mut held,
+                )
+                .await?
+            {
+                return Ok(Some(attached));
+            }
+        }
+        Ok(None)
+    }
+
+    /// `line` replayed over `parent`, its first commit at `sequence`, up to
+    /// the commit whose Principal Root is `target`: `None` at the first
+    /// commit that does not verify, or when none reaches `target`.
+    async fn try_line(
+        &self,
+        principal_id: &str,
+        parent: &cyphr::Principal,
+        sequence: u64,
+        line: &[WireBundle],
+        target: &str,
+        held: &mut HeldCache<S>,
+    ) -> Result<Option<Attached>, EngineError> {
+        let mut principal = parent.fork().await?;
+        let mut commits = Vec::with_capacity(line.len());
+        for (i, bundle) in line.iter().enumerate() {
+            let Ok(embedded) = self
+                .follow_held(principal_id, &mut principal, bundle, held)
+                .await
+            else {
+                return Ok(None);
+            };
+            let Ok(Some(build)) =
+                Self::build_commit(&mut principal, bundle, principal_id, sequence + i as u64).await
+            else {
+                return Ok(None);
+            };
+            let StagedBuild { commit, staged, .. } = build;
+            if staged.commit().await.is_err() {
+                return Ok(None);
+            }
+            commits.push((commit, embedded));
+            if principal.pr_tagged().is_ok_and(|pr| pr == target) {
+                return Ok(Some(Attached { principal, commits }));
+            }
+        }
+        Ok(None)
     }
 
     /// Keep a commit refused because the principal is in Error, as
@@ -6039,8 +6432,22 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(principal_id)
-            .map(|prs| prs.iter().cloned().collect())
+            .map(|held| held.keys().cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// The resync PoPs held for `principal_id`, one per asserted tip, as
+    /// the `{pay, sig}` coz each arrived in: what a peer fetches to reach
+    /// the same verdict ([`Self::submit_resync`]).
+    pub async fn resyncs(&self, principal_id: &str) -> Result<Vec<serde_json::Value>, EngineError> {
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        Ok(self
+            .resyncs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&principal_id)
+            .map(|held| held.values().cloned().collect())
+            .unwrap_or_default())
     }
 
     /// [`assessment`] of `held` with the PoPs this engine holds for
@@ -6528,8 +6935,9 @@ struct Death {
 /// records (I1).
 type Revoked = HashMap<String, Death>;
 
-/// The PRs each principal's held resync PoPs assert, by principal id.
-type Resyncs = HashMap<String, std::collections::BTreeSet<String>>;
+/// Each principal's held resync PoPs (the verified `{pay, sig}` coz) by
+/// the PR they assert.
+type Resyncs = HashMap<String, std::collections::BTreeMap<String, serde_json::Value>>;
 
 /// Key death at admission (SPEC 6.4), the one check every path that hands
 /// the engine a bundle passes (`/push`, gossip, witness sync, a verifier's
@@ -6559,7 +6967,9 @@ type Resyncs = HashMap<String, std::collections::BTreeSet<String>>;
 /// The key's holder chooses `now`, so a holder of a compromised key can
 /// date a commit below the cutoff. That is not prevented here: the owner
 /// recovers by mutating the principal forward (SPEC 14.12), since Cyphr
-/// does not use reversion.
+/// does not use reversion. Where that leaves both branches extended, the
+/// fork is in Error (rule E) and the exit is a resync PoP asserting the
+/// owner's tip ([`StorageEngine::submit_resync`], SPEC 15.8 item 2).
 ///
 /// Refusal-only: it reads each coz's declared `pay.tmb`, `pay.typ` and
 /// `pay.now` before any signature is checked, so a forgery
@@ -6728,7 +7138,7 @@ fn walk_chains(
                     .flatten()
                     .map(|(_, _, m)| held_of(&m.commit))
                     .collect();
-                let prs: Vec<String> = prs.iter().cloned().collect();
+                let prs: Vec<String> = prs.keys().cloned().collect();
                 let a = assessment(&held, &prs);
                 match (a.consensus, a.heads.as_slice()) {
                     (Consensus::Active, [head]) => Some(head.clone()),
