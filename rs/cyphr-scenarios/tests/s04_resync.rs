@@ -98,6 +98,21 @@ async fn s04_a_second_branchs_pop_is_error_for_good() {
     })
     .await;
 
+    // A client on one branch must read what the servers read. Alice holds
+    // her own branch and its PoP; the thief's PoP names a commit she does
+    // not hold, and still makes the fork Error for good. Neither her
+    // verdict nor a relying party's sign-in may read Active on her branch.
+    let own = h.ok(alice.verdict(&pr, &all).await);
+    assert_eq!(
+        own.standing,
+        Standing::Error,
+        "the owner's own client must not read Active past the thief's PoP"
+    );
+    let rp = h.ok(h.start_relying_party().await);
+    if let Ok(session) = alice.sign_in(&rp).await {
+        panic!("a relying party signed in during Error: {session:?}");
+    }
+
     // The owner's second PoP, on her tip again, does not leave it.
     h.ok(alice.resync(&pr).await);
     for peer in all {
