@@ -606,6 +606,29 @@ impl Client<'_> {
             .ok_or_else(|| ActionError::Failed(format!("`{}` holds no key for {}", self.name, p.0)))
     }
 
+    /// Every commit this device holds for `p`, as `cyphr export` writes
+    /// them: one JSON bundle line per commit, in chain order (`txs`, `keys`,
+    /// `commit_id`, roots), action-only lines left out. A scenario that must
+    /// place a fork where the CLI's own push refuses to (it never sends a
+    /// commit over a tip the peer holds) posts these lines to a peer itself.
+    pub async fn exported_commits(&self, p: &Principal) -> ActionResult<Vec<serde_json::Value>> {
+        let file = self.dev.scratch("commits.jsonl");
+        let path = file.to_string_lossy();
+        self.cyphr(&["export", "--identity", &p.0, "--output", &path])
+            .await?;
+        let text = std::fs::read_to_string(&file)
+            .map_err(|e| ActionError::Failed(format!("reading {}: {e}", file.display())))?;
+        let mut lines = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let v: serde_json::Value = serde_json::from_str(line)
+                .map_err(|e| ActionError::Failed(format!("export line: {e}")))?;
+            if v["txs"].as_array().is_some_and(|t| !t.is_empty()) {
+                lines.push(v);
+            }
+        }
+        Ok(lines)
+    }
+
     fn know(&self, p: &Principal, peers: &[&str]) {
         let mut st = self.state();
         let known = st.peers.entry(p.0.clone()).or_default();

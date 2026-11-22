@@ -428,3 +428,116 @@ async fn a_thief_prefilling_the_shared_keys_quota_cannot_keep_a_server_active() 
     )
     .await;
 }
+
+/// The same pre-fill, with the owner's answer arriving only through the CLI
+/// (the owner's `push`). The thief signs with the owner's laptop key (a
+/// copy of the device): it holds the tip, J_1, J_2, at p1, p2 and p3, and
+/// the key's full quota there, junk X and Y. Its commits are built with the
+/// CLI and posted straight to each server from `cyphr export`, because the
+/// CLI never sends a commit over a tip the peer holds, so no client can
+/// place a rival beside a canonical line. The owner's A_1, A_2, signed by
+/// the same key over the base, must then land at every server.
+///
+/// Red until the CLI sends the fork. It refuses at
+/// `rs/cyphr-cli/src/commands/network.rs:92-105` (`push`): `held_position`
+/// finds the peer's tip in no local history and returns `PeerError::Stale`
+/// ("is not in the local history", :99-103) before sending anything; and
+/// `push_commit` (:112) sends one bundle per request, with no `parent` and no
+/// resend after a `branch_limit` answer, so a root a full quota refuses
+/// could not land even if the tip check passed.
+///
+/// Catches a CLI that cannot answer a thief's tip: every server must end in
+/// state Error at one fork point, not Active on the thief's line.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owner_answers_a_thiefs_tip_through_the_cli() {
+    let h = Harness::start_gossiping(&["p1", "p2", "p3"], 1)
+        .await
+        .expect("start peers");
+    h.require(CAPS).await;
+    let servers = ["p1", "p2", "p3"];
+    let (alice, laptop) = (h.client("alice"), h.client("alice-laptop"));
+    let (tj, tx, ty) = (
+        h.client("thief-j"),
+        h.client("thief-x"),
+        h.client("thief-y"),
+    );
+
+    // The owner answers from the laptop, whose key the thief copies.
+    let pr = h.ok(alice.create_principal().await);
+    let key = h.ok(alice.pair_device(&pr, &laptop).await);
+    h.ok(alice.push(&pr, &servers).await).accepted("base push");
+    let base = h.ok(laptop.exported_commits(&pr).await).len();
+    for thief in [&tj, &tx, &ty] {
+        h.ok(thief.steal_key(&laptop, &key).await);
+    }
+    for n in 0..2 {
+        h.ok(tj.commit_data(&pr, &format!("thief line {n}")).await);
+    }
+    h.ok(tx.commit_data(&pr, "junk x").await);
+    h.ok(ty.commit_data(&pr, "junk y").await);
+
+    // The thief takes the tip and fills the key's quota at every server.
+    // An export line carries each coz as a JSON object; the push body
+    // carries it as the base64url of its JSON.
+    let wire = |line: &serde_json::Value| {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        let enc = |coz: &serde_json::Value| {
+            Base64UrlUnpadded::encode_string(&serde_json::to_vec(coz).expect("coz json"))
+        };
+        let txs: Vec<Vec<String>> = line["txs"]
+            .as_array()
+            .expect("txs")
+            .iter()
+            .map(|tx| tx.as_array().expect("tx").iter().map(enc).collect())
+            .collect();
+        serde_json::json!({"principal_id": pr.0, "txs": txs, "keys": line["keys"]})
+    };
+    let post = async |peer: &str, line: &serde_json::Value| {
+        h.http
+            .post(format!("http://{}/push", h.peer(peer).addr()))
+            .json(&wire(line))
+            .send()
+            .await
+            .expect("push request")
+            .status()
+            .as_u16()
+    };
+    let line = async |c: &Client<'_>| h.ok(c.exported_commits(&pr).await).split_off(base);
+    let (j, x, y) = (line(&tj).await, line(&tx).await, line(&ty).await);
+    assert_eq!(
+        (j.len(), x.len(), y.len()),
+        (2, 1, 1),
+        "the thief's commits"
+    );
+    for peer in servers {
+        assert_eq!(post(peer, &j[0]).await, 201, "{peer}: J_1");
+        assert_eq!(post(peer, &j[1]).await, 201, "{peer}: J_2");
+        assert_eq!(post(peer, &x[0]).await, 409, "{peer}: junk x is retained");
+        assert_eq!(post(peer, &y[0]).await, 409, "{peer}: junk y is retained");
+    }
+
+    // The owner's answer, only by the CLI.
+    for n in 0..2 {
+        h.ok(laptop.commit_data(&pr, &format!("owner answer {n}")).await);
+    }
+    h.ok(laptop.push(&pr, &servers).await);
+
+    h.eventually(
+        "every server to read Error at one fork point",
+        CONVERGE,
+        || async {
+            let mut points = Vec::new();
+            for peer in servers {
+                let Some(tip) = raw_tip(&h, peer, &pr).await else {
+                    return Ok(false);
+                };
+                if tip["payload"]["state"] != "error" {
+                    return Ok(false);
+                }
+                points.push(tip["payload"]["fork_point"].clone());
+            }
+            Ok(points.iter().all(|p| !p.is_null() && p == &points[0]))
+        },
+    )
+    .await;
+}
