@@ -10,15 +10,10 @@
 use cyphr::fork::{Assessment, Consensus, Held, assessment};
 use proptest::prelude::*;
 
-/// The seam FR2 fills: `assessment(held, asserted)` over the PRs of held
-/// commits that carry a valid held PoP. Until the function takes the
-/// second argument, a non-empty set has no evaluator, and this fails
-/// there; the empty set is today's rule E.
+/// `assessment(held, asserted)` over the PRs of held commits that carry a
+/// valid held PoP.
 fn assess(held: &[Held], asserted: &[String]) -> Assessment {
-    if asserted.is_empty() {
-        return assessment(held);
-    }
-    todo!("cyphr::fork::assessment(held, asserted): rule E with resync assertions (FR2 12.2)")
+    assessment(held, asserted)
 }
 
 fn held_of(i: usize, sequence: u64, parent: Option<usize>) -> Held {

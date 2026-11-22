@@ -4971,7 +4971,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         let mut after = self.held_with(principal_id, lowest).await?;
                         after.push(held_of(&root_commit));
                         after.push(held_of(&ext_commit));
-                        let after = assessment(&after);
+                        let after = assessment(&after, &[]);
                         after.consensus == Consensus::Active
                             && after.heads
                                 == [ext_commit.commit_ids.first().cloned().unwrap_or_default()]
@@ -5140,7 +5140,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let next_id = next_commit.commit_ids.first().cloned().unwrap_or_default();
             let mut after = before.clone();
             after.push(held_of(&next_commit));
-            let after = assessment(&after);
+            let after = assessment(&after, &[]);
             if after.consensus == Consensus::Error || after.heads != [next_id] {
                 if in_error(&before) {
                     // SPEC 15.5: it leaves nothing standing, so it is
@@ -5529,10 +5529,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         offer: &[&IndexableCommit],
     ) -> Result<bool, EngineError> {
         let lowest = offer.iter().map(|c| c.sequence).min();
-        let before = assessment(&self.held_with(principal_id, lowest).await?);
+        let before = assessment(&self.held_with(principal_id, lowest).await?, &[]);
         let mut held = self.held_with(principal_id, lowest).await?;
         held.extend(offer.iter().map(|c| held_of(c)));
-        let after = assessment(&held);
+        let after = assessment(&held, &[]);
         Ok(after.consensus != before.consensus || after.fork_point != before.fork_point)
     }
 
@@ -5717,7 +5717,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
         let held = self.held(&principal_id).await?;
-        Ok(assessment(&held))
+        Ok(assessment(&held, &[]))
     }
 
     /// The principal's fork point and heads while it is in Error, `None`
@@ -5798,7 +5798,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
     ) -> Result<Option<(ForkPoint, Vec<HeldHead>)>, EngineError> {
         let held = self.held(principal_id).await?;
-        let assessed = assessment(&held);
+        let assessed = assessment(&held, &[]);
         let Some(fork_point) = assessed.fork_point else {
             return Ok(None);
         };
@@ -5988,7 +5988,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         held.extend(self.retained_held(principal_id));
         if self.kept_shadow {
             let fresh = self.held_from(principal_id, from).await?;
-            if format!("{:?}", assessment(&held)) != format!("{:?}", assessment(&fresh)) {
+            if format!("{:?}", assessment(&held, &[])) != format!("{:?}", assessment(&fresh, &[])) {
                 self.kept_divergences
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let why = format!(
@@ -6497,7 +6497,7 @@ fn held_of(commit: &IndexableCommit) -> Held {
 
 /// Whether a principal is in Error: [`assessment`]'s consensus.
 fn in_error(held: &[Held]) -> bool {
-    assessment(held).consensus == Consensus::Error
+    assessment(held, &[]).consensus == Consensus::Error
 }
 
 /// Whether the principal `held` describes, in Error, stays in Error once

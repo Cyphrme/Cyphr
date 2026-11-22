@@ -357,7 +357,7 @@ impl RelyingParty {
     ) -> std::collections::BTreeSet<String> {
         let mut all: Vec<cyphr::fork::Held> = chain.to_vec();
         all.extend(self.branches.values().chain(extra).cloned());
-        let assessed = cyphr::fork::assessment(&all);
+        let assessed = cyphr::fork::assessment(&all, &[]);
         let abandoned: std::collections::BTreeSet<&str> = assessed
             .forks
             .iter()
@@ -578,7 +578,7 @@ impl RelyingParty {
         }
         let mut held = chain.clone();
         held.extend(self.branches.values().cloned());
-        let assessed = cyphr::fork::assessment(&held);
+        let assessed = cyphr::fork::assessment(&held, &[]);
         if assessed.consensus == cyphr::fork::Consensus::Error {
             return Some(Refusal::Forked);
         }

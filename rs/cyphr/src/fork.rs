@@ -5,7 +5,7 @@
 //! a principal's commits; this module is where they all read the same
 //! answer from them.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// A principal's consensus state (SPEC 15.5), as far as forks decide it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -103,6 +103,17 @@ pub struct Held {
 /// are the leaves at or above the children of the contest the walk cannot
 /// pass, sorted: each is a tip the principal can assert to resolve.
 ///
+/// `asserted` is the Principal Roots of held commits that carry a valid
+/// held `resync/create` proof of possession (SPEC 15.8 item 2). At a
+/// contest, the children whose subtree holds an asserted commit decide
+/// it: one is followed whatever is extended elsewhere, so a later
+/// extension of the abandoned branch does not re-open the fork; more
+/// than one is Error for good, since no commit or proof leaves it; none
+/// is rule E as above. Assertions at or below the fork point, or naming
+/// nothing held, select no child and change nothing. The heads in Error
+/// stay every leaf at or above the stopping contest's children, asserted
+/// or not.
+///
 /// Every held commit counts: each was admitted when it arrived, a revoke
 /// only gates what arrives after it, and a held message is never judged
 /// again (SPEC 14.12: "Cyphr does not use reversion"; the spec author on
@@ -117,7 +128,7 @@ pub struct Held {
 /// and a verifier holding the same commits reaches the same verdict,
 /// heads and selections as a peer. Held order and duplicates change
 /// nothing.
-pub fn assessment(held: &[Held]) -> Assessment {
+pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
     use std::collections::BTreeMap;
 
     // The distinct held commits over each (position, pre).
@@ -135,6 +146,29 @@ pub fn assessment(held: &[Held]) -> Assessment {
             .unwrap_or_default()
     };
     let extended = |c: &Held| over.contains_key(&(c.sequence + 1, Some(c.pr.as_str())));
+
+    // The held commits whose subtree holds an asserted commit (the
+    // commit itself included): each asserted commit and its held
+    // ancestors. Asserted PRs naming nothing held select nothing.
+    let by_pr: HashMap<(u64, &str), &Held> = held
+        .iter()
+        .map(|h| ((h.sequence, h.pr.as_str()), h))
+        .collect();
+    let asserted: HashSet<&str> = asserted.iter().map(String::as_str).collect();
+    let mut asserts: HashSet<&str> = HashSet::new();
+    for h in held.iter().filter(|h| asserted.contains(h.pr.as_str())) {
+        let mut cur = Some(h);
+        while let Some(c) = cur {
+            if !asserts.insert(c.id.as_str()) {
+                break;
+            }
+            cur = c
+                .pre
+                .as_deref()
+                .zip(c.sequence.checked_sub(1))
+                .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
+        }
+    }
 
     // The children of the virtual root: the held commits no held commit
     // precedes, at the lowest position that has one. A whole record has
@@ -159,14 +193,21 @@ pub fn assessment(held: &[Held]) -> Assessment {
     while !children.is_empty() {
         let next = match children.as_slice() {
             [only] => Some(*only),
-            many => match many
-                .iter()
-                .copied()
-                .filter(|c| extended(c))
-                .collect::<Vec<&Held>>()[..]
-            {
-                [only] => Some(only),
-                _ => None,
+            many => {
+                let pick = |keep: &dyn Fn(&Held) -> bool| -> Vec<&Held> {
+                    many.iter().copied().filter(|c| keep(c)).collect()
+                };
+                // A PoP decides the contest: one asserted child is
+                // followed whatever is extended elsewhere, more than one
+                // is Error for good, none leaves the choice to rule E.
+                match pick(&|c| asserts.contains(c.id.as_str()))[..] {
+                    [only] => Some(only),
+                    [] => match pick(&|c| extended(c))[..] {
+                        [only] => Some(only),
+                        _ => None,
+                    },
+                    _ => None,
+                }
             },
         };
         let Some(next) = next else {
