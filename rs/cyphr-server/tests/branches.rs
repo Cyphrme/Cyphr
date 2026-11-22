@@ -2234,9 +2234,10 @@ async fn fork_table_two_extended_branches_stay_error_whatever_their_heights() {
                 "F is the third commit of a retained line, past the depth cap"
             );
         }
-        // E and F extend a held line; G extends F, which is not held, so
-        // it has no `pre` to verify against and is answered as a mismatch.
-        if row == 4 || row == 5 {
+        // The principal is in Error from row 3: whether the commit extends
+        // a held line (E, F) or one that is not held (G on F), and whether
+        // or not it is kept, the refusal is the Error answer (423).
+        if row >= 4 {
             assert_eq!(status, ERRORED, "row {row}: refused, Error stands");
         }
         drop((app, state));
@@ -2947,4 +2948,310 @@ async fn caught_up_patch_is_signed_whatever_the_anchor_spelling() {
             "{anchor}: an empty range at the tip is attested: {body:?}"
         );
     }
+}
+
+// ========================================================================
+// Rule X over the wire (frame section 11): a pair carries its parent, and a
+// witness binds a head its caps refused to the bytes of the entry that
+// names it.
+// ========================================================================
+
+/// A one-key principal with chain C_0..C_2 (all signed by `golden`), the
+/// thief's J_3, J_4 over C_2, two junk rivals X, Y beside C_2 over C_1 (the
+/// key's whole quota), and the owner's answer O_3, O_4 over C_2.
+struct Prefilled {
+    id: String,
+    chain: Vec<cyphr::Principal>,
+    j: Vec<cyphr::Principal>,
+    x: cyphr::Principal,
+    y: cyphr::Principal,
+    o: Vec<cyphr::Principal>,
+}
+
+async fn prefilled() -> Prefilled {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let (c0, id) = genesis(&[&g], NOW + 2).await;
+    let mut chain = vec![c0];
+    for (i, name) in ["key_a", "key_b"].iter().enumerate() {
+        let mut p = chain[i].fork().await.expect("fork");
+        create_key(&mut p, &g, &kp(&pool, name), NOW + 3 + i as i64).await;
+        chain.push(p);
+    }
+    let extend = async |from: &cyphr::Principal, names: &[&str], now: i64| {
+        let mut out = Vec::new();
+        let mut cur = from.fork().await.expect("fork");
+        for (i, name) in names.iter().enumerate() {
+            create_key(&mut cur, &g, &kp(&pool, name), now + i as i64).await;
+            out.push(cur.fork().await.expect("fork"));
+        }
+        out
+    };
+    let j = extend(&chain[2], &["alice", "bob"], NOW + 10).await;
+    let x = extend(&chain[1], &["carol"], NOW + 20).await.remove(0);
+    let y = extend(&chain[1], &["diana_es384"], NOW + 21)
+        .await
+        .remove(0);
+    let o = extend(&chain[2], &["carol", "eve_ed25519"], NOW + 30).await;
+    Prefilled {
+        id,
+        chain,
+        j,
+        x,
+        y,
+        o,
+    }
+}
+
+/// Backs the `parent` field of `POST /push`: a root the key's full quota
+/// refuses answers `branch_limit`, and its extension pushed with the root
+/// as `parent` lands the pair, which changes the standing to Error. Turns
+/// red if the request cannot carry a parent (the extension alone is an
+/// orphan and nothing lands), or the root alone is not refused with the
+/// cap's answer. End to end.
+#[tokio::test]
+async fn push_with_a_parent_lands_a_pair_at_a_quota_full_server() {
+    let f = prefilled().await;
+    let (state, _dir) = keyless_server();
+    let app = build_router(state.clone());
+    for (i, p) in f.chain.iter().enumerate() {
+        assert_eq!(push(&app, p, i, &f.id).await, StatusCode::CREATED, "C_{i}");
+    }
+    assert_eq!(
+        push(&app, &f.j[0], 3, &f.id).await,
+        StatusCode::CREATED,
+        "J_3"
+    );
+    assert_eq!(
+        push(&app, &f.j[1], 4, &f.id).await,
+        StatusCode::CREATED,
+        "J_4"
+    );
+    for (junk, name) in [(&f.x, "X"), (&f.y, "Y")] {
+        let status = push(&app, junk, 2, &f.id).await;
+        assert!(status.is_client_error(), "{name} is retained: {status}");
+    }
+    assert!(
+        !errored(&state, &f.id).await,
+        "premise: Active on the thief's tip"
+    );
+
+    // Without `parent` the root answers the cap.
+    let (status, body) = post_json(app.clone(), "/push", wire(&f.o[0], 3, &f.id)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body:?}");
+    assert_eq!(body["payload"]["kind"], "branch_limit", "{body:?}");
+
+    // With `parent` the pair lands.
+    let mut request: serde_json::Value =
+        serde_json::from_str(&wire(&f.o[1], 4, &f.id)).expect("request json");
+    let mut parent: serde_json::Value =
+        serde_json::from_str(&wire(&f.o[0], 3, &f.id)).expect("parent json");
+    parent
+        .as_object_mut()
+        .expect("object")
+        .remove("principal_id");
+    request["parent"] = parent;
+    let (status, body) = post_json(app.clone(), "/push", request.to_string()).await;
+    assert!(
+        status == StatusCode::CONFLICT || status == StatusCode::CREATED,
+        "the pair is answered as a retained fork: {status} {body:?}"
+    );
+    for (p, i) in [(&f.o[0], 3), (&f.o[1], 4)] {
+        let id = commit_id_at(p, i);
+        let held = state
+            .engine
+            .holds_commit(&f.id, id.as_str().expect("id"))
+            .await
+            .expect("holds");
+        assert!(held, "commit {i} of the pair is held");
+    }
+    assert!(
+        errored(&state, &f.id).await,
+        "both branches are now extended: Error"
+    );
+}
+
+/// A witness holding B, C as its own chain, an authority in Error holding
+/// A, D, E as its canonical branch with B, C beside it, and the witness's
+/// sync of that authority, the patch's branches rewritten by `mutate`.
+/// The witness keeps A and D of the other branch and its caps refuse E.
+async fn sync_over_cap(forge: bool) -> cyphr_server::sync::SyncOutcome {
+    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
+
+    let t = theft(false).await;
+    let pool = load_pool();
+    let mut e = t.d.fork().await.expect("fork");
+    create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
+
+    let (astate, identity, adir) = common::attestor_server().await;
+    let app = cyphr_server::build_app_router(astate.clone()).expect("authority router");
+    let mut instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state: astate.clone(),
+        identity: Some(identity.clone()),
+        dir: adir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    instance.bind_tcp().await.expect("bind");
+    let url = instance.url().expect("url");
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    for (p, at) in [(&t.a, t.n), (&t.d, t.n + 1), (&e, t.n + 2)] {
+        assert_eq!(push(&app, p, at, &t.id).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    assert!(push(&app, &t.c, t.n + 1, &t.id).await.is_client_error());
+    assert!(errored(&astate, &t.id).await, "the authority is in Error");
+
+    // F extends the witness's own head C: a genuine commit the witness
+    // answers `Errored` (it does not resolve the fork) and does not hold.
+    let mut f = t.c.fork().await.expect("fork");
+    create_key(&mut f, &kp(&pool, "golden"), &kp(&pool, "key_a"), NOW + 8).await;
+    let mut f_entry: serde_json::Value =
+        serde_json::from_str(&wire(&f, t.n + 2, &t.id)).expect("wire json");
+    f_entry
+        .as_object_mut()
+        .expect("object")
+        .remove("principal_id");
+    f_entry["commit_id"] = commit_id_at(&f, t.n + 2);
+    f_entry["sequence"] = (t.n as u64 + 2).into();
+    f_entry["pr"] = f.pr_tagged().expect("pr").into();
+
+    // An on-path party rewrites the branches of every patch answer; the
+    // authority's signed held report is left as it signed it.
+    let mutate = std::sync::Arc::new(move |body: &mut serde_json::Value| {
+        if !forge {
+            return;
+        }
+        let branches = body["payload"]["branches"]
+            .as_array_mut()
+            .expect("branches");
+        for b in branches.iter_mut().filter(|b| b["canonical"] == true) {
+            let entries = b["entries"].as_array_mut().expect("entries");
+            let (id, seq, pr) = (
+                f_entry["commit_id"].clone(),
+                f_entry["sequence"].clone(),
+                f_entry["pr"].clone(),
+            );
+            let last = entries.last_mut().expect("entry");
+            for (k, v) in f_entry.as_object().expect("object") {
+                last[k.as_str()] = v.clone();
+            }
+            last["commit_id"] = id;
+            last["sequence"] = seq;
+            last["pr"] = pr;
+        }
+    });
+    let upstream = url.clone();
+    let proxy = axum::Router::new().route(
+        "/patch",
+        axum::routing::get(move |raw: axum::extract::RawQuery| {
+            let (upstream, mutate) = (upstream.clone(), mutate.clone());
+            async move {
+                let target = match raw.0 {
+                    Some(q) => format!("{upstream}/patch?{q}"),
+                    None => format!("{upstream}/patch"),
+                };
+                let resp = reqwest::Client::new()
+                    .get(&target)
+                    .header("accept", "application/json")
+                    .send()
+                    .await
+                    .expect("upstream");
+                // Keep the authority's own status: a witness whose anchor
+                // the authority lacks is told so and asks again.
+                let status =
+                    axum::http::StatusCode::from_u16(resp.status().as_u16()).expect("status");
+                let mut body: serde_json::Value = resp.json().await.expect("upstream json");
+                if status.is_success() {
+                    mutate(&mut body);
+                }
+                (status, axum::Json(body))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let proxy_url = format!("http://{}", listener.local_addr().expect("addr"));
+    let _serve = tokio::spawn(async move {
+        let _ = axum::serve(listener, proxy).await;
+    });
+
+    let wdir = tempfile::tempdir().expect("witness dir");
+    let wstate = std::sync::Arc::new(
+        cyphr_server::AppState::new(ServerConfig {
+            mode: ServerMode::Witness,
+            data_dir: wdir.path().join("data"),
+            authority_url: Some(proxy_url),
+            authority_identity: Some(AuthorityIdentity {
+                alg: identity.alg().name().to_string(),
+                pub_key: identity.pub_key().to_vec(),
+            }),
+            ..Default::default()
+        })
+        .expect("witness"),
+    );
+    for (p, i) in t
+        .shared_indices()
+        .into_iter()
+        .map(|i| (&t.shared, i))
+        .chain([(&t.b, t.n), (&t.c, t.n + 1)])
+    {
+        let bundle = cyphr_storage::export_commits(p).expect("export")[i]
+            .bundle()
+            .expect("bundle");
+        wstate
+            .engine
+            .submit_commit(&t.id, None, &bundle)
+            .await
+            .expect("the witness holds B, C as its chain");
+    }
+    assert!(
+        !errored(&wstate, &t.id).await,
+        "premise: only B is extended"
+    );
+    cyphr_server::sync::sync_from_authority(&wstate, &t.id).await
+}
+
+impl Theft {
+    fn shared_indices(&self) -> Vec<usize> {
+        (0..self.n).collect()
+    }
+}
+
+/// Backs the binding of a cap-refused head (frame 11.3): a witness whose
+/// caps refuse the end of a line accepts the authority's head for it only
+/// when the head is the commit id of that entry's own bytes. Honest
+/// authority: the head past the cap is E and the last entry is E, so the
+/// sync is not a failure. An on-path party that swaps the last entry for
+/// another genuine commit the witness refuses, leaving the declared head, gets
+/// `EntryCommitmentMismatch`. Turns red if the answer kind alone
+/// qualifies a head (the swap is then accepted as Synced).
+#[tokio::test]
+async fn a_cap_refused_head_must_be_the_last_entrys_own_commit() {
+    use cyphr_server::sync::{SyncFailure, SyncOutcome};
+
+    let honest = sync_over_cap(false).await;
+    assert!(
+        !matches!(honest, SyncOutcome::Failed { .. }),
+        "a real head past the cap whose bytes are the last entry: {honest:?}"
+    );
+
+    // The canonical branch of the authority is A, D, E; swap E for F, a
+    // genuine commit over the witness's head that the witness answers
+    // `Errored`, leaving the declared head E.
+    let swapped = sync_over_cap(true).await;
+    assert!(
+        matches!(
+            swapped,
+            SyncOutcome::Failed {
+                reason: SyncFailure::EntryCommitmentMismatch
+            }
+        ),
+        "a head no entry hashes to must not be accepted: {swapped:?}"
+    );
 }
