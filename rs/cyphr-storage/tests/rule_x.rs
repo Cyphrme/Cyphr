@@ -497,3 +497,108 @@ async fn a_pair_that_changes_nothing_is_refused_whole() {
     assert_eq!(retained(&e).await, kept, "nothing was stored");
     assert_eq!(rig.verdict(&e).await, settled, "the verdict did not move");
 }
+
+/// What a holder serves: its tip's commit id, its verdict, and the head the
+/// fork rule reads over what it holds (Active: the one head).
+async fn served(
+    rig: &Rig,
+    e: &Engine,
+) -> (String, (bool, Option<(u64, Option<String>)>), Vec<String>) {
+    let tip = e
+        .get_tip(&rig.id)
+        .await
+        .expect("tip")
+        .expect("stored")
+        .commit_id;
+    let heads = e.assess(&rig.id).await.expect("assess").heads;
+    (tip, rig.verdict(e).await, heads)
+}
+
+/// Catches a retained pair that is never promoted. A rival line J over C_1
+/// that the fork rule selects (J_3 extends J_2, C_2 is not extended) must
+/// leave the holder where the same two commits pushed one by one leave it:
+/// the served tip is the walk's head, whether the pair or the singles
+/// carried them (P7: the served head is the assessment's head).
+#[tokio::test]
+async fn a_pair_that_rule_e_selects_is_promoted_like_two_pushes() {
+    let rig = Rig::new(3).await; // C_0..C_2, the head C_2 unextended
+    let j = rig.line(1, 2, NOW + 100).await; // J_2 over C_1, J_3 over J_2
+
+    let singles = rig.fed(2).await;
+    let _ = rig.submit(&singles, &last(&j[0])).await;
+    let _ = rig.submit(&singles, &last(&j[1])).await;
+    let by_singles = served(&rig, &singles).await;
+    assert_eq!(
+        by_singles.2,
+        vec![commit_id(&j[1])],
+        "premise: the rule selects J, and one by one J_3 is served"
+    );
+    assert_eq!(by_singles.0, commit_id(&j[1]), "premise: J_3 is the tip");
+
+    let pair = rig.fed(2).await;
+    let _ = rig.submit_pair(&pair, &last(&j[0]), &last(&j[1])).await;
+    let by_pair = served(&rig, &pair).await;
+    assert_eq!(
+        by_pair.1, by_singles.1,
+        "the same commits, the same verdict"
+    );
+    assert_eq!(
+        by_pair.0, by_pair.2[0],
+        "the served tip is the assessment's head"
+    );
+    assert_eq!(by_pair.0, by_singles.0, "pair and singles serve one tip");
+}
+
+/// Catches an extension authenticated only against the held keys: the
+/// owner's answer root rotates away from the shared key (it creates K2, the
+/// pair's extension is signed by K2), and K's quota at the holder is full.
+/// The pair carries the key it needs, so it must land and the holder must
+/// read what a holder fed the owner's commits first reads: Error at the
+/// same fork point.
+#[tokio::test]
+async fn an_answer_that_rotates_its_key_is_kept_like_one_that_does_not() {
+    let rig = Rig::new(3).await;
+    let j = rig.line(2, 2, NOW + 100).await;
+    let x = rig.line(1, 1, NOW + 110).await;
+    let y = rig.line(1, 1, NOW + 111).await;
+    let k2 = fresh_kp();
+    let mut o3 = rig.states[2].fork().await.expect("fork");
+    create_key(&mut o3, &rig.golden, &k2, NOW + 120).await;
+    let mut o4 = o3.fork().await.expect("fork");
+    create_key(&mut o4, &k2, &fresh_kp(), NOW + 121).await;
+
+    let h = rig.fed(2).await;
+    for p in [&j[0], &j[1]] {
+        rig.submit(&h, &last(p)).await.expect("the thief's line");
+    }
+    for junk in [&x[0], &y[0]] {
+        assert!(
+            rig.submit(&h, &last(junk)).await.is_err(),
+            "junk is retained"
+        );
+    }
+    assert!(
+        !rig.verdict(&h).await.0,
+        "premise: Active on the thief's tip"
+    );
+    assert!(
+        matches!(
+            rig.submit(&h, &last(&o3)).await,
+            Err(EngineError::BranchLimit { .. })
+        ),
+        "premise: K's quota is full, so the root alone is refused"
+    );
+    let _ = rig.submit_pair(&h, &last(&o3), &last(&o4)).await;
+
+    let g = rig.fed(2).await;
+    for p in [&o3, &o4, &j[0], &j[1]] {
+        let _ = rig.submit(&g, &last(p)).await;
+    }
+    let at_g = rig.verdict(&g).await;
+    assert!(at_g.0, "premise: fed the owner first, G reads Error");
+    assert_eq!(
+        rig.verdict(&h).await,
+        at_g,
+        "the same commits, the same verdict"
+    );
+}
