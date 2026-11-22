@@ -213,6 +213,10 @@ pub struct RelyingParty {
     /// they leave the principal in `Error` is the protocol's rule over
     /// them and the record's chain.
     branches: BTreeMap<String, cyphr::fork::Held>,
+    /// The PRs of chain commits that verified resync proofs assert (SPEC
+    /// 15.8 item 2), kept across pulls like the branches they decide
+    /// between: a proof checked against the chain is not asked again.
+    asserted: std::collections::BTreeSet<String>,
     /// A verified commit could not be kept ([`BRANCH_COMMIT_LIMIT`]): a
     /// fork may stand that the relying party cannot see, so it refuses
     /// sign-in. Never cleared: only a rebuilt relying party starts clean.
@@ -240,6 +244,7 @@ impl RelyingParty {
             clock,
             last_pull: None,
             branches: BTreeMap::new(),
+            asserted: std::collections::BTreeSet::new(),
             overflowed: false,
             challenges: BTreeMap::new(),
             sessions: BTreeMap::new(),
@@ -282,6 +287,16 @@ impl RelyingParty {
             // and stays recorded: a pull the rival peer misses must not
             // clear it. Only a commit that extends one branch and not the
             // other resolves it (SPEC 15.8), which `fork_refusal` reads from what is kept.
+            // The proofs the peers hold, checked against the chain just
+            // pulled: a peer that serves none or a bad one changes nothing.
+            let mut pops = Vec::new();
+            for peer in peers {
+                match crate::fetch_resyncs(peer.connector, self.record.principal_id()).await {
+                    Ok(found) => pops.extend(found),
+                    Err(_) => continue,
+                }
+            }
+            self.asserted.extend(self.record.asserted(&pops).await);
             let chain = self.chain_window(&report.branches);
             self.keep_branches(&report.branches, &chain);
         }
@@ -357,7 +372,8 @@ impl RelyingParty {
     ) -> std::collections::BTreeSet<String> {
         let mut all: Vec<cyphr::fork::Held> = chain.to_vec();
         all.extend(self.branches.values().chain(extra).cloned());
-        let assessed = cyphr::fork::assessment(&all, &[]);
+        let asserted: Vec<String> = self.asserted.iter().cloned().collect();
+        let assessed = cyphr::fork::assessment(&all, &asserted);
         let abandoned: std::collections::BTreeSet<&str> = assessed
             .forks
             .iter()
@@ -578,7 +594,8 @@ impl RelyingParty {
         }
         let mut held = chain.clone();
         held.extend(self.branches.values().cloned());
-        let assessed = cyphr::fork::assessment(&held, &[]);
+        let asserted: Vec<String> = self.asserted.iter().cloned().collect();
+        let assessed = cyphr::fork::assessment(&held, &asserted);
         if assessed.consensus == cyphr::fork::Consensus::Error {
             return Some(Refusal::Forked);
         }

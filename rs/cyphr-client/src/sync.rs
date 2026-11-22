@@ -62,6 +62,11 @@ const MAX_EVIDENCE_ITEMS: usize = 32;
 /// Keys asked about per `/revoked` request.
 const REVOKE_BATCH: usize = 64;
 
+/// Most resync proofs read from one peer's answer. A peer holds at most
+/// one per commit it holds; the rest of a longer answer is not read, so a
+/// peer cannot make a holder verify without bound.
+pub const MAX_RESYNCS: usize = 256;
+
 /// What the verifier holds out of band: the root a record replays from.
 #[derive(Debug, Clone)]
 pub enum Anchor {
@@ -386,6 +391,61 @@ impl Record {
     pub fn note_revoked(&mut self, tmb: &Thumbprint) {
         let now = (self.clock)();
         self.dead.entry(tmb.to_b64()).or_insert(now);
+    }
+
+    /// The Principal Roots of this record's chain commits that the resync
+    /// proofs in `pops` assert (SPEC 15.8 item 2), for
+    /// [`cyphr::fork::assessment`]. A proof counts only when its `id` is
+    /// the PR of a commit the record's chain holds, its signer is a key
+    /// active in the state at that commit (replayed here, not read off the
+    /// chain's end) and not dead at the proof's `now`, and its signature
+    /// verifies. A proof for a commit off the chain, or over a record
+    /// resumed from verified state (which holds no entries to replay), is
+    /// not read: this holder cannot check the signer, so it asserts
+    /// nothing.
+    pub async fn asserted(&self, pops: &[Value]) -> Vec<String> {
+        let Some(held) = self.held.as_ref().filter(|h| h.base == 0) else {
+            return Vec::new();
+        };
+        let pr_at = |index: usize| {
+            held.principal
+                .commit_at(index)
+                .and_then(|c| c.pr().as_multihash().tagged_first().ok())
+                .map(|d| d.to_string())
+        };
+        let mut asserted = Vec::new();
+        for pop in pops.iter().take(MAX_RESYNCS) {
+            let Ok(resync) = cyphr::resync::parse_resync(pop) else {
+                continue;
+            };
+            if self
+                .dead
+                .get(&resync.tmb.to_b64())
+                .is_some_and(|cutoff| resync.now >= *cutoff)
+            {
+                continue;
+            }
+            let Some(at) =
+                (0..held.principal.commit_count()).find(|&i| pr_at(i).as_ref() == Some(&resync.id))
+            else {
+                continue;
+            };
+            let Some(entries) = held.entries.get(..=at) else {
+                continue;
+            };
+            let Ok(prefix) = self.replay_full(entries, &[]).await else {
+                continue;
+            };
+            let state = &prefix.principal;
+            let verified = state
+                .get_key(&resync.tmb)
+                .filter(|_| state.is_key_active(&resync.tmb))
+                .is_some_and(|key| cyphr::resync::verify_resync(pop, key).is_ok());
+            if verified && !asserted.contains(&resync.id) {
+                asserted.push(resync.id);
+            }
+        }
+        asserted
     }
 
     /// The record's key `tmb` as the replayed chain holds it, active or
@@ -1654,6 +1714,34 @@ pub async fn fetch_revoked<C: Connector>(
         .and_then(Value::as_array)
         .cloned()
         .ok_or_else(|| PatchFailure::MalformedResponse("revoked is not an array".into()))
+}
+
+/// The resync proofs `connector` serves for the principal `principal_id`
+/// (SPEC 15.8 item 2): each `{pay, sig}` as the peer holds it, unverified,
+/// at most [`MAX_RESYNCS`] of them. A reader checks each against the
+/// branch it holds ([`Record::asserted`], or the storage engine's
+/// `submit_resync`): the peer is a mirror of the proof, not its authority.
+///
+/// # Errors
+///
+/// A [`PatchFailure`] when the proofs cannot be fetched or the answer is
+/// not the envelope shape.
+pub async fn fetch_resyncs<C: Connector>(
+    connector: &C,
+    principal_id: &str,
+) -> Result<Vec<Value>, PatchFailure> {
+    let target = format!(
+        "/resync?pr={}",
+        crate::patch::percent_encode_query_value(principal_id)
+    );
+    let mut found = fetch_payload(connector, &target)
+        .await?
+        .get("resyncs")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| PatchFailure::MalformedResponse("resyncs is not an array".into()))?;
+    found.truncate(MAX_RESYNCS);
+    Ok(found)
 }
 
 async fn pull_revokes<C: Connector>(
