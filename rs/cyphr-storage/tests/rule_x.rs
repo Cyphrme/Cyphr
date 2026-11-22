@@ -425,15 +425,20 @@ async fn fan_out_cannot_starve_a_lower_pair() {
     );
 }
 
-/// Catches unbounded retention: after any sequence of offers, retained
-/// commits stay within the key quotas plus two per chain position (32 + 2h).
-/// A guard, green until rule X can over-retain.
+/// Catches unbounded retention: two signers offer more pairs than their
+/// quotas allow, and retained commits must stay within the quotas plus two
+/// per chain position: signers x BRANCH_PER_KEY x BRANCH_DEPTH + 2h. Every
+/// case asserts it offered more commits than that bound, so an engine that
+/// keeps everything fails here; rule X may add at most the 2h.
 #[test]
 fn retained_commits_stay_within_the_bound() {
     const H: usize = 6;
-    let ops = proptest::collection::vec((2usize..=4, 0usize..2, any::<bool>()), 8..=14);
+    const SIGNERS: usize = 2;
+    let bound = SIGNERS * BRANCH_PER_KEY * cyphr_storage::engine::BRANCH_DEPTH + 2 * H;
+    // Eleven to fourteen pairs: 22 to 28 offered commits against a bound of 20.
+    let ops = proptest::collection::vec((2usize..=4, 0usize..SIGNERS), 11..=14);
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
-        cases: 8,
+        cases: 5,
         ..ProptestConfig::default()
     });
     runner
@@ -443,22 +448,22 @@ fn retained_commits_stay_within_the_bound() {
                 .build()
                 .expect("runtime")
                 .block_on(async {
-                    assert!(ops.len() > 2 * BRANCH_PER_KEY, "offers exceed the quotas");
+                    let offered = 2 * ops.len();
+                    assert!(
+                        offered > bound,
+                        "{offered} offered against a bound of {bound}"
+                    );
                     let rig = Rig::new(H).await;
                     let e = rig.fed(H - 1).await;
-                    for (n, (pos, who, pair)) in ops.into_iter().enumerate() {
+                    for (n, (pos, who)) in ops.into_iter().enumerate() {
                         let signer = if who == 0 { &rig.golden } else { &rig.keys[0] };
                         let line = rig
                             .ext(&rig.states[pos - 1], 2, NOW + 1000 + 10 * n as i64, signer)
                             .await;
-                        if pair {
-                            let _ = rig.submit_pair(&e, &last(&line[0]), &last(&line[1])).await;
-                        } else {
-                            let _ = rig.submit(&e, &last(&line[0])).await;
-                        }
+                        let _ = rig.submit_pair(&e, &last(&line[0]), &last(&line[1])).await;
                     }
                     let kept = retained(&e).await;
-                    assert!(kept <= 32 + 2 * H, "{kept} retained over a chain of {H}");
+                    assert!(kept <= bound, "{kept} retained, bound {bound}");
                 });
             Ok(())
         })
