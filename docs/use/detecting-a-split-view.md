@@ -123,7 +123,7 @@ commit over it; that settles the fork on the extended branch. A
 outside any commit, by one key active at the tip it names, that asserts
 that tip (`cyphr resync`). It resolves a fork even when both branches
 already have commits, and an abandoned branch extended later does not
-re-open a fork it settled. If the owner's proofs name tips on two
+re-open a fork it settled. If proofs name tips on two
 different branches, the record stays in Error for good and only recovery
 ends it
 ([SPEC §15.8](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#158-fork-resolution)).

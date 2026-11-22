@@ -62,7 +62,7 @@ inferable from SPEC.md at `be0663f`," not "implemented in `rs/` or
 - **Partly implemented:** the consensus states. `cyphr::fork::Consensus`
   has only `Active` and `Error` (`rs/cyphr/src/fork.rs:12`), and the
   storage engine reads it from the held commits
-  (`rs/cyphr-storage/src/engine/mod.rs:5074`). Pending, Resync, Offline,
+  (`rs/cyphr-storage/src/engine/mod.rs:6275` (`assess`)). Pending, Resync, Offline,
   Ignore and Client Mismatch have no counterpart: `git grep` over `rs/`
   finds no `ConsensusState`.
 - **Implemented:** retention of both branches of a fork. The engine keeps
