@@ -5747,6 +5747,33 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(receipt(true, true))
     }
 
+    /// How many leading commits of `chain`, a peer's chain oldest first,
+    /// this engine holds (canonical or retained): a PoP is offered with the
+    /// line that starts after them ([`Self::submit_resync`]). A commit
+    /// whose id cannot be read ends the prefix. Zero for a principal that
+    /// is not stored.
+    pub async fn held_prefix(
+        &self,
+        principal_id: &str,
+        chain: &[WireBundle],
+    ) -> Result<usize, EngineError> {
+        let Some(tip) = self.get_tip(principal_id).await? else {
+            return Ok(0);
+        };
+        let Ok(alg) = tip.commit_id.parse::<TaggedDigest>().map(|d| d.alg()) else {
+            return Ok(0);
+        };
+        for (i, bundle) in chain.iter().enumerate() {
+            let Some(id) = bundle.decode().ok().and_then(|d| d.commit_id(alg)) else {
+                return Ok(i);
+            };
+            if !self.holds_commit(principal_id, &id.to_string()).await? {
+                return Ok(i);
+            }
+        }
+        Ok(chain.len())
+    }
+
     /// Replay `line` onto the held commit its first commit extends, each
     /// commit through the admission path's own [`Self::build_commit`]: the
     /// canonical states in turn, then each retained rival's. The replay

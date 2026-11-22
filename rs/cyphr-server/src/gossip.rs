@@ -403,34 +403,11 @@ pub(crate) async fn offer_resyncs(
     pops: &[serde_json::Value],
     chain: &[cyphr::replay::WireBundle],
 ) {
-    use cyphr::state::TaggedDigest;
-
-    let alg = match state.engine.get_tip(principal_id).await {
-        Ok(Some(tip)) => tip.commit_id.parse::<TaggedDigest>().ok().map(|d| d.alg()),
-        _ => None,
-    };
-    let mut start = chain.len();
-    if let Some(alg) = alg {
-        for (i, bundle) in chain.iter().enumerate() {
-            let id = bundle
-                .decode()
-                .ok()
-                .and_then(|d| d.commit_id(alg))
-                .map(|c| c.to_string());
-            let held = match id {
-                Some(id) => state
-                    .engine
-                    .holds_commit(principal_id, &id)
-                    .await
-                    .unwrap_or(false),
-                None => false,
-            };
-            if !held {
-                start = i;
-                break;
-            }
-        }
-    }
+    let start = state
+        .engine
+        .held_prefix(principal_id, chain)
+        .await
+        .unwrap_or(chain.len());
     let line = &chain[start..];
     for pop in pops {
         match state.engine.submit_resync(principal_id, pop, line).await {
