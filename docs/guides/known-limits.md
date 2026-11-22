@@ -82,10 +82,15 @@ clocks correct.
   owner no longer holds, and K is already deleted, so no commit
   records an exit at Levels 1 to 4. The exit is the recovery strategy (SPEC 14), outside
   the chain (forge #203).
-- **A thief can win a fork race.** A thief whose branch is accepted first
-  can extend it with a deletion of the owner's key, and the owner's later
-  contest stops counting. The specification treats this as the fork-
-  resolution race (SPEC 15.8: the abandoned branch is permanently invalid).
+- **A thief can win a fork race only until the owner extends.** While
+  only the thief's branch is extended, it is the branch every holder
+  follows, and the thief can extend it with a deletion of the owner's
+  key. Once the owner extends the other branch too, both are extended and
+  the principal is in Error (`assessment`, `rs/cyphr/src/fork.rs:120`).
+  That ends the thief's win and also leaves the principal locked until a
+  resolution exists, which is the both-extended limit below. The
+  specification calls the race itself the fork-resolution race (SPEC
+  15.8: the abandoned branch is permanently invalid).
 - **A fork resolves only by a commit.** The proof-of-possession
   resolution (`resync/create`, SPEC 15.8 item 2) is not implemented: the
   Rust code has no coz kind for it. A commit resolves a fork only by
