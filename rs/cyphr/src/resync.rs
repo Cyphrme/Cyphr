@@ -17,6 +17,11 @@ use serde_json::Value;
 
 use crate::key::Key;
 
+/// `<authority>/cyphr/resync/create`, as a typ suffix. Not among
+/// [`crate::parsed_coz::typ`]'s constants: those name the kinds a commit
+/// carries, and a resync proof is signed outside any commit.
+pub const RESYNC_CREATE: &str = "cyphr/resync/create";
+
 /// A resync proof of possession's declared fields, before its signature is
 /// checked against a key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +71,7 @@ pub fn parse_resync(envelope: &Value) -> Result<Resync, ResyncFailure> {
         .ok_or(ResyncFailure::Malformed("no pay"))?;
     text(envelope.get("sig"), "no sig")?;
     let typ = text(pay.get("typ"), "pay has no typ")?;
-    if !crate::parsed_coz::typ::has_suffix(typ, crate::parsed_coz::typ::RESYNC_CREATE) {
+    if !crate::parsed_coz::typ::has_suffix(typ, RESYNC_CREATE) {
         return Err(ResyncFailure::NotAResync(typ.to_owned()));
     }
     let id = text(pay.get("id"), "pay names no id")?.to_owned();
