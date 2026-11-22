@@ -876,6 +876,34 @@ impl Client<'_> {
         Ok(tip)
     }
 
+    /// Resolve a fork by a resync proof of possession (SPEC 15.8 item 2):
+    /// `cyphr resync` signs over this device's own tip and sends it, with
+    /// the local line, to every peer it knows. The commit it asserts is
+    /// this device's tip; no commit is made. A peer that is Error after it
+    /// is the protocol's answer, not a refusal.
+    pub async fn resync(&self, p: &Principal) -> ActionResult<Tip> {
+        let tip = self.local_commit(p).await?;
+        let mut accepted = false;
+        for peer in self.known(p) {
+            let url = self.url(&peer).await;
+            match self
+                .cyphr(&["resync", "--identity", &p.0, "--peer", &url])
+                .await
+            {
+                Ok(_) => accepted = true,
+                Err(ActionError::Refused(_)) => {},
+                Err(e) => return Err(e),
+            }
+        }
+        if !accepted {
+            return Err(ActionError::Failed(format!(
+                "no peer took the resync from `{}`",
+                self.name
+            )));
+        }
+        Ok(tip)
+    }
+
     // ---- commits and publication ----
 
     /// Commit a data change locally, on top of this device's current local
