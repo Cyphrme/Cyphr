@@ -5538,6 +5538,35 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.ensure_healed().await?;
         let resync = cyphr::resync::parse_resync(pop)
             .map_err(|e| EngineError::InvalidInput(e.to_string()))?;
+        let principal_id = self.stored_id(principal_id).await?.ok_or_else(|| {
+            EngineError::NotFound(format!("no principal {principal_id} is stored"))
+        })?;
+        let principal_id = principal_id.as_str();
+        let receipt = |stored, promoted| ResyncReceipt {
+            principal_id: principal_id.to_string(),
+            id: resync.id.clone(),
+            stored,
+            promoted,
+        };
+
+        // Cheapest refusals first, before the line is read and before the
+        // principal's write lock is taken, so a refusal costs what the
+        // sender's PoP costs and not what its line does. The signer must be
+        // a key this principal ever held (its chain's or a retained
+        // branch's) and its signature must verify.
+        let held_key = match self.at_tip(principal_id).await? {
+            Some(at_tip) => at_tip.key_ever_held(&resync.tmb).cloned(),
+            None => None,
+        }
+        .or_else(|| {
+            self.retained_keys(principal_id)
+                .iter()
+                .find(|k| k.tmb == resync.tmb.to_b64())
+                .and_then(|k| k.to_key().ok())
+        })
+        .ok_or(EngineError::Protocol(cyphr::Error::UnknownKey))?;
+        cyphr::resync::verify_resync(pop, &held_key)
+            .map_err(|_| EngineError::Protocol(cyphr::Error::InvalidSignature))?;
         let signer = resync.tmb.to_b64();
         if self
             .revoked()
@@ -5546,26 +5575,22 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         {
             return Err(EngineError::DeadKey { key: signer });
         }
-        let principal_id = self.stored_id(principal_id).await?.ok_or_else(|| {
-            EngineError::NotFound(format!("no principal {principal_id} is stored"))
-        })?;
-        let principal_id = principal_id.as_str();
+        if self.asserted_of(principal_id).contains(&resync.id) {
+            return Ok(receipt(false, false));
+        }
+
         let genesis = self.genesis_of_stored(principal_id).await?;
         let lock = self.principal_lock(principal_id);
         let write = Self::lock_writes(&lock, principal_id).await;
+        // Held across the line work below: a PoP for this tip that landed
+        // while this one waited for the lock leaves nothing to do.
+        if self.asserted_of(principal_id).contains(&resync.id) {
+            return Ok(receipt(false, false));
+        }
         let line = line
             .iter()
             .map(canonical_bundle)
             .collect::<Result<Vec<_>, _>>()?;
-        let receipt = |stored, promoted| ResyncReceipt {
-            principal_id: principal_id.to_string(),
-            id: resync.id.clone(),
-            stored,
-            promoted,
-        };
-        if self.asserted_of(principal_id).contains(&resync.id) {
-            return Ok(receipt(false, false));
-        }
 
         // The state at the asserted tip, where the signer is read.
         let stored = self.stored_entries(principal_id, None).await?;
