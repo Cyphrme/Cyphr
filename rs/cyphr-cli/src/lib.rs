@@ -369,9 +369,9 @@ pub enum Commands {
     /// Signs a `resync/create` over this store's tip with a key of the
     /// identity that is active there, and sends it to the peer with the
     /// local commits the peer may lack (SPEC 15.8 item 2). No commit is
-    /// made. A fork whose two branches are both extended has no other exit
-    /// but key revocation; a second branch's proof leaves it in Error for
-    /// good.
+    /// made. A proof settles a fork even when both branches are extended;
+    /// a proof on a second branch leaves it in Error for good, and recovery
+    /// is the only other exit.
     Resync {
         /// Principal Root (base64url)
         #[arg(long, allow_hyphen_values = true)]

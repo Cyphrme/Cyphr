@@ -54,7 +54,9 @@ of PR #23 is the candidate list for what comes after.
 
 - **Toolchain:** nix + direnv (`.envrc` → `use nix`) provides formatters
   and tooling; Rust pinned by `rs/rust-toolchain.toml`.
-- **Entrypoint gate:** `cd rs && cargo test --workspace` (green, ~3 min).
+- **Test scope:** a worker runs only the tests pertinent to its change
+  (`cargo test -p <crate>`, or the one test target). The full suite,
+  `cd rs && cargo test --workspace`, runs once, at the merge gate.
 - **Formatting:** `treefmt` from the repo root (nix shell) — covers
   rs/go/toml/md/json/yaml/nix/sh. CI enforces
   `nix-shell --run "treefmt --fail-on-change"`. `treefmt` is authoritative

@@ -61,12 +61,14 @@ level if and where possible."
 - Delete a test that cannot fail for a real defect: green by
   construction, re-asserting a mock, or duplicating a stronger test.
 - Show each new test failing for the right reason before implementing.
-- While iterating run targeted tests (`cargo test -p <crate>`); run the
-  full suite once, before reporting.
+- Run only targeted tests (`cargo test -p <crate>`) while working; the
+  full suite runs once, at the merge gate.
 
 ## Gates
 
-- `cargo test --workspace` — green (~3 min; slowest: persistent-engine proptest).
+- `cargo test --workspace` — green; run once, at the merge gate. A worker
+  runs only the tests pertinent to its change (slowest: persistent-engine
+  proptest).
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean; CI
   runs it with `-D warnings`.
 - `cargo fmt --check` — green, on stable or nightly (forge #28, resolved by
