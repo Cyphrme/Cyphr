@@ -5707,6 +5707,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let force =
             promote || after.consensus != before.consensus || after.fork_point != before.fork_point;
 
+        let built: Vec<IndexableCommit> = carried.iter().map(|(c, _)| c.clone()).collect();
         // I1 order: the carried commits, then the record, then the chain.
         for ((commit, embedded), bundle) in carried.into_iter().zip(&line) {
             if let Err(refusal) = self
@@ -5756,16 +5757,26 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 "the head {head} of {principal_id} is neither the chain's tip nor retained"
             )))
         })?;
-        let ReplayedLine {
-            line,
-            mut line_commits,
-            ..
-        } = self
-            .replay_line(principal_id, &genesis, &stored, &by_pr, rival)
-            .await?
-            .ok_or_else(|| {
-                EngineError::MalformedBlob(format!("the retained line to {head} no longer replays"))
-            })?;
+        // A line this call carried whole was applied once already, to verify
+        // it: the commits it built are the chain's, so the line is not
+        // replayed again and n commits cost n applications. A line that
+        // reaches back into commits already retained is replayed.
+        let retained_line = retained_line(&by_pr, rival);
+        let (line, mut line_commits) = if built.len() == retained_line.len()
+            && built.last().and_then(|c| c.commit_ids.first()) == Some(&head)
+        {
+            (retained_line, built)
+        } else {
+            let replayed = self
+                .replay_line(principal_id, &genesis, &stored, &by_pr, rival)
+                .await?
+                .ok_or_else(|| {
+                    EngineError::MalformedBlob(format!(
+                        "the retained line to {head} no longer replays"
+                    ))
+                })?;
+            (replayed.line, replayed.line_commits)
+        };
         self.promote_branch(principal_id, &line, &mut line_commits, None)
             .await?;
         Ok(receipt(true, true))
