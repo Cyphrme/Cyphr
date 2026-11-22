@@ -341,7 +341,7 @@ async fn sync_locked(
     // Each branch's entries as positions among the bundles submitted
     // below: a head the witness's caps refuse is bound to the bytes of its
     // branch's last entry and the answers to those entries.
-    let mut branch_at: Vec<Vec<usize>> = Vec::new();
+    let mut branch_at: Vec<(String, Vec<usize>)> = Vec::new();
     let first_branch = bundles.len();
     for branch in patch.fork.iter().flat_map(|f| &f.branches) {
         let mut positions = Vec::new();
@@ -357,7 +357,7 @@ async fn sync_locked(
                 },
             }
         }
-        branch_at.push(positions);
+        branch_at.push((branch.head.clone(), positions));
     }
     bundles.extend(branch_bundles.iter().cloned());
     let mut cap_refused: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -403,7 +403,7 @@ async fn sync_locked(
             ) if i >= main => {
                 let next_in_branch = branch_at
                     .iter()
-                    .any(|b| b.contains(&i) && b.contains(&(i + 1)));
+                    .any(|(_, b)| b.contains(&i) && b.contains(&(i + 1)));
                 let paired = match bundles.get(i + 1).filter(|_| next_in_branch) {
                     Some(next) => {
                         state
@@ -478,38 +478,39 @@ async fn sync_locked(
     // a tip, so the witness must now hold every one of them.
     if let Some(held) = &held_report {
         for head in &held.heads {
-            match state
+            // Every head the authority attests is bound to a branch of its
+            // patch (frame 11.3): the branch's last entry is that commit,
+            // and the entries the witness holds chain. A held head is then
+            // the end of a branch the authority served; a head the witness
+            // does not hold must also be one its caps cut short.
+            let held_now = match state
                 .engine
                 .holds_commit(principal_id, &head.commit_id.to_string())
                 .await
             {
-                Ok(true) => {},
-                // The authority supplied the head, the witness holds its
-                // branch to the caps, and the entries past them were
-                // answered by the caps: held as far as the witness keeps
-                // one, which is not withholding.
-                Ok(false)
-                    if head_bound_to_a_capped_branch(
-                        state,
-                        principal_id,
-                        &head.commit_id,
-                        &branch_at,
-                        &bundles,
-                        &cap_refused,
-                    )
-                    .await => {},
-                Ok(false) => {
-                    warn!(principal = %principal_id, head = %head.commit_id,
-                        "witness sync: a head of the authority is not held");
-                    return SyncOutcome::Failed {
-                        reason: SyncFailure::EntryCommitmentMismatch,
-                    };
-                },
+                Ok(held) => held,
                 Err(err) => {
                     return SyncOutcome::Failed {
                         reason: SyncFailure::LocalStorageError(err.to_string()),
                     };
                 },
+            };
+            if !head_is_bound(
+                state,
+                principal_id,
+                &head.commit_id,
+                held_now,
+                &branch_at,
+                &bundles,
+                &cap_refused,
+            )
+            .await
+            {
+                warn!(principal = %principal_id, head = %head.commit_id,
+                    "witness sync: a head of the authority is not held");
+                return SyncOutcome::Failed {
+                    reason: SyncFailure::EntryCommitmentMismatch,
+                };
             }
         }
     }
@@ -620,22 +621,27 @@ fn named_keys(bundles: &[cyphr::replay::WireBundle]) -> Vec<coz::Thumbprint> {
     keys
 }
 
-/// Whether the head `head`, which the witness does not hold, is the end of
-/// a branch the witness's caps cut short (frame 11.3): all of
-/// 1. `head` is the commit id computed from the bytes of the last entry of one branch of the patch;
-/// 2. the witness holds that branch to the cap: its first entry off the witness's own chain, and
-///    the entry after it if there is one;
-/// 3. the entries past the cap were answered by the cap (`BranchLimit` or `Errored`, recorded in
+/// Whether the attested head `head` is bound to a branch of the authority's
+/// patch (frame 11.3). All of:
+/// 1. `head` is the commit id computed from the bytes of the last entry of one branch the authority
+///    names it the head of;
+/// 2. the entries of that branch the witness holds chain: each held entry extends the held entry
+///    before it;
+/// 3. if the witness does not hold `head`, it holds the branch to the cap (its first entry off the
+///    witness's own chain, and the entry after it if there is one), and every entry past the cap is
+///    one it does not hold and answered by the cap (`BranchLimit` or `Errored`, recorded in
 ///    `cap_refused`).
 ///
-/// What this does not check is that the entries past the cap chain to each
-/// other: a commit's `pre` is bound only inside its arrow. Its harm is
-/// bounded: the witness's own standing and fork point do not depend on it.
-async fn head_bound_to_a_capped_branch(
+/// What this does not check is that entries the witness does not hold chain
+/// to each other: a commit's `pre` is bound only inside its arrow. Its harm
+/// is bounded: the witness's own standing and fork point do not depend on
+/// it.
+async fn head_is_bound(
     state: &Arc<AppState>,
     principal_id: &str,
     head: &cyphr::state::TaggedDigest,
-    branch_at: &[Vec<usize>],
+    head_held: bool,
+    branch_at: &[(String, Vec<usize>)],
     bundles: &[cyphr::replay::WireBundle],
     cap_refused: &std::collections::HashSet<usize>,
 ) -> bool {
@@ -647,7 +653,11 @@ async fn head_bound_to_a_capped_branch(
         .filter(|b| !b.canonical)
         .map(|b| b.tip.as_str())
         .collect();
-    for positions in branch_at {
+    let named = head.to_string();
+    for (declared, positions) in branch_at {
+        if *declared != named {
+            continue;
+        }
         let ids: Vec<Option<String>> = positions
             .iter()
             .map(|&at| {
@@ -659,7 +669,7 @@ async fn head_bound_to_a_capped_branch(
                     .map(|d| d.to_string())
             })
             .collect();
-        if ids.last().and_then(Option::as_ref).map(String::as_str) != Some(&head.to_string()) {
+        if ids.last().and_then(Option::as_ref) != Some(&named) {
             continue;
         }
         let mut held = Vec::with_capacity(ids.len());
@@ -673,18 +683,39 @@ async fn head_bound_to_a_capped_branch(
                 None => false,
             });
         }
+        let mut chained = true;
+        for i in 1..ids.len() {
+            if let (true, true, Some(prev), Some(next)) =
+                (held[i - 1], held[i], &ids[i - 1], &ids[i])
+                && state
+                    .engine
+                    .extends(principal_id, prev, next)
+                    .await
+                    .ok()
+                    .flatten()
+                    != Some(true)
+            {
+                chained = false;
+            }
+        }
+        if !chained {
+            continue;
+        }
+        if head_held {
+            return true;
+        }
         let on_chain =
             |i: usize| held[i] && ids[i].as_deref().is_some_and(|id| !retained.contains(id));
         let Some(first_off) = (0..ids.len()).find(|&i| !on_chain(i)) else {
             continue;
         };
+        let cap = cyphr_storage::engine::BRANCH_DEPTH;
         let line_held = held[first_off] && held.get(first_off + 1).is_none_or(|h| *h);
-        let past_cap_answered = positions
+        let past: Vec<usize> = (first_off + cap..ids.len()).collect();
+        let past_answered = past
             .iter()
-            .skip(first_off + cyphr_storage::engine::BRANCH_DEPTH)
-            .all(|at| cap_refused.contains(at));
-        let has_past_cap = ids.len() > first_off + cyphr_storage::engine::BRANCH_DEPTH;
-        if line_held && has_past_cap && past_cap_answered {
+            .all(|&i| !held[i] && cap_refused.contains(&positions[i]));
+        if line_held && !past.is_empty() && past_answered {
             return true;
         }
     }

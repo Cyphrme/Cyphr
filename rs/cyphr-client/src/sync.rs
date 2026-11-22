@@ -920,10 +920,9 @@ pub async fn branch_bundles<C: Connector>(
     report: &PullReport,
     peers: &[PullPeer<'_, C>],
 ) -> Vec<WireBundle> {
-    let mut bundles: Vec<WireBundle> = report.forks.iter().map(|f| f.rival.clone()).collect();
-    bundles.extend(report.extensions.iter().cloned());
+    let mut groups = rivals_with_their_extensions(report);
     let Some(height) = report.forks.iter().map(|f| f.height).min() else {
-        return bundles;
+        return groups.into_iter().flatten().collect();
     };
     let own_past_fork = record
         .held
@@ -934,6 +933,7 @@ pub async fn branch_bundles<C: Connector>(
         .peers
         .iter()
         .filter(|o| matches!(o.standing, PeerStanding::Forked));
+    let mut loose: Vec<WireBundle> = Vec::new();
     for outcome in forked {
         let Some(peer) = peers.iter().find(|p| p.name == outcome.peer) else {
             continue;
@@ -949,14 +949,95 @@ pub async fn branch_bundles<C: Connector>(
         else {
             continue;
         };
+        let mut later = Vec::new();
         for entry in patch.entries.iter().skip(height + 1).take(own_past_fork) {
             let Ok(bundle) = entry.bundle.clone() else {
                 break;
             };
-            bundles.push(bundle);
+            later.push(bundle);
+        }
+        // The peer's commits past its rival follow that rival, so a holder
+        // that offers a refused root with the next bundle offers the
+        // commit that extends it.
+        let rival_id = |b: &WireBundle| -> Option<String> {
+            let alg = report
+                .forks
+                .first()?
+                .commits
+                .first()?
+                .parse::<cyphr::state::TaggedDigest>()
+                .ok()?
+                .alg();
+            Some(b.decode().ok()?.commit_id(alg)?.to_string())
+        };
+        let theirs = patch
+            .entries
+            .get(height)
+            .and_then(|e| e.bundle.as_ref().ok())
+            .and_then(rival_id);
+        let home = theirs.and_then(|id| {
+            groups
+                .iter_mut()
+                .find(|g| g.first().and_then(rival_id).as_deref() == Some(id.as_str()))
+        });
+        match home {
+            Some(group) => group.extend(later),
+            None => loose.extend(later),
         }
     }
+    let mut bundles: Vec<WireBundle> = groups.into_iter().flatten().collect();
+    bundles.extend(loose);
     bundles
+}
+
+/// The rivals of a pull and the commits that extend them, one group per
+/// rival, each rival directly followed by its extensions (a rival's commits are
+/// [`PullReport::branches`], linked by `pre` and `pr`). A holder whose
+/// caps refuse a rival root alone offers it again with the next bundle, so
+/// the next bundle must be the root's own extension: with two rivals a
+/// hand-off of every root and then every extension would pair a root with
+/// the wrong commit. Extensions that follow no rival come last.
+fn rivals_with_their_extensions(report: &PullReport) -> Vec<Vec<WireBundle>> {
+    let id_of = |bundle: &WireBundle, like: &str| -> Option<String> {
+        let alg = like.parse::<cyphr::state::TaggedDigest>().ok()?.alg();
+        Some(bundle.decode().ok()?.commit_id(alg)?.to_string())
+    };
+    let held_of = |bundle: &WireBundle| -> Option<&HeldCommit> {
+        report
+            .branches
+            .iter()
+            .find(|h| id_of(bundle, &h.id).as_deref() == Some(h.id.as_str()))
+    };
+    let mut pending: Vec<&WireBundle> = report.extensions.iter().collect();
+    // Place `bundle`, then each pending extension of it, then theirs.
+    fn place<'a>(
+        bundle: &'a WireBundle,
+        held_of: &dyn Fn(&WireBundle) -> Option<&'a HeldCommit>,
+        pending: &mut Vec<&'a WireBundle>,
+        out: &mut Vec<WireBundle>,
+    ) {
+        out.push(bundle.clone());
+        let Some(pr) = held_of(bundle).map(|h| h.pr.clone()) else {
+            return;
+        };
+        while let Some(at) = pending
+            .iter()
+            .position(|e| held_of(e).is_some_and(|h| h.pre.as_deref() == Some(pr.as_str())))
+        {
+            let next = pending.remove(at);
+            place(next, held_of, pending, out);
+        }
+    }
+    let mut groups: Vec<Vec<WireBundle>> = Vec::new();
+    for fork in &report.forks {
+        let mut group = Vec::new();
+        place(&fork.rival, &held_of, &mut pending, &mut group);
+        groups.push(group);
+    }
+    if !pending.is_empty() {
+        groups.push(pending.into_iter().cloned().collect());
+    }
+    groups
 }
 
 impl ForkFinding {

@@ -5733,6 +5733,29 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .map(|(fork_point, heads)| ErrorState { fork_point, heads }))
     }
 
+    /// Whether the held commit `child_id` extends the held commit
+    /// `parent_id` of `principal_id` (its `pre` is the parent's Principal
+    /// Root, one position up), read over the commits the fork rule reads.
+    /// `None` when either is not among them, canonical or retained.
+    pub async fn extends(
+        &self,
+        principal_id: &str,
+        parent_id: &str,
+        child_id: &str,
+    ) -> Result<Option<bool>, EngineError> {
+        self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        let held = self.held(&principal_id).await?;
+        let find = |id: &str| held.iter().find(|h| h.id == id);
+        let (Some(parent), Some(child)) = (find(parent_id), find(child_id)) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            child.sequence == parent.sequence + 1
+                && child.pre.as_deref() == Some(parent.pr.as_str()),
+        ))
+    }
+
     /// Whether the engine holds the commit `commit_id` of `principal_id`,
     /// on its canonical chain or as a retained branch. `false` for a
     /// principal that is not stored.
