@@ -272,7 +272,12 @@ possible responses, without a verb that makes any of them required.
 unambiguously selects one branch (§15.8), by either: (1) a new commit
 whose `pre` references the tip of the chosen branch, which implicitly
 abandons the other, or (2) a `resync/create` PoP re-asserting the current
-tip. The abandoned branch's transactions become permanently invalid,
+tip. In this implementation a new commit resolves a fork only when it
+leaves exactly one branch extended (`assessment`,
+`rs/cyphr/src/fork.rs`): a fork whose branches both have a commit over
+them stays in Error at any heights, and an abandoned branch that is
+extended later re-opens a resolved fork. The PoP exit (2) is not
+implemented. The abandoned branch's transactions become permanently invalid,
 and keys added only in it are not part of KR. Witnesses retain the
 abandoned branch only as proof of error. Resolution belongs to the
 principal alone: witnesses observe the principal's choice and adopt it;
@@ -446,9 +451,11 @@ attempts) as the Resync → Error trigger.
   deliver them through different peers, and verify that a verifier
   holding both reaches Error, keeps both branches, and can pass the
   evidence on.
-- **Fork resolution**: Resolve via new commit and via resync PoP — verify
-  both paths return to Active and keep the abandoned branch as proof of
-  error.
+- **Fork resolution**: Resolve via new commit (extending exactly one
+  branch) and, once implemented, via resync PoP — verify both paths
+  return to Active and keep the abandoned branch as proof of error.
+  Verify that a both-extended fork stays in Error whichever branch is
+  taller, and that extending an abandoned branch re-opens the fork.
 - **Timestamp edge cases**: Messages at exactly the ±360 s boundary.
   Messages before and after the latest known timestamp.
 - **State jump**: Single jump (no revokes), multi-jump (revoke in path),

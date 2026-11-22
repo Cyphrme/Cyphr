@@ -1077,7 +1077,7 @@ SPEC 15.8, line 2814. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: An invalid fork is resolved when the principal unambiguously selects one
 - tests: none
-- reason: Witness-side consensus states (Error until the principal resolves its own fork) have no implementation in `rs/cyphr` or `rs/cyphr-server`; the text stands and the work belongs to the consensus nodes (D1 and the gossip nodes).
+- reason: The commit exit is implemented (`assessment`, `rs/cyphr/src/fork.rs`): a new commit resolves a fork only when it leaves exactly one branch extended, a fork with both branches extended stays Error at any height, and an extended abandoned branch re-opens it. The proof-of-possession exit (`resync/create`) is not implemented, so the line as a whole is not testable.
 
 ```claim
 kind: requirement
@@ -1093,7 +1093,7 @@ SPEC 15.8, line 2822. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: - **2. PoP assertion** - The principal signs a `resync/create` message
 - tests: none
-- reason: Depends on `resync/create`, which `rs/cyphr` has no coz kind for; the same witness-side surface as line 2814.
+- reason: Depends on `resync/create`, which `rs/cyphr` has no coz kind for; the PoP exit is not implemented (see line 2814).
 
 ```claim
 kind: requirement

@@ -108,10 +108,11 @@ clocks correct.
   parting point extends the abandoned branch. A stale offline device that
   wakes up and signs on the old branch does this without any attacker.
 - **Any once-active key can backdate a commit to re-open or lock a
-  principal.** A commit is checked against a key's revoke by its own
-  `now` (`dead_key_in`, `rs/cyphr-storage/src/engine/mod.rs:3996`), so a
-  holder of a key that was ever active can date a commit before the
-  revoke cutoff, extend an abandoned branch, and put the principal back
+  principal.** A commit signed by a revoked key is refused only if
+  its own `now` is at or after the server's receipt time of the revoke
+  (`dead_key_in`, `rs/cyphr-storage/src/engine/mod.rs:6443`, called at
+  `:3996`), so a holder of a key that was ever active can date a commit
+  before that cutoff, extend an abandoned branch, and put the principal back
   in Error. This is a liveness cost, not a forged history, and it is a
   known limit until the spec author rules on timestamp monotonicity.
 - **The CLI sends a fork only as an answering pair.** `cyphr push`
@@ -127,10 +128,14 @@ clocks correct.
   can also bury genuine evidence under junk: a verifier reads at most 32
   evidence items per peer per pull, before checking them.
 - **A witness does not check that entries past the cap chain.** A witness
-  binds an attested head to the branch that names it and checks that the
-  entries it holds chain to each other. Entries the authority holds past
-  the retention cap are not held by the witness, so the binding does not
-  check that they chain to each other.
+  binds an attested head to the branch that names it, and checks that the
+  entries of that branch it holds each extend the one before. Entries
+  past the retention cap are not held; the witness accepts them only if
+  the authority's cap refused them (`BranchLimit` or `Errored`), and does
+  not check that they chain to each other, because a commit's `pre` is
+  bound only inside its own arrow (`head_is_bound`,
+  `rs/cyphr-server/src/sync.rs:621-760`). The witness's own standing and
+  fork point do not depend on those entries.
 - **Retained rivals are capped.** An engine keeps at most 16 rival
   lines per principal and 2 lines per signing key, and a line holds at
   most 2 commits (`BRANCH_LIMIT`, `BRANCH_PER_KEY`, `BRANCH_DEPTH`,

@@ -604,7 +604,8 @@ keeps the pair when its quotas allow it or when it changes the principal's
 consensus state or fork point, and refuses it whole otherwise. A `parent`
 the server already holds, or can admit alone, changes nothing about how the
 bundle is answered. In Error a refused offer answers `423` (`errored`);
-`409` applies only outside Error, or to a rival the server retains. The field is additive and absent from the normative
+`409` applies only outside Error, or to a verified rival root the server retains while in Error; an offer the quotas refuse answers `423`
+(`slots_one_key_cannot_crowd_out_another`, `rs/cyphr-server/tests/evidence.rs:412`). The field is additive and absent from the normative
 specification of `POST /push`.
 
 **Authentication.** No bearer token is required: the bundle's own signatures
