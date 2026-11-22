@@ -3,11 +3,6 @@
 //! engine retains it anyway if `assessment(held + offer)` differs in
 //! consensus or fork point; an offer is one commit, or a line root with
 //! its one extension (`submit_pair`).
-//!
-//! `submit_pair` does not exist yet. `Rig::submit_pair` stands in for it
-//! with the naive client's two submissions, so these tests compile and are
-//! red at run time for the real reason (the caps refuse the root); the
-//! implementer replaces its body with the engine method.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
@@ -179,18 +174,15 @@ impl Rig {
             .map(|_| ())
     }
 
-    /// Stands in for `StorageEngine::submit_pair(principal_id, genesis,
-    /// parent, bundle)`: the naive client's two submissions, the root's own
-    /// refusal ignored and the extension's answer returned. Replace the
-    /// body with the engine method.
     async fn submit_pair(
         &self,
         e: &Engine,
         parent: &WireBundle,
         bundle: &WireBundle,
     ) -> Result<(), EngineError> {
-        let _ = self.submit(e, parent).await;
-        self.submit(e, bundle).await
+        e.submit_pair(&self.id, Some(self.genesis.clone()), parent, bundle)
+            .await
+            .map(|_| ())
     }
 
     async fn holds(&self, e: &Engine, p: &cyphr::Principal) -> bool {

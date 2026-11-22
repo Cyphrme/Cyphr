@@ -479,27 +479,29 @@ pub const BRANCH_MANIFEST_PREFIX: &[u8] = b"\0cyphr-storage/branch-manifest/v1\0
 /// evict nothing. An embedding principal's pin names a state of this one
 /// (SPEC 14.12), and finds it again only because nothing held is deleted.
 ///
-/// Retained rival lines kept per principal. A line is a retained commit
-/// and the retained commits that extend it. A key holder can mint any
-/// number of rivals at one position; the bound caps what one principal can
-/// make the store keep (at most [`BRANCH_LIMIT`] * [`BRANCH_DEPTH`]
-/// commits), and the next line is refused as [`EngineError::BranchLimit`];
-/// a commit past [`BRANCH_DEPTH`] is refused as [`EngineError::Errored`] in Error.
+/// Retained rival lines kept per principal. A line is a retained root and
+/// the retained commits under it, at most [`BRANCH_DEPTH`] in all. A key
+/// holder can mint any number of rivals at one position; the quotas bound
+/// what one principal can make the store keep by offer: [`BRANCH_LIMIT`] *
+/// [`BRANCH_DEPTH`] commits. An offer the quotas refuse is still kept when
+/// it changes the principal's standing or fork point (rule X), which adds
+/// at most two commits per chain position: the bound is 32 + 2h, h the
+/// principal's chain length. A refused offer answers
+/// [`EngineError::BranchLimit`] while the principal is Active and
+/// [`EngineError::Errored`] in Error.
 pub const BRANCH_LIMIT: usize = 16;
 
 /// Retained lines one signer may open (the signer of a line's first
-/// commit). A key that forked once is already proven to equivocate by its
-/// first rival, so a small quota loses no evidence: a thief who holds one
-/// key cannot starve lines opened by the principal's other keys, and
-/// shares that key's quota if it is the owner's only key. A thief who first
-/// adds keys to the principal (each a further pair of lines) can still
-/// fill [`BRANCH_LIMIT`].
+/// commit). The quota bounds what one key can have kept as junk, nothing
+/// more: a key holder can fill it, and what it refuses is kept anyway when
+/// it would change the standing or the fork point, so filling it keeps
+/// nothing out that matters.
 pub const BRANCH_PER_KEY: usize = 2;
 
-/// Commits kept in one retained line. The fork rule reads a line's first
-/// commit and whether one commit extends it; a further commit changes no
-/// verdict and only names the leaf, so a holder keeps the line to this
-/// depth and refuses what extends it further.
+/// Commits kept in one retained line, its root included. The fork rule
+/// reads a line's root and whether one commit extends it; a further commit
+/// changes no verdict, so a holder keeps a line to this size and refuses
+/// what grows it.
 pub const BRANCH_DEPTH: usize = 2;
 
 /// The leading bytes of every blob the engine itself writes (each prefix
@@ -692,16 +694,14 @@ fn commit_signer(commit: &IndexableCommit) -> String {
 }
 
 /// Whether a rival commit at `sequence` over `pre`, signed by `signer`,
-/// may still be retained beside `kept`: an extension of a retained commit
-/// needs its line below [`BRANCH_DEPTH`]; a commit that opens a line needs
-/// a free line for its signer and for the principal. The caps count lines,
-/// not commits, so a line's deciding extension is never refused for the
-/// commits of another.
+/// may still be retained beside `kept` by the caps alone: an extension
+/// needs its line (the retained commits under one root) below
+/// [`BRANCH_DEPTH`] in all; a commit that opens a line needs a free line
+/// for its signer and for the principal. The caps count lines, not
+/// commits. They never refuse what would change the standing or the fork
+/// point: that is [`StorageEngine::keep_branch`]'s rule X.
 fn has_slot(kept: &[Retained], pre: Option<&str>, sequence: u64, signer: &str) -> bool {
     use std::collections::HashMap;
-    if kept.len() >= BRANCH_LIMIT * BRANCH_DEPTH {
-        return false;
-    }
     let by_pr: HashMap<(u64, &str), &Retained> = kept
         .iter()
         .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
@@ -713,17 +713,19 @@ fn has_slot(kept: &[Retained], pre: Option<&str>, sequence: u64, signer: &str) -
             .zip(r.tip.sequence.checked_sub(1))
             .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied())
     };
+    let root_of = |r: &Retained| {
+        let mut at = r;
+        while let Some(up) = parent_of(at) {
+            at = up;
+        }
+        (at.tip.sequence, at.pr.clone())
+    };
     let parent = pre
         .zip(sequence.checked_sub(1))
         .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
     if let Some(parent) = parent {
-        let mut depth = 1;
-        let mut at = parent;
-        while let Some(up) = parent_of(at) {
-            depth += 1;
-            at = up;
-        }
-        return depth < BRANCH_DEPTH;
+        let root = root_of(parent);
+        return kept.iter().filter(|r| root_of(r) == root).count() < BRANCH_DEPTH;
     }
     let mut lines = 0;
     let mut by_signer = 0;
@@ -3789,6 +3791,64 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         genesis: Option<crate::Genesis>,
         bundle: &WireBundle,
     ) -> Result<IngestResult, EngineError> {
+        self.submit_commit_with(principal_id, genesis, bundle, None)
+            .await
+    }
+
+    /// Offer a rival line root `parent` together with its one extension
+    /// `bundle` (frame rule X): the two are kept both or neither. A root
+    /// whose caps refuse it alone changes no verdict, so a holder whose
+    /// quota is full could never place the extension that makes the fork
+    /// two extended branches; the pair is judged as one offer, and kept
+    /// when the caps allow it or when it moves the principal's standing or
+    /// fork point. A root the engine already holds, or admits by itself,
+    /// leaves `bundle` an ordinary submission.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::submit_commit`]; a pair the caps refuse and that changes
+    /// nothing answers [`EngineError::BranchLimit`], or
+    /// [`EngineError::Errored`] while the principal is in Error, and
+    /// stores neither commit.
+    pub async fn submit_pair(
+        &self,
+        principal_id: &str,
+        genesis: Option<crate::Genesis>,
+        parent: &WireBundle,
+        bundle: &WireBundle,
+    ) -> Result<IngestResult, EngineError> {
+        match self
+            .submit_commit_with(principal_id, genesis.clone(), bundle, Some(parent))
+            .await
+        {
+            // The extension is no rival of any chain held: its root is
+            // held, or can be admitted alone, and the extension follows.
+            Err(EngineError::Protocol(_)) => {
+                match self
+                    .submit_commit(principal_id, genesis.clone(), parent)
+                    .await
+                {
+                    Ok(_)
+                    | Err(
+                        EngineError::Protocol(_)
+                        | EngineError::Errored { .. }
+                        | EngineError::BranchLimit { .. },
+                    ) => {},
+                    Err(other) => return Err(other),
+                }
+                self.submit_commit(principal_id, genesis, bundle).await
+            },
+            other => other,
+        }
+    }
+
+    async fn submit_commit_with(
+        &self,
+        principal_id: &str,
+        genesis: Option<crate::Genesis>,
+        bundle: &WireBundle,
+        pair: Option<&WireBundle>,
+    ) -> Result<IngestResult, EngineError> {
         self.writable()?;
         self.ensure_healed().await?;
 
@@ -3800,6 +3860,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // bundle, never the caller's bytes.
         let canonical = canonical_bundle(bundle)?;
         let bundle = &canonical;
+        let parent = pair.map(canonical_bundle).transpose()?;
 
         // 1. Resolve the principal's storage key.
         //
@@ -4045,12 +4106,38 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                             Err(
                                 refusal @ (EngineError::BranchLimit { .. }
                                 | EngineError::Errored { .. }),
-                            ) => return Err(refusal),
+                            ) => return Err(self.answer_in_error(principal_id, refusal).await),
                             Err(err) => tracing::warn!(
                                 principal = %principal_id,
                                 error = %err,
                                 "could not test a refused bundle as a resolution; retaining it"
                             ),
+                        }
+                        if let Some(parent) = &parent {
+                            match self
+                                .retain_pair(principal_id, &genesis, parent, bundle, principal.state())
+                                .await
+                            {
+                                Ok(true) => {
+                                    return Err(EngineError::Protocol(
+                                        cyphr::Error::CommitMismatch,
+                                    ));
+                                },
+                                Ok(false) => {},
+                                Err(
+                                    refusal @ (EngineError::BranchLimit { .. }
+                                    | EngineError::Errored { .. }),
+                                ) => {
+                                    return Err(
+                                        self.answer_in_error(principal_id, refusal).await
+                                    );
+                                },
+                                Err(err) => tracing::warn!(
+                                    principal = %principal_id,
+                                    error = %err,
+                                    "could not retain an offered pair; answering the original refusal"
+                                ),
+                            }
                         }
                         match self
                             .retain_rival(principal_id, genesis, bundle, principal.state())
@@ -4066,7 +4153,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                             Ok(false) => {},
                             // The one retention outcome that is a refusal in
                             // its own right: no slot left for this key.
-                            Err(full @ EngineError::BranchLimit { .. }) => return Err(full),
+                            Err(full @ EngineError::BranchLimit { .. }) => {
+                                return Err(self.answer_in_error(principal_id, full).await);
+                            },
                             // Retention is best-effort evidence keeping: a
                             // storage fault must not turn the fork's own
                             // refusal (409/422) into a 500.
@@ -4707,6 +4796,134 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(false)
     }
 
+    /// A cap refusal as the engine answers it: [`EngineError::Errored`]
+    /// while the principal is in Error (the Error refusal is true whether
+    /// or not the commit is kept), the refusal itself otherwise.
+    async fn answer_in_error(&self, principal_id: &str, refusal: EngineError) -> EngineError {
+        if matches!(refusal, EngineError::BranchLimit { .. })
+            && self.is_errored(principal_id).await.unwrap_or(false)
+        {
+            return EngineError::Errored {
+                principal_id: principal_id.to_string(),
+            };
+        }
+        refusal
+    }
+
+    /// Test a refused `bundle` as the extension of the rival line root
+    /// `parent`, neither held: verify the root as a rival (as
+    /// [`Self::retain_rival`] does), then `bundle` over it, and keep both
+    /// or neither. Both are kept when the caps allow them, and otherwise
+    /// when the pair moves the principal's consensus or fork point (rule
+    /// X); a pair that changes nothing is refused whole. `Ok(false)` is a
+    /// pair that verifies as no fork participant (or a root already held).
+    /// Caller holds the principal's write lock.
+    async fn retain_pair(
+        &self,
+        principal_id: &str,
+        genesis: &crate::Genesis,
+        parent: &WireBundle,
+        bundle: &WireBundle,
+        tip: &cyphr::PrincipalState,
+    ) -> Result<bool, EngineError> {
+        let hashes: Vec<Blake3Hash> = parent
+            .cozies()
+            .map(|b| Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))
+            .collect();
+        if self.is_retained(principal_id, &hashes, &Shape::of(parent))
+            || self.is_already_stored(principal_id, parent).await?
+        {
+            return Ok(false);
+        }
+        let retained = self.retained_keys(principal_id);
+        let (Some(root_signers), Some(_)) = (
+            authenticated_signers(parent, tip, &retained),
+            authenticated_signers(bundle, tip, &retained),
+        ) else {
+            return Ok(false);
+        };
+        let stored = self.stored_entries(principal_id, None).await?;
+        let entries = &stored.entries;
+        let mut principal =
+            Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new()).await?;
+        let source = PinSource::stored();
+        let mut held = HeldCache::new();
+        for (position, (entry, pins)) in entries.iter().zip(&stored.pins).enumerate() {
+            let tried = |t: &coz::Thumbprint| {
+                principal.is_key_active(t)
+                    || (tip.key_ever_held(t).is_none() && principal.has_kt_digests())
+            };
+            if root_signers.iter().all(tried) {
+                self.retention_trials
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut candidate = principal.fork().await?;
+                let Ok(root_embedded) = self
+                    .follow_held(principal_id, &mut candidate, parent, &mut held)
+                    .await
+                else {
+                    continue;
+                };
+                if let Ok(Some(root)) =
+                    Self::build_commit(&mut candidate, parent, principal_id, position as u64).await
+                {
+                    let root_commit = root.commit.clone();
+                    if root.staged.commit().await.is_err() {
+                        continue;
+                    }
+                    let Ok(ext_embedded) = self
+                        .follow_held(principal_id, &mut candidate, bundle, &mut held)
+                        .await
+                    else {
+                        continue;
+                    };
+                    let Ok(Some(ext)) = Self::build_commit(
+                        &mut candidate,
+                        bundle,
+                        principal_id,
+                        position as u64 + 1,
+                    )
+                    .await
+                    else {
+                        continue;
+                    };
+                    let ext_commit = ext.commit;
+                    let signer = commit_signer(&root_commit);
+                    let allowed = {
+                        let kept = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+                        let of_principal = kept
+                            .get(&root_commit.principal_id)
+                            .map_or(&[][..], Vec::as_slice);
+                        has_slot(
+                            of_principal,
+                            root_commit.pre.as_deref(),
+                            root_commit.sequence,
+                            &signer,
+                        )
+                    };
+                    if !allowed
+                        && !self
+                            .changes_verdict(principal_id, &[&root_commit, &ext_commit])
+                            .await?
+                    {
+                        return Err(EngineError::BranchLimit { key: signer });
+                    }
+                    self.keep_branch_with(parent, root_commit, &root_embedded, true)
+                        .await?;
+                    self.keep_branch_with(bundle, ext_commit, &ext_embedded, true)
+                        .await?;
+                    return Ok(true);
+                }
+            }
+            if position + 1 < entries.len() {
+                self.retention_replays
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.replay_pinned(&mut principal, &source, entry, pins, position, EMBED_DEPTH)
+                    .await?;
+            }
+        }
+        Ok(false)
+    }
+
     /// Test a refused `bundle` as the extension of a retained rival, the
     /// one record a fork resolution leaves (SPEC 15.8: a new commit whose
     /// `pre` is the chosen branch's tip; the engine keeps no other).
@@ -5224,6 +5441,36 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         commit: IndexableCommit,
         embedded: &[EmbeddedPin],
     ) -> Result<(), EngineError> {
+        self.keep_branch_with(bundle, commit, embedded, false).await
+    }
+
+    /// Whether retaining `commit` (and `also`, the extension offered with
+    /// it) moves the principal's consensus or fork point: the test of
+    /// rule X, run over the held commits plus the offer.
+    async fn changes_verdict(
+        &self,
+        principal_id: &str,
+        offer: &[&IndexableCommit],
+    ) -> Result<bool, EngineError> {
+        let lowest = offer.iter().map(|c| c.sequence).min();
+        let before = assessment(&self.held_with(principal_id, lowest).await?);
+        let mut held = self.held_with(principal_id, lowest).await?;
+        held.extend(offer.iter().map(|c| held_of(c)));
+        let after = assessment(&held);
+        Ok(after.consensus != before.consensus || after.fork_point != before.fork_point)
+    }
+
+    /// [`Self::keep_branch`], where `force` skips the caps (rule X has
+    /// already found the offer changes the standing or the fork point). A
+    /// single commit the caps would refuse is kept all the same when it
+    /// changes either; a forced commit counts toward the quotas.
+    async fn keep_branch_with(
+        &self,
+        bundle: &WireBundle,
+        commit: IndexableCommit,
+        embedded: &[EmbeddedPin],
+        force: bool,
+    ) -> Result<(), EngineError> {
         let tip = commit.commit_ids.first().cloned().unwrap_or_default();
         let canonical = self
             .chain(
@@ -5236,6 +5483,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Ok(());
         }
         let signer = commit_signer(&commit);
+        let capped;
         {
             let kept = self.branches.lock().unwrap_or_else(|p| p.into_inner());
             let of_principal = kept
@@ -5247,14 +5495,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             {
                 return Ok(());
             }
-            if !has_slot(
-                of_principal,
-                commit.pre.as_deref(),
-                commit.sequence,
-                &signer,
-            ) {
-                return Err(EngineError::BranchLimit { key: signer });
-            }
+            capped = !force
+                && !has_slot(
+                    of_principal,
+                    commit.pre.as_deref(),
+                    commit.sequence,
+                    &signer,
+                );
+        }
+        if capped
+            && !self
+                .changes_verdict(&commit.principal_id, &[&commit])
+                .await?
+        {
+            return Err(EngineError::BranchLimit { key: signer });
         }
         let seen = unix_now();
         let branch = BranchTip {
@@ -5598,12 +5852,26 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// inputs are caches rebuilt from the blobs (I1), and nothing else is
     /// kept for it.
     async fn held(&self, principal_id: &str) -> Result<Vec<Held>, EngineError> {
+        self.held_with(principal_id, None).await
+    }
+
+    /// [`Self::held`] read as if a commit at position `offer` were
+    /// retained too: the window reaches one below it, so the fork rule can
+    /// be run over the held commits plus that offer.
+    async fn held_with(
+        &self,
+        principal_id: &str,
+        offer: Option<u64>,
+    ) -> Result<Vec<Held>, EngineError> {
         let lowest_retained = self
             .branches
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(principal_id)
-            .and_then(|kept| kept.iter().map(|r| r.tip.sequence).min());
+            .and_then(|kept| kept.iter().map(|r| r.tip.sequence).min())
+            .into_iter()
+            .chain(offer)
+            .min();
         let Some(tip) = self.indexer.get_tip(principal_id).await? else {
             return self.held_from(principal_id, 0).await;
         };
