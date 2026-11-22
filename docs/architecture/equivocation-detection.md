@@ -218,11 +218,18 @@ evaluator: test
 Only the principal resolves its own fork, by one of the two acts SPEC
 §15.8 names: a new commit whose `pre` is the tip of the chosen branch,
 or a `resync/create` proof of possession re-asserting a tip. The
-implementation takes only the first: a new commit resolves a fork only
-when it leaves exactly one branch extended. A fork whose branches both
-have a commit over them stays in Error at any heights, an abandoned
-branch that is extended later re-opens a resolved fork, and the
-proof-of-possession exit is not yet implemented. No server,
+implementation takes both. A new commit resolves a fork only when it
+leaves exactly one branch extended; a fork whose branches both have a
+commit over them stays in Error at any heights. A proof of possession
+is a coz of typ `<authority>/cyphr/resync/create`, signed by one key
+active at the tip it names, with `now` required. At a contest the walk
+follows the one child whose subtree holds an asserted tip, so a later
+extension of the abandoned branch does not re-open the fork; proofs
+into two children leave the principal in Error for good, and only
+recovery ends it. A proof at or below the fork point changes nothing.
+An abandoned branch extended after a commit resolution does re-open the
+fork (`rs/cyphr/src/resync.rs`, `assessment` in `rs/cyphr/src/fork.rs`).
+No server,
 witness or verifier resolves a fork, and none chooses a branch on the
 principal's behalf. After a resolution a verifier's verdict follows the
 chosen branch, names the key that signed the resolution, and keeps the

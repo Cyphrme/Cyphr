@@ -119,8 +119,13 @@ hand. Two limits apply to the check as it exists:
 Only the owner resolves a fork in their own record. They sign a commit
 whose `pre` is the tip of one branch, where the other branch has no
 commit over it; that settles the fork on the extended branch. A
-`resync/create` proof of possession re-asserting a tip is the other exit
-the spec names, and the Rust implementation has no such message yet
+`resync/create` proof of possession is the other exit: a coz signed
+outside any commit, by one key active at the tip it names, that asserts
+that tip (`cyphr resync`). It resolves a fork even when both branches
+already have commits, and an abandoned branch extended later does not
+re-open a fork it settled. If the owner's proofs name tips on two
+different branches, the record stays in Error for good and only recovery
+ends it
 ([SPEC §15.8](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#158-fork-resolution)).
 No server, witness or reader resolves it for them. Until they do, SPEC
 puts the record in the Error state: no new transactions are processed
@@ -128,9 +133,9 @@ puts the record in the Error state: no new transactions are processed
 and both branches are kept as proof (§15.8).
 
 Height decides nothing. If both branches already have a commit over them,
-the record stays in Error whichever branch is taller and whichever gets
-another commit, and an abandoned branch that someone extends later
-re-opens a fork the owner had settled. Every holder of the same commits
+a commit leaves the record in Error whichever branch is taller; only a
+proof of possession settles it. A fork the owner settled by a commit
+re-opens if someone extends the abandoned branch later. Every holder of the same commits
 reads the same verdict (`assessment`, `rs/cyphr/src/fork.rs:120`).
 
 A resolution is checked by signature, not by identity. When the fork

@@ -60,8 +60,8 @@ inferable from SPEC.md at `be0663f`," not "implemented in `rs/` or
 `go/`."** What `rs/` does at this revision:
 
 - **Not implemented:** a witness consensus-state machine, retention of
-  either branch of a fork, proof-of-error retention, the `resync/create`
-  proof of possession, and state jumping. `git grep` over `rs/` finds no
+  either branch of a fork, proof-of-error retention, and state jumping
+  (the `resync/create` proof of possession exists: `rs/cyphr/src/resync.rs`). `git grep` over `rs/` finds no
   `ConsensusState`, `ProofOfError`, `proof_of_error`, `state_jump` or
   `jump_to_ps`.
 - **Single chain per server:** `cyphr-server` refuses a commit whose
@@ -276,8 +276,12 @@ tip. In this implementation a new commit resolves a fork only when it
 leaves exactly one branch extended (`assessment`,
 `rs/cyphr/src/fork.rs`): a fork whose branches both have a commit over
 them stays in Error at any heights, and an abandoned branch that is
-extended later re-opens a resolved fork. The PoP exit (2) is not
-implemented. The abandoned branch's transactions become permanently invalid,
+extended later re-opens a resolved fork. The PoP exit (2) is
+implemented (`rs/cyphr/src/resync.rs`): a `resync/create` coz signed by
+one key active at the asserted tip makes the walk follow the one child
+holding it, whatever is extended elsewhere, so a later extension of the
+abandoned branch does not re-open the fork; proofs into two children
+leave the principal in Error for good. The abandoned branch's transactions become permanently invalid,
 and keys added only in it are not part of KR. Witnesses retain the
 abandoned branch only as proof of error. Resolution belongs to the
 principal alone: witnesses observe the principal's choice and adopt it;
@@ -452,10 +456,11 @@ attempts) as the Resync → Error trigger.
   holding both reaches Error, keeps both branches, and can pass the
   evidence on.
 - **Fork resolution**: Resolve via new commit (extending exactly one
-  branch) and, once implemented, via resync PoP — verify both paths
+  branch) and via resync PoP — verify both paths
   return to Active and keep the abandoned branch as proof of error.
   Verify that a both-extended fork stays in Error whichever branch is
-  taller, and that extending an abandoned branch re-opens the fork.
+  taller, and that extending an abandoned branch re-opens a fork a commit
+  settled but not one a PoP settled.
 - **Timestamp edge cases**: Messages at exactly the ±360 s boundary.
   Messages before and after the latest known timestamp.
 - **State jump**: Single jump (no revokes), multi-jump (revoke in path),
