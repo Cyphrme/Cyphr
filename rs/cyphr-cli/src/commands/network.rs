@@ -275,9 +275,12 @@ pub fn resync(
     let mut signed = None;
     let mut last_error = Error::Signing("no keystore key is active at the local tip".into());
     for tmb in candidates {
-        let attempt = keystore.signer(&tmb).map_err(Error::from).and_then(|signer| {
-            super::data::sign(&signer, json!({"id": tip, "now": now, "typ": typ}))
-        });
+        let attempt = keystore
+            .signer(&tmb)
+            .map_err(Error::from)
+            .and_then(|signer| {
+                super::data::sign(&signer, json!({"id": tip, "now": now, "typ": typ}))
+            });
         match attempt {
             Ok(proof) => {
                 signed = Some((tmb, proof));

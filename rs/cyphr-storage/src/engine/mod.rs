@@ -568,7 +568,8 @@ impl ResyncRecord {
     /// manifest, the record is not replayed on rebuild.
     fn check(&self) -> Result<(), String> {
         let key = self.key.to_key().map_err(|e| e.to_string())?;
-        let resync = cyphr::resync::verify_resync(&self.evidence, &key).map_err(|e| e.to_string())?;
+        let resync =
+            cyphr::resync::verify_resync(&self.evidence, &key).map_err(|e| e.to_string())?;
         if resync.id != self.tip {
             return Err("the record's tip is not the proof's id".into());
         }
@@ -5135,8 +5136,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             );
         }
         let mut principal =
-            Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new())
-                .await?;
+            Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new()).await?;
         let source = PinSource::stored();
         for (position, (entry, pins)) in prefix.iter().zip(prefix_pins).enumerate() {
             self.replay_pinned(&mut principal, &source, entry, pins, position, EMBED_DEPTH)
@@ -5679,9 +5679,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .map(|t| t.commit_id);
         let promote = after.consensus == Consensus::Active
             && after.heads.first().map(String::as_str) != chain_tip.as_deref();
-        let force = promote
-            || after.consensus != before.consensus
-            || after.fork_point != before.fork_point;
+        let force =
+            promote || after.consensus != before.consensus || after.fork_point != before.fork_point;
 
         // I1 order: the carried commits, then the record, then the chain.
         for ((commit, embedded), bundle) in carried.into_iter().zip(&line) {
@@ -5805,8 +5804,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let source = PinSource::stored();
         let mut held = HeldCache::new();
         let mut principal =
-            Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new())
-                .await?;
+            Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new()).await?;
         for position in 0..=stored.entries.len() {
             let tried = signers.iter().all(|t| {
                 principal.is_key_active(t)
@@ -6544,7 +6542,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if self.kept_shadow {
             let fresh = self.held_from(principal_id, from).await?;
             if format!("{:?}", self.assessed(principal_id, &held))
-                != format!("{:?}", self.assessed(principal_id, &fresh)) {
+                != format!("{:?}", self.assessed(principal_id, &fresh))
+            {
                 self.kept_divergences
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let why = format!(

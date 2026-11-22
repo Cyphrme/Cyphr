@@ -417,7 +417,9 @@ pub(crate) async fn offer_resyncs(
             Ok(receipt) if receipt.promoted => {
                 info!(principal = %principal_id, "a resync proof made its line the chain");
             },
-            Ok(receipt) if receipt.stored => info!(principal = %principal_id, "a resync proof stored"),
+            Ok(receipt) if receipt.stored => {
+                info!(principal = %principal_id, "a resync proof stored")
+            },
             Ok(_) => {},
             Err(err) => refused(principal_id, &err, "resync proof answered"),
         }
