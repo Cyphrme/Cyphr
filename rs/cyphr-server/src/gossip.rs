@@ -20,8 +20,10 @@
 //!   ask this server;
 //! - a resync proof a peer holds (SPEC 15.8 item 2) is offered to the engine with the peer's chain
 //!   from the first commit this server lacks, so a fork the principal resolved by proof resolves
-//!   here too. A proof moves no head, so a principal in Error is never idle: it is pulled, and its
-//!   peers asked for proofs, every round until it resolves.
+//!   here too. A proof moves no head, so a principal in Error here, or that a peer reads in Error
+//!   (it lists more heads than this server), is never idle: it takes the full round, which asks for
+//!   proofs. A peer that holds a proof selecting a branch this server holds, with no more heads,
+//!   is not seen by the gate; the proof reaches this server from its sender or a later full round.
 //!
 //! Peers are dialled at the address configured, so a deployment (or the
 //! scenario proxy) can carry and cut the link.
@@ -161,8 +163,8 @@ impl Gossip {
     /// says idle: the engine's tip is the one the keys were read at, and
     /// every peer lists only heads the engine holds (a 404 lists none).
     /// `None` when any of that cannot be shown, which runs the full pull,
-    /// and for a principal in Error, whose exit (a resync proof) moves no
-    /// head.
+    /// and when this server or a peer reads Error: the exit from Error (a
+    /// resync proof) moves no head.
     async fn idle_keys(
         &self,
         state: &Arc<AppState>,
@@ -170,7 +172,8 @@ impl Gossip {
         principal_id: &str,
     ) -> Option<Vec<Thumbprint>> {
         let tip = state.engine.get_tip(principal_id).await.ok()??;
-        if state.engine.is_errored(principal_id).await.ok()? {
+        let ours = state.engine.assess(principal_id).await.ok()?;
+        if ours.consensus == cyphr_storage::engine::Consensus::Error {
             return None;
         }
         let memo = self
@@ -182,6 +185,11 @@ impl Gossip {
                 return None;
             };
             let Some(heads) = heads else { continue };
+            // A peer that lists more heads than this server reads Error where it
+            // does not: a proof moved its verdict and no head.
+            if heads.tips().count() > ours.heads.len() {
+                return None;
+            }
             let mut held = BTreeSet::new();
             for head in heads.tips() {
                 if state.engine.holds_commit(principal_id, head).await.ok()? {
