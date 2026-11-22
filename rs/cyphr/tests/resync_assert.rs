@@ -80,8 +80,14 @@ fn asserted_tree(max: usize) -> impl Strategy<Value = (Tree, Vec<String>)> {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Verdict {
-    Active { head: String },
-    Error { height: u64, pre: Option<String> },
+    Active {
+        head: String,
+    },
+    Error {
+        height: u64,
+        pre: Option<String>,
+        heads: Vec<String>,
+    },
 }
 
 /// Rule E with assertions, the plain way. Asserted PRs naming nothing held
@@ -125,9 +131,23 @@ fn reference(held: &[Held], asserted: &[String]) -> Verdict {
                     ([only], _) => at = Some(**only),
                     ([], [only]) => at = Some(**only),
                     _ => {
+                        // The heads: the leaves at or above every child of
+                        // the contest the walk cannot pass.
+                        let mut leaves = Vec::new();
+                        let mut frontier = children.clone();
+                        while let Some(c) = frontier.pop() {
+                            let below = kids(Some(c.pr.as_str()));
+                            if below.is_empty() {
+                                leaves.push(c.id.clone());
+                            }
+                            frontier.extend(below);
+                        }
+                        leaves.sort();
+                        leaves.dedup();
                         return Verdict::Error {
                             height: at.map_or(0, |a| a.sequence + 1),
                             pre: at.map(|a| a.pr.clone()),
+                            heads: leaves,
                         };
                     },
                 }
@@ -150,6 +170,7 @@ fn read(held: &[Held], asserted: &[String]) -> Verdict {
             Verdict::Error {
                 height: fp.height,
                 pre: fp.pre,
+                heads: a.heads,
             }
         },
     }
@@ -182,6 +203,18 @@ fn fork(common: usize, left: usize, right: usize) -> (Vec<Held>, usize, usize) {
         }
     }
     (v, tips[0], tips[1])
+}
+
+/// Error at the contest after `common` chain commits, the heads the two
+/// branch tips `l` and `r`.
+fn error_at(common: usize, l: usize, r: usize) -> Verdict {
+    let mut heads = vec![format!("c{l}"), format!("c{r}")];
+    heads.sort();
+    Verdict::Error {
+        height: common as u64,
+        pre: Some(pr(common - 1)),
+        heads,
+    }
 }
 
 fn pr(i: usize) -> String {
@@ -251,7 +284,7 @@ proptest! {
     ) {
         let (mut held, mut l, mut r) = fork(common, left, right);
         let mut asserted = vec![pr(1000), pr(2000)];
-        let want = Verdict::Error { height: common as u64, pre: Some(pr(common - 1)) };
+        let want = error_at(common, l, r);
         prop_assert_eq!(read(&held, &asserted), want);
         for (n, on_left) in adds.into_iter().enumerate() {
             let cur = if on_left { &mut l } else { &mut r };
@@ -260,7 +293,7 @@ proptest! {
             if let Some(&e) = extra.get(n) {
                 asserted.push(pr(if e == 0 { 5000 + n } else { 1000 + e % left }));
             }
-            let want = Verdict::Error { height: common as u64, pre: Some(pr(common - 1)) };
+            let want = error_at(common, l, r);
             prop_assert_eq!(read(&held, &asserted), want, "after {} adds", n + 1);
         }
     }
