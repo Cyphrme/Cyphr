@@ -53,6 +53,11 @@ fn run(cli: Cli) -> cyphr_cli::Result<()> {
         Commands::Export { identity, output } => commands::io::export(&cli, identity, output),
         Commands::Import { input } => commands::io::import(&cli, input),
         Commands::Push { identity, peer } => commands::network::push(&cli, identity, peer),
+        Commands::Resync {
+            identity,
+            peer,
+            signer,
+        } => commands::network::resync(&cli, identity, peer, signer.as_deref()),
         Commands::Rebase { identity, peer } => commands::network::rebase(&cli, identity, peer),
         Commands::Fetch { identity, peer } => commands::network::fetch(&cli, identity, peer),
         Commands::Verify {

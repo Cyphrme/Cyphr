@@ -364,6 +364,29 @@ pub enum Commands {
         peer: String,
     },
 
+    /// Resolve a fork by a proof of possession of the local tip
+    ///
+    /// Signs a `resync/create` over this store's tip with a key of the
+    /// identity that is active there, and sends it to the peer with the
+    /// local commits the peer may lack (SPEC 15.8 item 2). No commit is
+    /// made. A fork whose two branches are both extended has no other exit
+    /// but key revocation; a second branch's proof leaves it in Error for
+    /// good.
+    Resync {
+        /// Principal Root (base64url)
+        #[arg(long, allow_hyphen_values = true)]
+        identity: String,
+
+        /// Peer base URL
+        #[arg(long)]
+        peer: String,
+
+        /// Thumbprint of the key to sign with (default: the first keystore
+        /// key active at the local tip)
+        #[arg(long)]
+        signer: Option<String>,
+    },
+
     /// Replay unpushed local commits onto a peer's tip
     ///
     /// The store keeps no commit once it is written, so the replay builds a

@@ -26,7 +26,7 @@ use cyphr::replay::WireBundle;
 use cyphr_client::{
     Anchor, BindingPolicy, Bundle, BundleError, Connector, HttpConnector, HttpOptions,
     PatchFailure, PatchRequest, PeerFailure, PeerStanding, PullPeer, PullReport, Record,
-    branch_bundles, fetch_patch, opener_of, pull,
+    branch_bundles, fetch_patch, fetch_resyncs, opener_of, pull,
 };
 use cyphr_storage::Genesis;
 use cyphr_storage::engine::{
@@ -323,7 +323,15 @@ fn resolution_of(fork: &HeldFork, assessed: &Assessment) -> Option<Resolution> {
         .iter()
         .find(|c| fork.commits.iter().all(|id| c.commits.contains(id)))?;
     let kept = contest.kept.clone()?;
-    let abandoned = fork.commits.iter().find(|c| **c != kept)?.clone();
+    let side = fork.commits.iter().find(|c| **c != kept)?;
+    // The tip of the abandoned branch: what a holder of it served as its
+    // head, not where it parted from the kept one.
+    let abandoned = contest
+        .abandoned
+        .get(side)
+        .and_then(|tips| tips.first())
+        .unwrap_or(side)
+        .clone();
     Some(Resolution {
         kept,
         abandoned,
@@ -356,6 +364,52 @@ async fn run_round<C: Connector>(
     let mut handed = pulled.bundles_since(mark).to_vec();
     handed.extend(branch_bundles(&pulled, &report, peers).await);
     round.keep(&pulled, &handed).await?;
+    // Resync proofs (SPEC 15.8 item 2) move no head, so a pull never shows
+    // one: the peers' are fetched and offered to the store with the peer's
+    // chain, which verifies each, and the verdict below reads them.
+    for peer in peers {
+        let Ok(pops) = fetch_resyncs(peer.connector, &round.wire).await else {
+            continue;
+        };
+        if pops.is_empty() {
+            continue;
+        }
+        let request = PatchRequest {
+            principal_id: &round.wire,
+            anchor: None,
+        };
+        let Ok(patch) =
+            fetch_patch(peer.connector, &request, BindingPolicy::NotRequired, None).await
+        else {
+            continue;
+        };
+        let chain: Vec<WireBundle> = patch
+            .entries
+            .into_iter()
+            .map_while(|e| e.bundle.ok())
+            .collect();
+        let start = round.store.held_prefix(&round.principal_id, &chain).await?;
+        for pop in &pops {
+            match round
+                .store
+                .submit_resync(&round.principal_id, pop, &chain[start..])
+                .await
+            {
+                // A proof the store refuses, a peer's bad one included,
+                // changes nothing; only a store fault ends the round.
+                Ok(_)
+                | Err(
+                    EngineError::NotFound(_)
+                    | EngineError::InvalidInput(_)
+                    | EngineError::Protocol(_)
+                    | EngineError::DeadKey { .. }
+                    | EngineError::BranchLimit { .. }
+                    | EngineError::Errored { .. },
+                ) => {},
+                Err(fault) => return Err(fault.into()),
+            }
+        }
+    }
 
     let answered: Vec<&str> = report
         .peers
