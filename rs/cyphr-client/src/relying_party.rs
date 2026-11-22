@@ -217,6 +217,16 @@ pub struct RelyingParty {
     /// 15.8 item 2), kept across pulls like the branches they decide
     /// between: a proof checked against the chain is not asked again.
     asserted: std::collections::BTreeSet<String>,
+    /// The resync proofs peers served, kept so a proof that names a branch
+    /// can be checked once that branch's line is at hand.
+    pops: Vec<serde_json::Value>,
+    /// The rival branches pulls verified, each with its extensions, kept
+    /// for the same: what a proof's signer is read from on a branch.
+    lines: Vec<crate::BranchLine>,
+    /// Proofs that name a kept branch commit this relying party could not
+    /// check the signer of. Any of them refuses sign-in: it may be the
+    /// proof that makes the fork Error for good, which the servers read.
+    unverified: std::collections::BTreeSet<String>,
     /// A verified commit could not be kept ([`BRANCH_COMMIT_LIMIT`]): a
     /// fork may stand that the relying party cannot see, so it refuses
     /// sign-in. Never cleared: only a rebuilt relying party starts clean.
@@ -245,6 +255,9 @@ impl RelyingParty {
             last_pull: None,
             branches: BTreeMap::new(),
             asserted: std::collections::BTreeSet::new(),
+            pops: Vec::new(),
+            lines: Vec::new(),
+            unverified: std::collections::BTreeSet::new(),
             overflowed: false,
             challenges: BTreeMap::new(),
             sessions: BTreeMap::new(),
@@ -296,9 +309,40 @@ impl RelyingParty {
                     Err(_) => continue,
                 }
             }
-            self.asserted.extend(self.record.asserted(&pops).await);
+            for pop in pops {
+                if self.pops.len() < crate::MAX_RESYNCS && !self.pops.contains(&pop) {
+                    self.pops.push(pop);
+                }
+            }
+            for line in crate::branch_lines(&report) {
+                let known = self
+                    .lines
+                    .iter()
+                    .any(|l| l.height == line.height && l.bundles.first() == line.bundles.first());
+                if known {
+                    continue;
+                }
+                if self.lines.len() < BRANCH_COMMIT_LIMIT {
+                    self.lines.push(line);
+                } else {
+                    // A line this relying party cannot keep may be the one a
+                    // proof is signed on.
+                    self.overflowed = true;
+                }
+            }
             let chain = self.chain_window(&report.branches);
             self.keep_branches(&report.branches, &chain);
+            let branch_prs: Vec<String> = self.branches.values().map(|h| h.pr.clone()).collect();
+            let found = self
+                .record
+                .asserted(&self.pops, &self.lines, &branch_prs)
+                .await;
+            self.asserted.extend(found.verified);
+            self.unverified = found
+                .unverified
+                .into_iter()
+                .filter(|id| !self.asserted.contains(id))
+                .collect();
         }
         report
     }
@@ -589,7 +633,7 @@ impl RelyingParty {
     /// [`fork_refusal`](Self::fork_refusal) over `chain`, the record's
     /// commits from the window's start.
     fn refusal_over(&self, chain: Vec<cyphr::fork::Held>) -> Option<Refusal> {
-        if self.overflowed {
+        if self.overflowed || !self.unverified.is_empty() {
             return Some(Refusal::Forked);
         }
         let mut held = chain.clone();

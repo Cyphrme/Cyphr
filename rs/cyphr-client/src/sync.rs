@@ -393,27 +393,55 @@ impl Record {
         self.dead.entry(tmb.to_b64()).or_insert(now);
     }
 
-    /// The Principal Roots of this record's chain commits that the resync
-    /// proofs in `pops` assert (SPEC 15.8 item 2), for
-    /// [`cyphr::fork::assessment`]. A proof counts only when its `id` is
-    /// the PR of a commit the record's chain holds, its signer is a key
-    /// active in the state at that commit (replayed here, not read off the
-    /// chain's end) and not dead at the proof's `now`, and its signature
-    /// verifies. A proof for a commit off the chain, or over a record
-    /// resumed from verified state (which holds no entries to replay), is
-    /// not read: this holder cannot check the signer, so it asserts
-    /// nothing.
-    pub async fn asserted(&self, pops: &[Value]) -> Vec<String> {
+    /// The Principal Roots that the resync proofs in `pops` assert (SPEC
+    /// 15.8 item 2), for [`cyphr::fork::assessment`], and the ones it
+    /// cannot check.
+    ///
+    /// A proof is *verified* when its `id` is the PR of a commit of the
+    /// record's chain, or of a commit on one of `lines` (a rival branch
+    /// and its extensions, each verified on the chain below `height`),
+    /// its signer is a key active in the state at that commit (replayed
+    /// here, as the storage engine reads it, not off the chain's end) and
+    /// not dead at the proof's `now`, and its signature verifies.
+    ///
+    /// A proof whose `id` is in `branch_prs`, the PRs of branch commits
+    /// the holder keeps, and that is not verified is *unverified*: it
+    /// names a commit this holder has but cannot check the signer of (its
+    /// line is not at hand, or its key is not the principal's), so a
+    /// holder that reads Active over it may read what the servers do not.
+    /// The caller fails closed on it. A record resumed from verified
+    /// state holds no entries to replay and verifies nothing.
+    pub async fn asserted(
+        &self,
+        pops: &[Value],
+        lines: &[BranchLine],
+        branch_prs: &[String],
+    ) -> Asserted {
+        let mut out = Asserted::default();
         let Some(held) = self.held.as_ref().filter(|h| h.base == 0) else {
-            return Vec::new();
+            return out;
         };
-        let pr_at = |index: usize| {
-            held.principal
+        let pr_at = |principal: &Principal<MemoryStorage>, index: usize| {
+            principal
                 .commit_at(index)
                 .and_then(|c| c.pr().as_multihash().tagged_first().ok())
                 .map(|d| d.to_string())
         };
-        let mut asserted = Vec::new();
+        // Each line replayed once, over the chain below its fork.
+        let mut replayed: Vec<(usize, Vec<PatchEntry>, Held)> = Vec::new();
+        for line in lines {
+            let Some(below) = held.entries.get(..line.height) else {
+                continue;
+            };
+            let mut entries = below.to_vec();
+            entries.extend(line.bundles.iter().enumerate().map(|(i, b)| PatchEntry {
+                sequence: (line.height + i) as u64,
+                bundle: Ok(b.clone()),
+            }));
+            if let Ok(h) = self.replay_full(&entries, &[]).await {
+                replayed.push((line.height, entries, h));
+            }
+        }
         for pop in pops.iter().take(MAX_RESYNCS) {
             let Ok(resync) = cyphr::resync::parse_resync(pop) else {
                 continue;
@@ -425,27 +453,37 @@ impl Record {
             {
                 continue;
             }
-            let Some(at) =
-                (0..held.principal.commit_count()).find(|&i| pr_at(i).as_ref() == Some(&resync.id))
-            else {
-                continue;
+            // The entries up to the commit the proof names, wherever held.
+            let prefix = (0..held.principal.commit_count())
+                .find(|&i| pr_at(&held.principal, i).as_ref() == Some(&resync.id))
+                .and_then(|at| held.entries.get(..=at).map(<[PatchEntry]>::to_vec))
+                .or_else(|| {
+                    replayed.iter().find_map(|(height, entries, h)| {
+                        let at = (*height..h.principal.commit_count())
+                            .find(|&i| pr_at(&h.principal, i).as_ref() == Some(&resync.id))?;
+                        entries.get(..=at).map(<[PatchEntry]>::to_vec)
+                    })
+                });
+            let verified = match prefix {
+                Some(entries) => match self.replay_full(&entries, &[]).await {
+                    Ok(state) => state
+                        .principal
+                        .get_key(&resync.tmb)
+                        .filter(|_| state.principal.is_key_active(&resync.tmb))
+                        .is_some_and(|key| cyphr::resync::verify_resync(pop, key).is_ok()),
+                    Err(_) => false,
+                },
+                None => false,
             };
-            let Some(entries) = held.entries.get(..=at) else {
-                continue;
-            };
-            let Ok(prefix) = self.replay_full(entries, &[]).await else {
-                continue;
-            };
-            let state = &prefix.principal;
-            let verified = state
-                .get_key(&resync.tmb)
-                .filter(|_| state.is_key_active(&resync.tmb))
-                .is_some_and(|key| cyphr::resync::verify_resync(pop, key).is_ok());
-            if verified && !asserted.contains(&resync.id) {
-                asserted.push(resync.id);
+            if verified {
+                if !out.verified.contains(&resync.id) {
+                    out.verified.push(resync.id);
+                }
+            } else if branch_prs.contains(&resync.id) && !out.unverified.contains(&resync.id) {
+                out.unverified.push(resync.id);
             }
         }
-        asserted
+        out
     }
 
     /// The record's key `tmb` as the replayed chain holds it, active or
@@ -860,6 +898,40 @@ pub struct PullReport {
     /// rival and the commits past it, as the protocol's fork rule reads
     /// them ([`cyphr::fork::assessment`]).
     pub branches: Vec<HeldCommit>,
+}
+
+/// A rival branch a pull verified, with the commits that extend it: what a
+/// holder replays over the chain below `height` to read a signer on it.
+#[derive(Debug, Clone)]
+pub struct BranchLine {
+    /// The commit position the branch's first commit takes.
+    pub height: usize,
+    /// The branch's commits, lowest first.
+    pub bundles: Vec<WireBundle>,
+}
+
+/// What [`Record::asserted`] made of a set of resync proofs.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Asserted {
+    /// The PRs of commits that verified proofs assert.
+    pub verified: Vec<String>,
+    /// The PRs of kept branch commits that proofs name and this holder
+    /// could not check.
+    pub unverified: Vec<String>,
+}
+
+/// The branches `report` verified, each with the commits that extend it,
+/// paired with the position they part from the chain at.
+#[must_use]
+pub fn branch_lines(report: &PullReport) -> Vec<BranchLine> {
+    rivals_with_their_extensions(report)
+        .into_iter()
+        .zip(&report.forks)
+        .map(|(bundles, fork)| BranchLine {
+            height: fork.height,
+            bundles,
+        })
+        .collect()
 }
 
 /// A peer's branch head, as it claims it. A hint, never evidence.
