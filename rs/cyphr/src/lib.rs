@@ -54,6 +54,9 @@ pub mod proof;
 pub mod replay;
 /// Naked-revoke validity (SPEC 6.4): the one rule every consumer calls.
 pub mod revoke;
+/// Resync proof-of-possession validity (SPEC 13, 15.8): the one rule every
+/// consumer calls.
+pub mod resync;
 /// Semantic Tree nodes (KT, AR-node, SR-node) — generalizes `PrincipalTree`'s
 /// pattern from "one instance at the root" to "one instance per semantic
 /// node." See module docs for the full design.

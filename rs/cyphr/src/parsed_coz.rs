@@ -35,6 +35,9 @@ pub mod typ {
     pub const KEY_REPLACE: &str = "cyphr/key/replace";
     /// `<authority>/cyphr/key/revoke` - Revoke a key (Level 1+ self, Level 3+ other)
     pub const KEY_REVOKE: &str = "cyphr/key/revoke";
+    /// `<authority>/cyphr/resync/create` - Proof of possession of a tip, signed
+    /// outside any commit (SPEC §13 Resync PoP, §15.8 item 2)
+    pub const RESYNC_CREATE: &str = "cyphr/resync/create";
     /// `<authority>/cyphr/principal/create` - Explicit genesis finalization (Level 3+)
     pub const PRINCIPAL_CREATE: &str = "cyphr/principal/create";
     /// `<authority>/cyphr/commit/create` - Finalize a commit (Arrow finality)
