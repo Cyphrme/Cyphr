@@ -40,11 +40,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rs
-      # Every ignored test must say why: a RED( marker or a
-      # QUARANTINE(#issue) marker. A bare #[ignore] hides failures.
+      # Every ignored test must say why: a RED( marker, a
+      # QUARANTINE(#issue) marker, or a "large:" reason (a test too slow
+      # for the default run). A bare #[ignore] hides failures. Only
+      # attribute lines count, not comments that mention one.
       - name: Guard ignored tests
         working-directory: .
-        run: test $(git grep -n "#\[ignore" -- rs | grep -vE "RED\(|QUARANTINE\(#[0-9]+\)" | wc -l) -eq 0
+        run: test $(git grep -nE "^[[:space:]]*#\[ignore" -- rs | grep -vE "RED\(|QUARANTINE\(#[0-9]+\)|large:" | wc -l) -eq 0
       # The CLI durability test counts fsyncs by tracing the binary.
       - name: Install strace
         if: runner.os == 'Linux'
