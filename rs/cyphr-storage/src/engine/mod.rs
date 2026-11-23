@@ -3429,6 +3429,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(history)
     }
 
+    /// The active key `tmb` of `principal`, as a resync's signer is read
+    /// at the state a line reaches.
+    fn active_key<T: cyphr::eml::Storage>(
+        principal: &cyphr::Principal<T>,
+        tmb: &coz::Thumbprint,
+    ) -> Result<cyphr::Key, EngineError> {
+        principal
+            .state()
+            .get_key(tmb)
+            .filter(|_| principal.is_key_active(tmb))
+            .cloned()
+            .ok_or(EngineError::Protocol(cyphr::Error::UnknownKey))
+    }
+
     /// A principal holding only its genesis key, over `storage`.
     async fn principal_from_genesis<T: cyphr::eml::Storage>(
         genesis: crate::Genesis,
@@ -5586,24 +5600,25 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
             .collect();
         let mut carried: Vec<(IndexableCommit, Vec<EmbeddedPin>)> = Vec::new();
-        let state = if let Some(at) = stored.prs.iter().position(|pr| *pr == resync.id) {
-            let mut principal =
-                Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new())
-                    .await?;
-            let source = PinSource::stored();
-            for (position, (entry, pins)) in stored
-                .entries
-                .iter()
-                .zip(&stored.pins)
-                .enumerate()
-                .take(at + 1)
-            {
-                self.replay_pinned(&mut principal, &source, entry, pins, position, EMBED_DEPTH)
-                    .await?;
-            }
-            principal
+        let key: cyphr::Key = if let Some(at) = stored.prs.iter().position(|pr| *pr == resync.id) {
+            // The asserted tip is on the chain: the signer's key history,
+            // read off the state at the chain's tip, says whether it was
+            // active at that position, so nothing is replayed.
+            let tip = self.indexer.get_tip(principal_id).await?.ok_or_else(|| {
+                EngineError::NotFound(format!("principal {principal_id} has no tip"))
+            })?;
+            let verified = self
+                .verified(principal_id, Some(&genesis), &tip, &write)
+                .await?;
+            let state = verified.principal.state();
+            state
+                .key_ever_held(&resync.tmb)
+                .filter(|_| state.key_active_at_position(&resync.tmb, at as u64))
+                .cloned()
+                .ok_or(EngineError::Protocol(cyphr::Error::UnknownKey))?
         } else if let Some(rival) = rivals.iter().find(|r| r.pr == resync.id) {
-            self.replay_line(principal_id, &genesis, &stored, &by_pr, rival)
+            let principal = self
+                .replay_line(principal_id, &genesis, &stored, &by_pr, rival)
                 .await?
                 .ok_or_else(|| {
                     EngineError::MalformedBlob(format!(
@@ -5611,7 +5626,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         resync.id
                     ))
                 })?
-                .principal
+                .principal;
+            Self::active_key(&principal, &resync.tmb)?
         } else if line.is_empty() {
             return Err(EngineError::NotFound(format!(
                 "the asserted tip {} is not held and no line carries it",
@@ -5657,16 +5673,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 }
             }
             carried = attached.commits;
-            attached.principal
+            Self::active_key(&attached.principal, &resync.tmb)?
         };
-        let key = state
-            .state()
-            .get_key(&resync.tmb)
-            .filter(|_| state.is_key_active(&resync.tmb))
-            .ok_or(EngineError::Protocol(cyphr::Error::UnknownKey))?;
-        cyphr::resync::verify_resync(pop, key)
+        cyphr::resync::verify_resync(pop, &key)
             .map_err(|_| EngineError::Protocol(cyphr::Error::InvalidSignature))?;
-        let record_key = KeyEntry::of(key);
+        let record_key = KeyEntry::of(&key);
 
         // What the proof does to the verdict over everything held.
         let lowest = carried.iter().map(|(c, _)| c.sequence).min();
