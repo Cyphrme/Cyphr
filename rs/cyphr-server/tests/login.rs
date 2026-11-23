@@ -843,6 +843,118 @@ async fn login_rejects_key_revoked_in_claimed_principal() {
     );
 }
 
+/// `signer` creates `new_key` on `principal` and returns the commit's push
+/// body under `id`.
+async fn create_key_push(
+    principal: &mut cyphr::Principal,
+    pool: &test_fixtures::Pool,
+    signer_name: &str,
+    new_key: &str,
+    now: i64,
+    id: &str,
+) -> String {
+    let signer = pool.get(signer_name).expect("signer in pool");
+    let new = pool.get(new_key).expect("new key in pool").key().expect("key");
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": signer.alg,
+        "id": new.tmb().to_b64(),
+        "now": now,
+        "tmb": signer.compute_tmb_b64().expect("signer tmb"),
+        "typ": "cyphr.me/cyphr/key/create",
+    }))
+    .expect("pay");
+    let prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
+        .expect("signer prv b64");
+    let pub_key = Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("signer pub b64");
+    let (sig, cad) = coz::sign_json(&pay, &signer.alg, &prv, &pub_key).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &signer.alg).expect("czd");
+    let mut scope = principal.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, Some(new))
+        .expect("key/create applies");
+    scope
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(
+                &signer.alg,
+                &prv,
+                &pub_key,
+                &signer.compute_tmb().expect("signer tmb"),
+            ),
+            now,
+            "cyphr.me",
+        )
+        .await
+        .expect("finalize");
+    let bundle = test_fixtures::bundle::last_commit_bundle(principal).expect("bundle");
+    push_body(id, &bundle)
+}
+
+/// Backs SPEC 17.2 ("Principal lifecycle state is Active (reject Frozen,
+/// Deleted, Errored, etc.)"): a principal in Error by a fork, two commits
+/// on each branch, one branch per genesis key, refuses a login by either
+/// key. Turns red if login consults only the lifecycle base state, which
+/// stays Active under a fork. End to end: yes.
+#[tokio::test]
+async fn login_rejects_errored_principal() {
+    let state = login_state();
+    let pool = load_pool();
+    let app = build_router(state.clone());
+    let (golden, eve) = ("golden", "eve_ed25519");
+
+    let key = |name: &str| pool.get(name).expect("key in pool").key().expect("key");
+    let mut shared = cyphr::Principal::implicit(key(golden))
+        .await
+        .expect("genesis");
+    let genesis = test_fixtures::bundle::genesis_bundle(
+        &mut shared,
+        pool.get(golden).expect("golden"),
+        &[key(eve)],
+        1_700_000_000,
+    )
+    .await
+    .expect("genesis commit");
+    let id = test_fixtures::bundle::genesis_id(&genesis).expect("PG");
+    let (status, _) = post_json(app.clone(), "/push", push_body(&id, &genesis)).await;
+    assert_eq!(status, StatusCode::CREATED, "genesis");
+
+    // Branch A is golden's, branch B is eve's; each gets two commits.
+    let mut a = shared.fork().await.expect("fork");
+    let mut b = shared.fork().await.expect("fork");
+    let a1 = create_key_push(&mut a, &pool, golden, "key_a", 1_700_000_003, &id).await;
+    let b1 = create_key_push(&mut b, &pool, eve, "key_b", 1_700_000_004, &id).await;
+    let b2 = create_key_push(&mut b, &pool, eve, "carol", 1_700_000_005, &id).await;
+    let a2 = create_key_push(&mut a, &pool, golden, "bob", 1_700_000_006, &id).await;
+    let mut statuses = Vec::new();
+    for body in [a1, b1, b2, a2] {
+        statuses.push(post_json(app.clone(), "/push", body).await.0);
+    }
+    assert_eq!(
+        statuses,
+        [
+            StatusCode::CREATED,
+            StatusCode::CONFLICT,
+            StatusCode::CREATED,
+            StatusCode::CONFLICT
+        ],
+        "A, B (rival), B2 (resolves for B), A2 (rival)"
+    );
+    let bare = id.split_once(':').expect("labelled PG").1;
+    assert!(
+        state.engine.is_errored(bare).await.expect("verdict"),
+        "both branches extended: Error"
+    );
+
+    for signer in [golden, eve] {
+        let body = login_body(&pool, signer, AUDIENCE, Some(bare), None, now_secs());
+        let (status, json) = post_json(app.clone(), "/auth/login", body).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{signer}: an Errored principal must refuse login: {json:?}"
+        );
+    }
+}
+
 // ========================================================================
 // Sign-on hardening (SO1)
 // ========================================================================
