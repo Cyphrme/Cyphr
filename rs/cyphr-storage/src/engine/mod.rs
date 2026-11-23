@@ -1403,7 +1403,7 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     kept_misses: std::sync::atomic::AtomicU64,
     /// Shadow checks where the kept state was not the replayed one.
     kept_divergences: std::sync::atomic::AtomicU64,
-    /// Stored commits replayed by [`Self::replay_onto`], ever.
+    /// Stored commits re-applied by any replay path ([`Self::replay_pinned`]), ever.
     commits_replayed: std::sync::atomic::AtomicU64,
     /// Commit records read from the index by [`Self::chain`], ever.
     chain_rows_read: std::sync::atomic::AtomicU64,
@@ -3363,10 +3363,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut principal = Self::principal_from_genesis(genesis.clone(), storage).await?;
 
         let stored = self.stored_entries(principal_id, through).await?;
-        self.commits_replayed.fetch_add(
-            stored.entries.len() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
         let source = PinSource::stored();
         for (position, (entry, pins)) in stored.entries.iter().zip(&stored.pins).enumerate() {
             self.replay_pinned(&mut principal, &source, entry, pins, position, EMBED_DEPTH)
@@ -3501,6 +3497,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         depth: u8,
     ) -> Result<(), EngineError> {
         self.apply_pins(principal, source, pins, depth).await?;
+        // The single count of replay: every commit of a chain re-applied
+        // from stored blobs, on whichever path. Commits re-applied while
+        // following an embedded principal (`depth` below the top) are part
+        // of the commit that embeds it, not counted again.
+        if depth == EMBED_DEPTH {
+            self.commits_replayed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         crate::import::replay_commit(principal, entry, position).await?;
         Ok(())
     }
