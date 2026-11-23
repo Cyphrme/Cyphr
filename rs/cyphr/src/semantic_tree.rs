@@ -256,13 +256,16 @@ impl KeyTree {
         let sorted = sorted_leaves(members, nonces);
 
         let mut kt = Self::new();
-        register_algs(&mut kt.inner, algs)?;
         for (index, &leaf) in sorted.iter().enumerate() {
             let payload = serialize_converted(leaf, algs)?;
             kt.inner
                 .set(index as u64, payload, Vec::new())
                 .map_err(|e| Error::Storage(e.to_string()))?;
         }
+        // Registered last: an append to a tree with an algorithm registered
+        // rehashes every cell for it, so appending `n` cells first costs
+        // O(n^2) hashes and registering after them costs O(n).
+        register_algs(&mut kt.inner, algs)?;
 
         Ok(kt)
     }
@@ -343,7 +346,6 @@ impl AuthTree {
         algs: &[HashAlg],
     ) -> Result<Self> {
         let mut node = Self::new(role_arity(nonces.len()));
-        register_algs(&mut node.inner, algs)?;
         let payload = serialize_digest(&kr.0, algs)?;
         node.inner
             .set(PRIMARY_CELL, payload, Vec::new())
@@ -353,6 +355,8 @@ impl AuthTree {
                 .set(OPTIONAL_CELL + offset as u64, payload, Vec::new())
                 .map_err(|e| Error::Storage(e.to_string()))?;
         }
+        // Registered last, as in the Key Tree: O(n) rather than O(n^2).
+        register_algs(&mut node.inner, algs)?;
 
         Ok(node)
     }
@@ -362,12 +366,12 @@ impl AuthTree {
     /// component is omitted), so one nonce is promoted.
     pub(crate) fn build_nonces_only(nonces: &[Leaf<'_>], algs: &[HashAlg]) -> Result<AuthRoot> {
         let mut node = Self::new(role_arity(nonces.len()));
-        register_algs(&mut node.inner, algs)?;
         for (index, payload) in nonce_payloads(nonces, algs)?.into_iter().enumerate() {
             node.inner
                 .set(index as u64, payload, Vec::new())
                 .map_err(|e| Error::Storage(e.to_string()))?;
         }
+        register_algs(&mut node.inner, algs)?;
         node.root(algs)
     }
 

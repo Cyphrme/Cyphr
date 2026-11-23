@@ -20,10 +20,10 @@
 //! only to admit a key the snapshot lacks, never to retire one.
 //!
 //! Nothing the peer says about its own chain is trusted beyond the signed
-//! commits the core verifies on replay. A followed patch is replayed onto a
-//! fresh principal from the pinned genesis and only then compared with the
-//! held chain, so a failed or hostile follow leaves the held chain exactly
-//! as it was (I2: a fork is detected, never merged).
+//! commits the core verifies on replay. A followed patch is compared with
+//! the held chain, and only the commits past it are replayed, onto a copy
+//! of the held tip, so a failed or hostile follow leaves the held chain
+//! exactly as it was (I2: a fork is detected, never merged).
 //!
 //! No I/O lives here except the one `/patch` fetch in [`PeerChain::follow`]
 //! through a [`Connector`]; [`PeerChain::verify_tip`] is pure, so a carrier that already holds a
@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::eml::MemoryStorage;
 use cyphr::principal::{Clock, system_clock};
-use cyphr::replay::{BundleId, WireBundle, WireError, replay_held};
+use cyphr::replay::{Bundle, BundleId, WireBundle, WireError, replay_held};
 use cyphr::{Key, Principal};
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -206,7 +206,6 @@ enum Pin {
 /// pinned PG and genesis key.
 pub struct PeerChain {
     pg: String,
-    genesis: Key,
     pin: Pin,
     /// The identity of every bundle the held chain replayed, in order,
     /// action-only bundles included, so a follow can compare them all.
@@ -260,7 +259,6 @@ impl PeerChain {
         };
         Self {
             pg: pg.to_string(),
-            genesis,
             pin,
             bundles: Vec::new(),
             followed: false,
@@ -375,11 +373,12 @@ impl PeerChain {
 
     /// Fetch the peer's full chain and extend the held one with it.
     ///
-    /// The patch carries no anchor: the whole history is replayed by the
-    /// core from the pinned genesis, which is what authenticates it (the
-    /// patch's own statement is not consulted), and the held chain must be
-    /// a prefix of the result. The held chain changes only when the whole
-    /// patch verifies and extends it.
+    /// The patch carries no anchor: the held chain must be a prefix of it,
+    /// compared by the coz digests of each bundle, and the commits past it
+    /// are replayed by the core onto a copy of the held tip, which is what
+    /// authenticates them (the patch's own statement is not consulted).
+    /// The held chain changes only when the whole patch verifies and
+    /// extends it.
     ///
     /// # Errors
     ///
@@ -407,13 +406,12 @@ impl PeerChain {
             });
         }
 
-        // The replay root is a fresh principal from the pinned genesis,
-        // never the held (already extended) one.
-        let mut candidate = Principal::implicit(self.genesis.clone())
-            .await
-            .map_err(|source| PeerFailure::Replay { commit: 0, source })?;
-        candidate.set_clock(self.clock);
-        let mut offered = Vec::with_capacity(patch.entries.len());
+        // Every offered bundle is decoded, but only those past the held
+        // chain are replayed: the held prefix was verified when it was
+        // taken, and the coz digests the offered bundles carry bind their
+        // signed content, so a prefix with the same digests is the same
+        // history. The replay continues from the held tip, not genesis.
+        let mut decoded = Vec::with_capacity(patch.entries.len());
         // A server serves data actions as action-only bundles beside the
         // commits; each is judged at its own `now` once the commits are in.
         for step in replay_order(0, &patch.entries, &patch.actions) {
@@ -434,33 +432,36 @@ impl PeerChain {
                     (index, WireBundle::actions(blobs))
                 },
             };
-            offered.push(
-                replay_entry(&mut candidate, &bundle)
-                    .await
-                    .map_err(|refusal| match refusal {
-                        EntryRefusal::Malformed(what) => PeerFailure::Malformed {
-                            commit: index,
-                            what,
-                        },
-                        EntryRefusal::Replay(source) => PeerFailure::Replay {
-                            commit: index,
-                            source,
-                        },
-                    })?,
-            );
+            let bundle = decode_entry(&bundle).map_err(|refusal| entry_failure(index, refusal))?;
+            decoded.push((index, bundle));
         }
-
-        // Every held bundle is compared, the action-only ones after the
-        // last commit included: no commit covers those, so comparing
-        // commits alone would let a peer rewrite them unseen.
-        if let Some(index) = self.bundles.iter().zip(&offered).position(|(h, o)| h != o) {
+        if let Some(index) = self
+            .bundles
+            .iter()
+            .zip(&decoded)
+            .position(|(h, (_, o))| !o.cozies().map(|c| c.czd()).eq(h.czds.iter()))
+        {
             return Err(PeerFailure::Fork { index });
         }
-        if offered.len() < self.bundles.len() {
+        if decoded.len() < self.bundles.len() {
             return Err(PeerFailure::Behind {
                 held: self.bundles.len(),
-                offered: offered.len(),
+                offered: decoded.len(),
             });
+        }
+        let mut candidate = self
+            .chain()?
+            .fork()
+            .await
+            .map_err(|source| PeerFailure::Replay { commit: 0, source })?;
+        candidate.set_clock(self.clock);
+        let mut offered = self.bundles.clone();
+        for (index, bundle) in decoded.iter().skip(self.bundles.len()) {
+            offered.push(
+                replay_held(&mut candidate, bundle)
+                    .await
+                    .map_err(|e| entry_failure(*index, EntryRefusal::Replay(e.source)))?,
+            );
         }
 
         self.pin = Pin::Held(Box::new(candidate));
@@ -588,11 +589,10 @@ pub(crate) enum EntryRefusal {
 /// core's one replay entry point, returning the bundle's identity. Shared
 /// by [`PeerChain::follow`] and the evidence verifier, so a fetched entry
 /// means one thing on both.
-pub(crate) async fn replay_entry(
-    principal: &mut Principal<MemoryStorage>,
-    bundle: &WireBundle,
-) -> Result<BundleId, EntryRefusal> {
-    let decoded = bundle.decode().map_err(|e| match e.error {
+/// Decode one entry's bundle, as a defect of its wire form or the core's
+/// refusal of its pay header.
+pub(crate) fn decode_entry(bundle: &WireBundle) -> Result<Bundle, EntryRefusal> {
+    bundle.decode().map_err(|e| match e.error {
         WireError::Header(source) | WireError::Protocol(source) => EntryRefusal::Replay(source),
         WireError::NotJson => EntryRefusal::Malformed("blob is not JSON"),
         WireError::MissingPay => EntryRefusal::Malformed("no pay"),
@@ -601,7 +601,28 @@ pub(crate) async fn replay_entry(
         WireError::Misplaced => EntryRefusal::Malformed("a coz is in the wrong part of the bundle"),
         WireError::EmptyTransaction => EntryRefusal::Malformed("a transaction holds no coz"),
         _ => EntryRefusal::Malformed("malformed coz"),
-    })?;
+    })
+}
+
+/// The failure an entry's refusal is, at chain position `index`.
+fn entry_failure(index: usize, refusal: EntryRefusal) -> PeerFailure {
+    match refusal {
+        EntryRefusal::Malformed(what) => PeerFailure::Malformed {
+            commit: index,
+            what,
+        },
+        EntryRefusal::Replay(source) => PeerFailure::Replay {
+            commit: index,
+            source,
+        },
+    }
+}
+
+pub(crate) async fn replay_entry(
+    principal: &mut Principal<MemoryStorage>,
+    bundle: &WireBundle,
+) -> Result<BundleId, EntryRefusal> {
+    let decoded = decode_entry(bundle)?;
     replay_held(principal, &decoded)
         .await
         .map_err(|e| EntryRefusal::Replay(e.source))

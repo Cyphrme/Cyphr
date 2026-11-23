@@ -39,6 +39,10 @@ struct Period {
     from: i64,
     until: Option<i64>,
     revoked: bool,
+    /// Position (0-indexed) of the commit that opened the period.
+    from_at: u64,
+    /// Position of the commit that closed it.
+    until_at: Option<u64>,
 }
 
 impl KeyTimeline {
@@ -59,6 +63,7 @@ impl KeyTimeline {
         revoked: &IndexMap<String, Key>,
         (frozen, deleted): (bool, bool),
         now: i64,
+        position: u64,
     ) -> Vec<String> {
         let mut made_known = Vec::new();
         match (frozen, self.frozen.last_mut()) {
@@ -73,6 +78,7 @@ impl KeyTimeline {
             let tmb = p.key.tmb().to_b64();
             if !active.contains_key(&tmb) {
                 p.until = Some(now);
+                p.until_at = Some(position);
                 p.revoked = revoked.contains_key(&tmb);
             }
         }
@@ -86,6 +92,8 @@ impl KeyTimeline {
                     from: now,
                     until: None,
                     revoked: false,
+                    from_at: position,
+                    until_at: None,
                 });
             }
         }
@@ -157,6 +165,17 @@ impl KeyTimeline {
             .iter()
             .find(|p| p.key.tmb() == tmb)
             .map(|p| &p.key)
+    }
+
+    /// Whether `tmb` was in KT in the state after the commit at
+    /// `position`: some commit at or before it left the key in, and no
+    /// commit at or before it took it out. Positions are those of the
+    /// commit chain, so this reads the key history where a replay to
+    /// `position` would read the state.
+    pub(crate) fn active_at_position(&self, tmb: &Thumbprint, position: u64) -> bool {
+        self.periods.iter().any(|p| {
+            p.key.tmb() == tmb && p.from_at <= position && p.until_at.is_none_or(|u| position < u)
+        })
     }
 
     /// Every distinct key this principal ever held, in first-held order.

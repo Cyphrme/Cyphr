@@ -538,16 +538,13 @@ pub fn sign_pay(
 async fn signed_by_held_key(
     engine: &CliStorageEngine,
     principal_id: &str,
-    genesis: Option<&Genesis>,
     blob: &[u8],
 ) -> crate::Result<bool> {
     let coz = cyphr::replay::StoredCoz::from_wire(blob)
         .map_err(|e| cyphr_storage::engine::EngineError::MalformedBlob(e.to_string()))?;
-    let genesis = match genesis {
-        Some(g) => g.clone(),
-        None => engine.resolve_genesis(principal_id, &[]).await?,
+    let Some(principal) = engine.at_tip(principal_id).await? else {
+        return Ok(false);
     };
-    let principal = engine.load_principal(principal_id, genesis).await?;
     Ok(principal.held_key(&coz.header().tmb))
 }
 
@@ -580,8 +577,7 @@ pub async fn submit_history(
             Ok(_) => {},
             Err(cyphr_storage::engine::EngineError::Protocol(e))
                 if e.is_inactive_signer()
-                    && signed_by_held_key(engine, principal_id, genesis.as_ref(), blob).await? => {
-            },
+                    && signed_by_held_key(engine, principal_id, blob).await? => {},
             Err(e) => return Err(e.into()),
         }
     }

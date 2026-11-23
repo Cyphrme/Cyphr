@@ -110,6 +110,13 @@ impl PrincipalState {
             .or_else(|| self.auth.revoked.get(&tmb.to_b64()))
     }
 
+    /// Whether `tmb` was an active key in the state after the commit at
+    /// `position` (0-indexed), read from the key history: no replay to
+    /// that position.
+    pub fn key_active_at_position(&self, tmb: &Thumbprint, position: u64) -> bool {
+        self.key_timeline.active_at_position(tmb, position)
+    }
+
     /// A key that a principal this one embeds has ever held under `tmb`,
     /// by the views of embedded principals this state holds (SPEC 10.3):
     /// the ones a verifier revealed or followed. `None` for a state that

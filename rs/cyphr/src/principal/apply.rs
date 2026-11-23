@@ -843,9 +843,13 @@ impl PrincipalState {
         core.auth.commits.push(commit);
         let now = core.latest_timestamp;
         let lifecycle = (core.frozen, core.deleted);
-        let made_known =
-            core.key_timeline
-                .record_commit(&core.auth.keys, &core.auth.revoked, lifecycle, now);
+        let made_known = core.key_timeline.record_commit(
+            &core.auth.keys,
+            &core.auth.revoked,
+            lifecycle,
+            now,
+            core.auth.commits.len() as u64 - 1,
+        );
         // What it records takes effect at `now`, a key's first period
         // aside: that changes every verdict of the key's own actions, and
         // only a held action of a key can be one (`last_signed`).

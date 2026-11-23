@@ -400,8 +400,8 @@ impl Record {
     /// A proof is *verified* when its `id` is the PR of a commit of the
     /// record's chain, or of a commit on one of `lines` (a rival branch
     /// and its extensions, each verified on the chain below `height`),
-    /// its signer is a key active in the state at that commit (replayed
-    /// here, as the storage engine reads it, not off the chain's end) and
+    /// its signer is a key active in the state at that commit (read off
+    /// the key history for the chain's own commits, replayed for a line) and
     /// not dead at the proof's `now`, and its signature verifies.
     ///
     /// A proof whose `id` is in `branch_prs`, the PRs of branch commits
@@ -453,27 +453,36 @@ impl Record {
             {
                 continue;
             }
-            // The entries up to the commit the proof names, wherever held.
-            let prefix = (0..held.principal.commit_count())
-                .find(|&i| pr_at(&held.principal, i).as_ref() == Some(&resync.id))
-                .and_then(|at| held.entries.get(..=at).map(<[PatchEntry]>::to_vec))
-                .or_else(|| {
-                    replayed.iter().find_map(|(height, entries, h)| {
-                        let at = (*height..h.principal.commit_count())
-                            .find(|&i| pr_at(&h.principal, i).as_ref() == Some(&resync.id))?;
-                        entries.get(..=at).map(<[PatchEntry]>::to_vec)
+            // On the record's own chain the signer is read off its key
+            // history: no replay to the commit the proof names.
+            let on_chain = (0..held.principal.commit_count())
+                .find(|&i| pr_at(&held.principal, i).as_ref() == Some(&resync.id));
+            let verified = if let Some(at) = on_chain {
+                held.principal
+                    .key_ever_held(&resync.tmb)
+                    .filter(|_| {
+                        held.principal
+                            .key_active_at_position(&resync.tmb, at as u64)
                     })
+                    .is_some_and(|key| cyphr::resync::verify_resync(pop, key).is_ok())
+            } else {
+                // A commit on a rival line: the entries up to it, replayed.
+                let prefix = replayed.iter().find_map(|(height, entries, h)| {
+                    let at = (*height..h.principal.commit_count())
+                        .find(|&i| pr_at(&h.principal, i).as_ref() == Some(&resync.id))?;
+                    entries.get(..=at).map(<[PatchEntry]>::to_vec)
                 });
-            let verified = match prefix {
-                Some(entries) => match self.replay_full(&entries, &[]).await {
-                    Ok(state) => state
-                        .principal
-                        .get_key(&resync.tmb)
-                        .filter(|_| state.principal.is_key_active(&resync.tmb))
-                        .is_some_and(|key| cyphr::resync::verify_resync(pop, key).is_ok()),
-                    Err(_) => false,
-                },
-                None => false,
+                match prefix {
+                    Some(entries) => match self.replay_full(&entries, &[]).await {
+                        Ok(state) => state
+                            .principal
+                            .get_key(&resync.tmb)
+                            .filter(|_| state.principal.is_key_active(&resync.tmb))
+                            .is_some_and(|key| cyphr::resync::verify_resync(pop, key).is_ok()),
+                        Err(_) => false,
+                    },
+                    None => false,
+                }
             };
             if verified {
                 if !out.verified.contains(&resync.id) {
@@ -1599,6 +1608,34 @@ fn relate(mine: &[Link], theirs: &[Link]) -> Relation {
     }
 }
 
+/// The standing of a peer's whole chain when its commit ids show it is the
+/// record's chain or a prefix of it; `None` when it differs or extends the
+/// record, or an id cannot be read, and the chain must be replayed.
+fn standing_by_ids(record: &Record, entries: &[PatchEntry]) -> Option<PeerStanding> {
+    let held = record.held.as_ref()?;
+    let alg = held
+        .commit_id_at(0)?
+        .parse::<cyphr::state::TaggedDigest>()
+        .ok()?
+        .alg();
+    if entries.len() > held.principal.commit_count() {
+        return None;
+    }
+    for (index, entry) in entries.iter().enumerate() {
+        let id = entry.bundle.as_ref().ok()?.decode().ok()?.commit_id(alg)?;
+        if held.commit_id_at(index)? != id.to_string() {
+            return None;
+        }
+    }
+    Some(if entries.len() == held.principal.commit_count() {
+        PeerStanding::Current
+    } else {
+        PeerStanding::Behind {
+            peer_commits: entries.len(),
+        }
+    })
+}
+
 async fn compare_whole_chain<C: Connector>(
     record: &mut Record,
     connector: &C,
@@ -1612,6 +1649,12 @@ async fn compare_whole_chain<C: Connector>(
     check_cap(patch.entries.len())?;
     if patch.entries.is_empty() {
         return Ok((PeerStanding::Behind { peer_commits: 0 }, Vec::new()));
+    }
+    // A chain that is the record's own, or a prefix of it, carries nothing
+    // new: its commit ids (which bind each commit) say so, and the commits
+    // the record already verified are not replayed again.
+    if let Some(standing) = standing_by_ids(record, &patch.entries) {
+        return Ok((standing, Vec::new()));
     }
     // Replayed from the anchor, never from the record: the peer's chain
     // must stand on its own signatures.

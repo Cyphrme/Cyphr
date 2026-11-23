@@ -1403,7 +1403,9 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     kept_misses: std::sync::atomic::AtomicU64,
     /// Shadow checks where the kept state was not the replayed one.
     kept_divergences: std::sync::atomic::AtomicU64,
-    /// Stored commits replayed by [`Self::replay_onto`], ever.
+    /// Stored commits re-applied by any replay path ([`Self::replay_pinned`]), ever.
+    /// Not counted: commits re-applied while following embedded principals,
+    /// and the re-application a rebuild of the index does.
     commits_replayed: std::sync::atomic::AtomicU64,
     /// Commit records read from the index by [`Self::chain`], ever.
     chain_rows_read: std::sync::atomic::AtomicU64,
@@ -2030,25 +2032,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         roots_of(&principal)
     }
 
-    /// The roots `tip` names, derived from the stored commits up to and
-    /// including that commit alone, never from the principal's current
-    /// chain: a commit landing after `tip` was read changes nothing here,
-    /// so what comes back is a statement about the commit `tip` names
-    /// whatever the principal does meanwhile. `None` if the chain no longer
-    /// has that commit at that position (a fork resolved under the read).
+    /// The roots `tip` names, read from the roots the index stored for that
+    /// commit when it was admitted: nothing is replayed. A commit landing
+    /// after `tip` was read changes nothing here, so what comes back is a
+    /// statement about the commit `tip` names whatever the principal does
+    /// meanwhile. `None` if the chain no longer has that commit at that
+    /// position (a fork resolved under the read).
     ///
-    /// Memoized by (principal, commit): a commit this engine admitted is
-    /// already there, so for the tip of a live principal this is a lookup.
-    /// Otherwise (after a restart, or a commit another path stored) the
-    /// roots are those of the principal at its tip ([`Self::at_tip`]), or,
-    /// when a commit landed since `tip` was read, of one replay of the
-    /// history up to the commit `tip` names, onto a private log.
-    ///
-    /// The genesis is read from the stored chain.
+    /// Memoized by (principal, commit).
     ///
     /// # Errors
     ///
-    /// As [`Self::load_principal`].
+    /// [`EngineError`] if the index read fails.
     #[tracing::instrument(skip(self))]
     pub async fn derive_roots_at(
         &self,
@@ -2059,38 +2054,25 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if let Some(hit) = self.roots_at.get(&key) {
             return Ok(Some(hit));
         }
-        let ends_at_tip = |principal: &cyphr::PrincipalState| -> Result<bool, EngineError> {
-            Ok(match principal.commits().last() {
-                Some(commit) => {
-                    principal.commit_count() as u64 == tip.commit_count
-                        && format_multihash_all(&commit.tr().0)?.first() == Some(&tip.commit_id)
-                },
-                None => false,
-            })
-        };
-        // The commit `tip` names is the principal's tip unless a commit
-        // landed since it was read: the verified state at the tip has its
-        // roots, and is kept for whoever asks next.
-        if let Some(current) = self.at_tip(&tip.principal_id).await?
-            && ends_at_tip(&current)?
-        {
-            let roots = roots_of(&current)?;
-            self.roots_at.insert(key, roots.clone());
-            return Ok(Some(roots));
-        }
-        let genesis = self.resolve_genesis(&tip.principal_id, &[]).await?;
-        let principal = self
-            .replay_onto(
-                &tip.principal_id,
-                genesis,
-                cyphr::eml::MemoryStorage::new(),
-                Some(tip.commit_count),
-            )
-            .await?;
-        if !ends_at_tip(&principal)? {
+        let Some(position) = tip.commit_count.checked_sub(1) else {
             return Ok(None);
-        }
-        let roots = roots_of(&principal)?;
+        };
+        let chain = self
+            .indexer
+            .get_commit_chain(&tip.principal_id, Some(position), Some(position))
+            .await?;
+        let Some(stored) = chain
+            .into_iter()
+            .find(|c| c.sequence == position && c.commit_id == tip.commit_id)
+        else {
+            return Ok(None);
+        };
+        let roots = DerivedRoots {
+            pr: stored.pr,
+            sr: stored.sr,
+            ar: stored.ar,
+            cr: stored.cr,
+        };
         self.roots_at.insert(key, roots.clone());
         Ok(Some(roots))
     }
@@ -3383,10 +3365,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut principal = Self::principal_from_genesis(genesis.clone(), storage).await?;
 
         let stored = self.stored_entries(principal_id, through).await?;
-        self.commits_replayed.fetch_add(
-            stored.entries.len() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
         let source = PinSource::stored();
         for (position, (entry, pins)) in stored.entries.iter().zip(&stored.pins).enumerate() {
             self.replay_pinned(&mut principal, &source, entry, pins, position, EMBED_DEPTH)
@@ -3449,6 +3427,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(history)
     }
 
+    /// The active key `tmb` of `principal`, as a resync's signer is read
+    /// at the state a line reaches.
+    fn active_key<T: cyphr::eml::Storage>(
+        principal: &cyphr::Principal<T>,
+        tmb: &coz::Thumbprint,
+    ) -> Result<cyphr::Key, EngineError> {
+        principal
+            .state()
+            .get_key(tmb)
+            .filter(|_| principal.is_key_active(tmb))
+            .cloned()
+            .ok_or(EngineError::Protocol(cyphr::Error::UnknownKey))
+    }
+
     /// A principal holding only its genesis key, over `storage`.
     async fn principal_from_genesis<T: cyphr::eml::Storage>(
         genesis: crate::Genesis,
@@ -3507,6 +3499,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         depth: u8,
     ) -> Result<(), EngineError> {
         self.apply_pins(principal, source, pins, depth).await?;
+        // The single count of replay: every commit of a chain re-applied
+        // from stored blobs, on whichever path. Commits re-applied while
+        // following an embedded principal (`depth` below the top) are part
+        // of the commit that embeds it, not counted again.
+        if depth == EMBED_DEPTH {
+            self.commits_replayed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         crate::import::replay_commit(principal, entry, position).await?;
         Ok(())
     }
@@ -5606,24 +5606,25 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
             .collect();
         let mut carried: Vec<(IndexableCommit, Vec<EmbeddedPin>)> = Vec::new();
-        let state = if let Some(at) = stored.prs.iter().position(|pr| *pr == resync.id) {
-            let mut principal =
-                Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new())
-                    .await?;
-            let source = PinSource::stored();
-            for (position, (entry, pins)) in stored
-                .entries
-                .iter()
-                .zip(&stored.pins)
-                .enumerate()
-                .take(at + 1)
-            {
-                self.replay_pinned(&mut principal, &source, entry, pins, position, EMBED_DEPTH)
-                    .await?;
-            }
-            principal
+        let key: cyphr::Key = if let Some(at) = stored.prs.iter().position(|pr| *pr == resync.id) {
+            // The asserted tip is on the chain: the signer's key history,
+            // read off the state at the chain's tip, says whether it was
+            // active at that position, so nothing is replayed.
+            let tip = self.indexer.get_tip(principal_id).await?.ok_or_else(|| {
+                EngineError::NotFound(format!("principal {principal_id} has no tip"))
+            })?;
+            let verified = self
+                .verified(principal_id, Some(&genesis), &tip, &write)
+                .await?;
+            let state = verified.principal.state();
+            state
+                .key_ever_held(&resync.tmb)
+                .filter(|_| state.key_active_at_position(&resync.tmb, at as u64))
+                .cloned()
+                .ok_or(EngineError::Protocol(cyphr::Error::UnknownKey))?
         } else if let Some(rival) = rivals.iter().find(|r| r.pr == resync.id) {
-            self.replay_line(principal_id, &genesis, &stored, &by_pr, rival)
+            let principal = self
+                .replay_line(principal_id, &genesis, &stored, &by_pr, rival)
                 .await?
                 .ok_or_else(|| {
                     EngineError::MalformedBlob(format!(
@@ -5631,7 +5632,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         resync.id
                     ))
                 })?
-                .principal
+                .principal;
+            Self::active_key(&principal, &resync.tmb)?
         } else if line.is_empty() {
             return Err(EngineError::NotFound(format!(
                 "the asserted tip {} is not held and no line carries it",
@@ -5677,16 +5679,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 }
             }
             carried = attached.commits;
-            attached.principal
+            Self::active_key(&attached.principal, &resync.tmb)?
         };
-        let key = state
-            .state()
-            .get_key(&resync.tmb)
-            .filter(|_| state.is_key_active(&resync.tmb))
-            .ok_or(EngineError::Protocol(cyphr::Error::UnknownKey))?;
-        cyphr::resync::verify_resync(pop, key)
+        cyphr::resync::verify_resync(pop, &key)
             .map_err(|_| EngineError::Protocol(cyphr::Error::InvalidSignature))?;
-        let record_key = KeyEntry::of(key);
+        let record_key = KeyEntry::of(&key);
 
         // What the proof does to the verdict over everything held.
         let lowest = carried.iter().map(|(c, _)| c.sequence).min();

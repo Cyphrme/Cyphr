@@ -9,7 +9,6 @@ use cyphr::replay::WireBundle;
 use cyphr::state::TaggedDigest;
 use cyphr_client::TipAnswer;
 use cyphr_storage::engine::bare_digest;
-use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 use serde_json::{Value, json};
 
 use super::common::{
@@ -349,20 +348,17 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             actions,
         } = peer.chain(&wire).await?;
         let local = raw_chain(&store, &principal_id).await?;
-        if let Some(i) = first_divergence(&local, &theirs) {
-            // A fork needs two histories that both replay; a peer chain that
-            // does not is a bad answer, not a rival branch.
-            let replay_from = match &genesis {
-                Some(g) => g.clone(),
-                None => store.resolve_genesis(&principal_id, &[]).await?,
-            };
-            if let Err(reason) = replays(&replay_from, &theirs, &actions).await {
+        // A bundle that does not decode is a bad answer, not a rival branch.
+        for bundle in &theirs {
+            if let Err(why) = bundle.decode() {
                 return Err(PeerError::Malformed {
                     peer: peer.url().to_owned(),
-                    reason,
+                    reason: why.to_string(),
                 }
                 .into());
             }
+        }
+        if let Some(i) = first_divergence(&local, &theirs) {
             return Err(PeerError::Diverged {
                 peer: peer.url().to_owned(),
                 height: i,
@@ -818,28 +814,6 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             );
         }
     })
-}
-
-/// Replay a peer's history from `genesis`; a history that does not replay
-/// is not an answer about the principal.
-async fn replays(
-    genesis: &Genesis,
-    chain: &[WireBundle],
-    actions: &[Vec<Vec<u8>>],
-) -> Result<(), String> {
-    let mut entries = Vec::with_capacity(chain.len() + actions.len());
-    let bundles = chain.iter().cloned().chain(
-        actions
-            .iter()
-            .map(|blobs| WireBundle::actions(blobs.clone())),
-    );
-    for bundle in bundles {
-        entries.push(CommitEntry::from_bundle(&bundle).map_err(|e| e.to_string())?);
-    }
-    load_principal_from_commits(genesis.clone(), &entries)
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
