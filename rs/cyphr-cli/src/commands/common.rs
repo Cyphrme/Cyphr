@@ -577,8 +577,7 @@ pub async fn submit_history(
             Ok(_) => {},
             Err(cyphr_storage::engine::EngineError::Protocol(e))
                 if e.is_inactive_signer()
-                    && signed_by_held_key(engine, principal_id, blob).await? => {
-            },
+                    && signed_by_held_key(engine, principal_id, blob).await? => {},
             Err(e) => return Err(e.into()),
         }
     }

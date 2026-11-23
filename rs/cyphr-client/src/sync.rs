@@ -460,7 +460,10 @@ impl Record {
             let verified = if let Some(at) = on_chain {
                 held.principal
                     .key_ever_held(&resync.tmb)
-                    .filter(|_| held.principal.key_active_at_position(&resync.tmb, at as u64))
+                    .filter(|_| {
+                        held.principal
+                            .key_active_at_position(&resync.tmb, at as u64)
+                    })
                     .is_some_and(|key| cyphr::resync::verify_resync(pop, key).is_ok())
             } else {
                 // A commit on a rival line: the entries up to it, replayed.
@@ -1610,7 +1613,11 @@ fn relate(mine: &[Link], theirs: &[Link]) -> Relation {
 /// record, or an id cannot be read, and the chain must be replayed.
 fn standing_by_ids(record: &Record, entries: &[PatchEntry]) -> Option<PeerStanding> {
     let held = record.held.as_ref()?;
-    let alg = held.commit_id_at(0)?.parse::<cyphr::state::TaggedDigest>().ok()?.alg();
+    let alg = held
+        .commit_id_at(0)?
+        .parse::<cyphr::state::TaggedDigest>()
+        .ok()?
+        .alg();
     if entries.len() > held.principal.commit_count() {
         return None;
     }
