@@ -36,19 +36,22 @@ impl Bins {
             return Ok(Bins { server, cli });
         }
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let out = Command::new(cargo)
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .args([
-                "build",
-                "--quiet",
-                "--message-format=json-render-diagnostics",
-                "-p",
-                "cyphr-server",
-                "-p",
-                "cyphr-cli",
-            ])
-            .output()
-            .map_err(|e| format!("spawning cargo: {e}"))?;
+        let mut build = Command::new(cargo);
+        build.current_dir(env!("CARGO_MANIFEST_DIR")).args([
+            "build",
+            "--quiet",
+            "--message-format=json-render-diagnostics",
+            "-p",
+            "cyphr-server",
+            "-p",
+            "cyphr-cli",
+        ]);
+        // A release harness drives release servers: debug servers are slow
+        // enough to distort timing-sensitive scenarios.
+        if !cfg!(debug_assertions) {
+            build.arg("--release");
+        }
+        let out = build.output().map_err(|e| format!("spawning cargo: {e}"))?;
         if !out.status.success() {
             return Err(format!(
                 "cargo build failed: {}",
