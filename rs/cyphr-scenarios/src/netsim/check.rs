@@ -289,6 +289,7 @@ async fn payload(
     path: &str,
     query: &[(&str, &str)],
 ) -> Result<Value, String> {
+    h.pace(peer).await;
     let resp = h
         .http
         .get(format!("http://{}{path}", h.peer(peer).addr()))

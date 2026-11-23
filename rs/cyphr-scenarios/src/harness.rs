@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::actions::{ActionResult, PeerTip, Principal};
 use crate::bins::Bins;
@@ -34,6 +34,8 @@ pub struct Harness {
     /// Servers started on request (witnesses); kept alive with the harness.
     extra: Mutex<Vec<Peer>>,
     routes: Mutex<HashMap<(String, String), SocketAddr>>,
+    /// When the observer may next read each peer; see [`Harness::pace`].
+    observer_slots: Mutex<HashMap<String, Instant>>,
     /// Each principal's genesis public key (a keystore entry), as its
     /// creator made it: what a person can be handed out of band.
     genesis: Mutex<HashMap<String, serde_json::Value>>,
@@ -41,6 +43,10 @@ pub struct Harness {
     /// ended; a counter is per process, so a stop would otherwise erase it.
     banked: Mutex<HashMap<String, HashMap<String, u64>>>,
 }
+
+/// Minimum spacing of the observer's reads of one peer: 40 per second,
+/// well under the server's 100 per second per-source limit.
+const OBSERVER_GAP: Duration = Duration::from_millis(25);
 
 /// A client that never reuses connections, so a fault injected between two
 /// requests is seen by the second one, and that bounds every request.
@@ -108,6 +114,7 @@ impl Harness {
             max_body_bytes: limits.max_body_bytes,
             extra: Mutex::default(),
             routes: Mutex::default(),
+            observer_slots: Mutex::default(),
             genesis: Mutex::default(),
             banked: Mutex::default(),
         })
@@ -210,6 +217,22 @@ impl Harness {
             .ok_or_else(|| fail(format!("no thumbprint for a {alg} genesis key")))
     }
 
+    /// Spaces the observer's direct reads of one peer at least
+    /// [`OBSERVER_GAP`] apart. The observer dials from 127.0.0.1, one
+    /// source for the rate limiter, and its polling loops are otherwise
+    /// unthrottled, so without this the scaffolding itself trips the
+    /// limit it is there to observe.
+    pub async fn pace(&self, peer: &str) {
+        let at = {
+            let mut slots = self.observer_slots.lock().expect("observer slots");
+            let now = Instant::now();
+            let at = slots.get(peer).map_or(now, |next| (*next).max(now));
+            slots.insert(peer.to_owned(), at + OBSERVER_GAP);
+            at
+        };
+        tokio::time::sleep_until(at.into()).await;
+    }
+
     pub fn peer(&self, name: &str) -> &Peer {
         self.peers
             .iter()
@@ -292,6 +315,7 @@ impl Harness {
     /// directly, independent of every action under test. `None` if the peer
     /// does not know the principal.
     pub async fn peer_view(&self, peer: &str, p: &Principal) -> Option<PeerTip> {
+        self.pace(peer).await;
         let addr = self.upstream(peer);
         let resp = self
             .http
