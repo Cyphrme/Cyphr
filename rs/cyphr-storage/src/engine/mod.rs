@@ -2030,25 +2030,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         roots_of(&principal)
     }
 
-    /// The roots `tip` names, derived from the stored commits up to and
-    /// including that commit alone, never from the principal's current
-    /// chain: a commit landing after `tip` was read changes nothing here,
-    /// so what comes back is a statement about the commit `tip` names
-    /// whatever the principal does meanwhile. `None` if the chain no longer
-    /// has that commit at that position (a fork resolved under the read).
+    /// The roots `tip` names, read from the roots the index stored for that
+    /// commit when it was admitted: nothing is replayed. A commit landing
+    /// after `tip` was read changes nothing here, so what comes back is a
+    /// statement about the commit `tip` names whatever the principal does
+    /// meanwhile. `None` if the chain no longer has that commit at that
+    /// position (a fork resolved under the read).
     ///
-    /// Memoized by (principal, commit): a commit this engine admitted is
-    /// already there, so for the tip of a live principal this is a lookup.
-    /// Otherwise (after a restart, or a commit another path stored) the
-    /// roots are those of the principal at its tip ([`Self::at_tip`]), or,
-    /// when a commit landed since `tip` was read, of one replay of the
-    /// history up to the commit `tip` names, onto a private log.
-    ///
-    /// The genesis is read from the stored chain.
+    /// Memoized by (principal, commit).
     ///
     /// # Errors
     ///
-    /// As [`Self::load_principal`].
+    /// [`EngineError`] if the index read fails.
     #[tracing::instrument(skip(self))]
     pub async fn derive_roots_at(
         &self,
@@ -2059,38 +2052,25 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if let Some(hit) = self.roots_at.get(&key) {
             return Ok(Some(hit));
         }
-        let ends_at_tip = |principal: &cyphr::PrincipalState| -> Result<bool, EngineError> {
-            Ok(match principal.commits().last() {
-                Some(commit) => {
-                    principal.commit_count() as u64 == tip.commit_count
-                        && format_multihash_all(&commit.tr().0)?.first() == Some(&tip.commit_id)
-                },
-                None => false,
-            })
-        };
-        // The commit `tip` names is the principal's tip unless a commit
-        // landed since it was read: the verified state at the tip has its
-        // roots, and is kept for whoever asks next.
-        if let Some(current) = self.at_tip(&tip.principal_id).await?
-            && ends_at_tip(&current)?
-        {
-            let roots = roots_of(&current)?;
-            self.roots_at.insert(key, roots.clone());
-            return Ok(Some(roots));
-        }
-        let genesis = self.resolve_genesis(&tip.principal_id, &[]).await?;
-        let principal = self
-            .replay_onto(
-                &tip.principal_id,
-                genesis,
-                cyphr::eml::MemoryStorage::new(),
-                Some(tip.commit_count),
-            )
-            .await?;
-        if !ends_at_tip(&principal)? {
+        let Some(position) = tip.commit_count.checked_sub(1) else {
             return Ok(None);
-        }
-        let roots = roots_of(&principal)?;
+        };
+        let chain = self
+            .indexer
+            .get_commit_chain(&tip.principal_id, Some(position), Some(position))
+            .await?;
+        let Some(stored) = chain
+            .into_iter()
+            .find(|c| c.sequence == position && c.commit_id == tip.commit_id)
+        else {
+            return Ok(None);
+        };
+        let roots = DerivedRoots {
+            pr: stored.pr,
+            sr: stored.sr,
+            ar: stored.ar,
+            cr: stored.cr,
+        };
         self.roots_at.insert(key, roots.clone());
         Ok(Some(roots))
     }
