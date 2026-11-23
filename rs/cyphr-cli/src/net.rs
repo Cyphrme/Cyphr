@@ -83,6 +83,7 @@ pub enum PeerError {
         supported: u64,
     },
     /// The peer's history disagrees with the local history below the tip.
+    /// The divergence is not verified: the peer's chain is not replayed.
     #[error("peer {peer} history diverges from the local history at commit {height}")]
     Diverged {
         /// The peer's base URL.

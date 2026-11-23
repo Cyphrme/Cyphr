@@ -1404,6 +1404,8 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// Shadow checks where the kept state was not the replayed one.
     kept_divergences: std::sync::atomic::AtomicU64,
     /// Stored commits re-applied by any replay path ([`Self::replay_pinned`]), ever.
+    /// Not counted: commits re-applied while following embedded principals,
+    /// and the re-application a rebuild of the index does.
     commits_replayed: std::sync::atomic::AtomicU64,
     /// Commit records read from the index by [`Self::chain`], ever.
     chain_rows_read: std::sync::atomic::AtomicU64,

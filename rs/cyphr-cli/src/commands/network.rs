@@ -348,6 +348,16 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             actions,
         } = peer.chain(&wire).await?;
         let local = raw_chain(&store, &principal_id).await?;
+        // A bundle that does not decode is a bad answer, not a rival branch.
+        for bundle in &theirs {
+            if let Err(why) = bundle.decode() {
+                return Err(PeerError::Malformed {
+                    peer: peer.url().to_owned(),
+                    reason: why.to_string(),
+                }
+                .into());
+            }
+        }
         if let Some(i) = first_divergence(&local, &theirs) {
             return Err(PeerError::Diverged {
                 peer: peer.url().to_owned(),
