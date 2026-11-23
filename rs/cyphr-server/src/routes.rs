@@ -1849,9 +1849,8 @@ mod commit_count_underflow_tests {
             .expect("a real tip exists after the genesis push");
 
         // A hand-corrupted copy of a REAL, otherwise-consistent tip: every
-        // root still matches what `rederive_roots` independently
-        // recomputes (so the desync guard at the top of
-        // `sign_tip_attestation` does not short-circuit before the
+        // root still matches what `attested_roots` re-derives from the
+        // chain (so its index-disagreement check does not fail before the
         // subtraction runs), with only `commit_count` forced to the
         // claimed-unreachable value.
         let mut corrupted = real_tip.clone();

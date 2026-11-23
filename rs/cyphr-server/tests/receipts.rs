@@ -163,7 +163,7 @@ async fn attestor_tip_response_carries_signed_tip_report() {
 /// (#147, GREEN under the landed fix): `receipt::Roots.cr` was a plain
 /// `String`, and storage's own convention for "no commit root yet" -- a
 /// principal that is key-established but has not finalized a data commit
-/// (`rs/cyphr-storage/src/engine/mod.rs`'s `rederive_roots`, :483-489:
+/// (`rs/cyphr-storage/src/engine/mod.rs`'s `roots_of`:
 /// `DerivedRoots.cr: String::new()` when `principal.cr()` is `None`) -- was
 /// a bare empty string, with nothing in the TYPE distinguishing it from
 /// "the empty digest." The consuming side already fixed this in its own
@@ -175,7 +175,7 @@ async fn attestor_tip_response_carries_signed_tip_report() {
 /// ambiguity this test used to have to catch behaviorally.
 ///
 /// Constructs `Roots` with `cr: None`, the typed counterpart of what
-/// `rederive_roots`'s own no-commit-yet branch used to hand `sign_receipt`
+/// `roots_of`'s own no-commit-yet branch used to hand `sign_receipt`
 /// as `cr: String::new()` -- the routes.rs call sites now perform that
 /// empty-string-to-`None` conversion at the boundary (`routes.rs`'s
 /// `sign_tip_attestation`/`push`), so this test exercises the receipt
