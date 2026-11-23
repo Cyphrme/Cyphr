@@ -1,4 +1,4 @@
-//! The `resync/create` exit (frame section 12, SPEC 15.8 item 2) at the
+//! The `resync/create` exit (SPEC 15.8 item 2) at the
 //! engine: a proof of possession (`id` = the PR of the asserted tip, signed
 //! by a key active there, `now` required) selects one child at a fork, and
 //! the verdict, heads and chain are `assessment` over everything held, with

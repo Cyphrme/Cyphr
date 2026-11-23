@@ -2951,7 +2951,8 @@ async fn caught_up_patch_is_signed_whatever_the_anchor_spelling() {
 }
 
 // ========================================================================
-// Rule X over the wire (frame section 11): a pair carries its parent, and a
+// A cap never refuses an offer that would change the standing or fork point,
+// over the wire: a pair carries its parent, and a
 // witness binds a head its caps refused to the bytes of the entry that
 // names it.
 // ========================================================================
@@ -3082,10 +3083,10 @@ enum Cap {
     /// E is swapped for F, a genuine commit the witness answers `Errored`.
     Forge,
     /// Only E is sent: the declared head is E's own commit, but the witness
-    /// is given nothing of the line below it (frame 11.3, condition 2).
+    /// is given nothing of the line below it (condition 2 of the head binding).
     OnlyLast,
     /// E is signed by a key the witness holds revoked, so its answer is
-    /// neither `BranchLimit` nor `Errored` (frame 11.3, condition 3).
+    /// neither `BranchLimit` nor `Errored` (condition 3 of the head binding).
     DeadSigner,
     /// A hostile authority signs a held report naming F as its head, and
     /// its patch ends the branch with F's own bytes and declares F as the
@@ -3279,7 +3280,7 @@ impl Theft {
     }
 }
 
-/// Backs the binding of a cap-refused head (frame 11.3): a witness whose
+/// Backs the binding of a cap-refused head: a witness whose
 /// caps refuse the end of a line accepts the authority's head for it only
 /// when the head is the commit id of that entry's own bytes. Honest
 /// authority: the head past the cap is E and the last entry is E, so the
@@ -3312,7 +3313,7 @@ async fn a_cap_refused_head_must_be_the_last_entrys_own_commit() {
     );
 }
 
-/// Backs conditions 2 and 3 of the head binding (frame 11.3), each with the
+/// Backs conditions 2 and 3 of the head binding, each with the
 /// declared head equal to the last entry's own commit (condition 1 holds):
 /// a head is accepted only when the witness holds the branch to the cap
 /// (here the line is not given, only its last entry), and only when the
@@ -3347,7 +3348,7 @@ async fn a_cap_refused_head_needs_the_line_held_and_a_cap_answer() {
     }
 }
 
-/// Backs the head binding against a hostile authority (frame 11.3): its
+/// Backs the head binding against a hostile authority: its
 /// signed held report names F as a head, and its patch ends the branch A,
 /// D with F's own bytes and declares F. F is a genuine signed commit, but it
 /// extends the witness's own chain, not the branch it is named the head of,

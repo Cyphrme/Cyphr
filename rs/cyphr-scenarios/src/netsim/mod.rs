@@ -8,7 +8,7 @@
 //! deterministic; the design makes the expected outcome independent of it
 //! (see [`model`]).
 //!
-//! Invariants checked here (NETSIM-1, the honest network):
+//! Invariants checked here (the honest network):
 //! - N1: after quiescence every holder of an unforked principal agrees with the owner's own signed
 //!   chain (tip, height, `pr`, `ar`).
 //! - N2: an honest op over an unfaulted link is accepted, or is refused Stale and then accepted

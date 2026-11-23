@@ -1,5 +1,4 @@
-//! `POST /resync` and `GET /resync?pr=` (frame section 12.3, SPEC 15.8 item
-//! 2): a proof of possession over one branch's tip selects it at a fork
+//! `POST /resync` and `GET /resync?pr=` (SPEC 15.8 item 2): a proof of possession over one branch's tip selects it at a fork
 //! both of whose branches are extended, which no commit can. The chosen
 //! tip admits writes, the abandoned branch stays served as evidence, and
 //! the holders that read the fork as Error (a gossiping peer, a witness)
@@ -208,8 +207,8 @@ async fn a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch() {
     let coz = f.pop_l();
     let (status, body) = post_json(app.clone(), "/resync", resync_body(&f.id, &coz, &[])).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
-    // The walk ends at the held leaf of the chosen branch (frame 12.2:
-    // heads are leaves, "assertions decide where the walk stops"): L_5,
+    // The walk ends at the held leaf of the chosen branch (heads are leaves, and
+    // assertions decide where the walk stops): L_5,
     // which was held as evidence while in Error, not the asserted L_4.
     let want = commit_id(&f.l_states[2]);
     assert_eq!(

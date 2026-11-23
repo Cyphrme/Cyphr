@@ -1,5 +1,5 @@
 // Scenario S04, resync: theft of a key whose two holders fork with both
-// branches extended (SPEC 15.8 item 2, frame 12).
+// branches extended (SPEC 15.8 item 2).
 // Alice and a thief holding her laptop key each extend their own branch
 // twice on partitioned peers.
 // Must hold: Alice's resync makes every server Active on her tip; the

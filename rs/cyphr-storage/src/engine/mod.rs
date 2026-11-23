@@ -3911,7 +3911,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// Offer a rival line root `parent` together with its one extension
-    /// `bundle` (frame rule X): the two are kept both or neither. A root
+    /// `bundle` (a cap never refuses what would change standing or fork
+    /// point): the two are kept both or neither. A root
     /// whose caps refuse it alone changes no verdict, so a holder whose
     /// quota is full could never place the extension that makes the fork
     /// two extended branches; the pair is judged as one offer, and kept

@@ -458,7 +458,7 @@ fn human_recovery_is_a_local_revisable_choice_that_leaves_the_verdict_error() {
     );
 }
 
-/// Claim (NETSIM-2): a rebase whose backup name is already taken (two
+/// Claim: a rebase whose backup name is already taken (two
 /// rebases in one second name the backup by the second) keeps the existing
 /// backup and writes its own, instead of failing to rename onto it. The
 /// names for every second the rebase can finish in are taken beforehand, so

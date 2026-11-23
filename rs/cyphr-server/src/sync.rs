@@ -492,7 +492,7 @@ async fn sync_locked(
     if let Some(held) = &held_report {
         for head in &held.heads {
             // Every head the authority attests is bound to a branch of its
-            // patch (frame 11.3): the branch's last entry is that commit,
+            // patch: the branch's last entry is that commit,
             // and the entries the witness holds chain. A held head is then
             // the end of a branch the authority served; a head the witness
             // does not hold must also be one its caps cut short.
@@ -635,7 +635,7 @@ fn named_keys(bundles: &[cyphr::replay::WireBundle]) -> Vec<coz::Thumbprint> {
 }
 
 /// Whether the attested head `head` is bound to a branch of the authority's
-/// patch (frame 11.3). All of:
+/// patch. All of:
 /// 1. `head` is the commit id computed from the bytes of the last entry of one branch the authority
 ///    names it the head of;
 /// 2. the entries of that branch the witness holds chain: each held entry extends the held entry

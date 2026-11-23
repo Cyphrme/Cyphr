@@ -413,12 +413,11 @@ async fn responses_carry_freshness() {
 }
 
 // ========================================================================
-// N2 remediation: wedge elimination + authenticated channel + ingestion
+// Wedge elimination + authenticated channel + ingestion
 // ========================================================================
 //
-// These acceptance tests drive deliverables 2, 4, and 5 of the sync-channel
-// node. They are RED against the current code and GREEN once the honest
-// outcome type, wedge fix, authenticated channel, and ingestion gate land.
+// These tests pin the honest outcome type, the wedge fix, the
+// authenticated channel, and the ingestion gate.
 //
 // Design note -- why an on-path proxy / fixed mock, not two plain servers:
 // the threats these tests bound are alterations of what the authority served
@@ -913,15 +912,11 @@ async fn sync_recovers_after_unverifiable_entry() {
 /// "is the signature valid?" accepts it and applies the short prefix
 /// silently, as `Synced`.
 ///
-/// REWORK NOTE (discrepancy surfaced, not silently resolved): the base IBC's
-/// N2.4b text says "nothing applied." This node's council round (attack +
-/// security + architect, converged) rejected pre-apply atomicity as the
-/// mechanism -- see `architect-N2-round.md`'s "digest-over-all declination":
-/// a genuine chain-verified PREFIX apply is explicitly ruled SOUND ("exactly
-/// one reachable from an honest, shorter serving -- monotone, no integrity
-/// loss"), and this node's own S3 forbids changing what a caller serves ("log
-/// distinctly and proceed to serve as today"). Under that ratified design the
-/// genuine sequence-0 entry legitimately applies and `/tip` legitimately
+/// Note: the witness does not require that nothing be applied. Applying a
+/// genuine, chain-verified PREFIX is sound: it is exactly the state an
+/// honest, shorter serving would leave (monotone, no integrity loss), and
+/// the witness must not change what a caller is served. So the genuine
+/// sequence-0 entry legitimately applies and `/tip` legitimately
 /// keeps serving it -- checking the NEXT `/tip` call's HTTP status is no
 /// longer a valid proxy for "was the truncation caught." What must hold, and
 /// is asserted directly below, is that the SYNC OUTCOME reports the
@@ -1209,18 +1204,16 @@ async fn authenticated_channel_accepts_genuine_authority() {
 }
 
 // ========================================================================
-// N2 rework: post-apply reconciliation against the witness's OWN resulting
-// state, and the cross-principal `pr` check
+// Post-apply reconciliation against the witness's OWN resulting state, and
+// the cross-principal `pr` check
 // ========================================================================
 //
 // The prior authenticated-channel gate compared the response's claimed
 // `(sequence, commit_id)` against the SAME values the signed report carries
 // in the clear -- a check any on-path reader can reproduce for free, since
 // it never touches anything the witness itself verifies or produces. These
-// tests derive from the attack/security/architect council round on this
-// node (`.scratch/campaigns/server-witness-remediation/probes/N2-hacker.md`,
-// `N2-security.md`, `architect-N2-round.md`): each pins one shape that
-// defeated the old gate and must be caught by the new one.
+// tests each pin one shape that defeated the old gate and must be caught by
+// the new one.
 
 /// Spawn an on-path proxy that rewrites the REQUEST query before forwarding,
 /// leaving the authority's response byte-for-byte genuine. Models a party

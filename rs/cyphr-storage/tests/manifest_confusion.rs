@@ -1143,7 +1143,7 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
-// Replayed cozes (hacker-seat findings F-A, F-B, F-C). SPEC be0663f 7.6 lets
+// Replayed cozes. SPEC be0663f 7.6 lets
 // principals that share keys reuse a coz, and `key/create` needs no proof of
 // possession, so any principal can add another's public key and replay that
 // principal's signed cozes. Nothing replayed may block, misattribute or brick.

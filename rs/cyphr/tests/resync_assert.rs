@@ -1,4 +1,4 @@
-//! Rule E with assertions (frame section 12.2, SPEC 15.8 item 2): a held
+//! Rule E with assertions (SPEC 15.8 item 2): a held
 //! `resync/create` proof of possession names a commit's PR (`asserted`),
 //! and at a contest on the walk the children whose subtree holds an
 //! asserted commit decide it. One such child is followed whatever is

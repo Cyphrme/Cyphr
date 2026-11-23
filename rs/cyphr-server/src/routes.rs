@@ -1026,7 +1026,7 @@ pub async fn patch(
     // existing `GET /e/{digest}` handler (`entity`, below) parses a digest
     // path parameter -- a malformed anchor is refused with the app's JSON
     // error envelope, not axum's generic query-rejection, matching that
-    // precedent exactly (parse-don't-validate, eng-frame §2).
+    // precedent exactly (parse, don't validate).
     let anchor: Option<cyphr::state::TaggedDigest> = match &query.from {
         Some(raw) => Some(
             raw.parse()

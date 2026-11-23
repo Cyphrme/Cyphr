@@ -1,6 +1,5 @@
 //! A read of `GET /tip` while the principal's chain is growing is answered
-//! with a signed attestation of the commit it names, never a 500
-//! (NETSIM-2 D2; U3).
+//! with a signed attestation of the commit it names, never a 500.
 //!
 //! The write path makes a commit durable (manifest) before it indexes it,
 //! so a read racing a push can see the blob store ahead of the index

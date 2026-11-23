@@ -183,7 +183,8 @@ clocks correct.
   standing or its fork point, so a thief who adds keys cannot keep out a
   commit that matters. What the store keeps by offer is bounded by
   32 + 2h commits, h the principal's chain length. That bound is argued
-  from rule X and tested on small generated histories
+  from the rule that a cap never refuses an offer that would change
+  the principal's standing or fork point, and tested on small generated histories
   (`retained_commits_stay_within_the_bound`,
   `rs/cyphr-storage/tests/rule_x.rs:426`), not proved.
   A storage fault between the two writes of an offered pair can leave the

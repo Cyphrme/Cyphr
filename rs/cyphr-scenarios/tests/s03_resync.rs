@@ -1,5 +1,5 @@
 // Scenario S03, resync: the double-offline fork whose both branches were
-// extended (SPEC 15.8 item 2, frame 12).
+// extended (SPEC 15.8 item 2).
 // Alice's laptop and phone each commit twice on partitioned peers; no commit
 // leaves that Error (see s03_offline). Alice resyncs from the phone: a
 // `resync/create` over the phone's tip, sent with the phone's line.
