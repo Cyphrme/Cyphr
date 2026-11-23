@@ -9,7 +9,6 @@
 //
 // Required capabilities:
 // transport,cli-network,branch-store,evidence,peer-gossip,data-commit,key-pairing,relying-party.
-// Red until `cyphr resync` exists: the CLI answers an unknown command.
 
 use std::time::Duration;
 

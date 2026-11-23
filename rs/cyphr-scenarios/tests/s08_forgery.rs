@@ -6,8 +6,8 @@
 // (SPEC 7.6).
 //
 // Required capabilities: transport,cli-network,evidence,idempotency,data-commit.
-// Red until they exist: the scenario starts its fresh-keyed peers, then the
-// harness reports the first absent capability.
+// The scenario starts its fresh-keyed peers, then the harness reports the
+// first absent capability.
 
 use cyphr_scenarios::actions::*;
 use cyphr_scenarios::oracle::Expect;

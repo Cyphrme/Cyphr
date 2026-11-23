@@ -4,8 +4,8 @@
 // Must hold: clients fail closed on the unknown version; peers stay bounded.
 //
 // Required capabilities: transport,version-check,peer-gossip.
-// Red until they exist: the scenario starts its fresh-keyed peers, then the
-// harness reports the first absent capability.
+// The scenario starts its fresh-keyed peers, then the harness reports the
+// first absent capability.
 
 use std::time::{Duration, Instant};
 

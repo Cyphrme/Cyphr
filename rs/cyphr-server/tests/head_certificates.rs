@@ -5,8 +5,7 @@
 //! answer a 422 (an index or size it lacks, a log whose last commit left no
 //! State Root); and `/head`, `/inclusion` and `/consistency` are gone. Every certificate verifies
 //! against an anchor the asker built itself. Bodies sit in the server's envelope
-//! `payload`, as every other answer does. Red until the route exists:
-//! today `/tip` has no `root` and `/proof` is a 404.
+//! `payload`, as every other answer does.
 
 use axum::http::StatusCode;
 use cyphr::proof::{Anchor, Certificate, Claim, Root, verify};

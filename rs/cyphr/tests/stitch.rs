@@ -1,7 +1,6 @@
-//! Pinned roots and certificates across hash-algorithm epochs. Red until
-//! `cyphr::proof` is implemented: every test reaches a `stub:`
-//! `unimplemented!()` first (or a wrong verdict, as named), so a pass can
-//! only come from the real verifier.
+//! Pinned roots and certificates across hash-algorithm epochs. Each test
+//! reaches a verdict only through the real verifier, so a pass cannot come
+//! from a stub.
 //!
 //! Families: Ed25519 hashes under SHA-512, ES256 under SHA-256, ES384
 //! under SHA-384. A `key/replace` from one to the other closes the

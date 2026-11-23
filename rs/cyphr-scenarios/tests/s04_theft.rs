@@ -8,8 +8,8 @@
 // verdict keeps both branches, reports the fork in Error, and never picks a branch.
 //
 // Required capabilities: transport,cli-network,branch-store,evidence,peer-gossip,audit,data-commit.
-// Red until they exist: the scenario starts its fresh-keyed peers, then the
-// harness reports the first absent capability.
+// The scenario starts its fresh-keyed peers, then the harness reports the
+// first absent capability.
 
 use std::time::Duration;
 

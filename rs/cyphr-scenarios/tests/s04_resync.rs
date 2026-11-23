@@ -9,8 +9,7 @@
 // PoP cannot be allowed to win.)
 //
 // Required capabilities:
-// transport,cli-network,branch-store,evidence,peer-gossip,data-commit,key-pairing. Red until `cyphr
-// resync` exists: the CLI answers an unknown command.
+// transport,cli-network,branch-store,evidence,peer-gossip,data-commit,key-pairing.
 
 use std::time::Duration;
 
