@@ -27,7 +27,6 @@ pub mod rate_limit;
 pub mod receipt;
 pub mod revoke;
 pub mod routes;
-pub mod sync;
 pub mod transport;
 
 use std::sync::Arc;
@@ -106,13 +105,6 @@ pub struct AppState {
 
     /// Storage write probe behind `GET /healthz`.
     pub health: metrics::HealthProbe,
-
-    /// Per-principal locks for synchronizing witness state sync execution.
-    pub sync_locks: std::sync::Arc<
-        tokio::sync::Mutex<
-            std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
-        >,
-    >,
 }
 
 impl AppState {
@@ -141,9 +133,6 @@ impl AppState {
             .timeout(std::time::Duration::from_secs(10))
             .build()?;
 
-        let sync_locks =
-            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
-
         let health = metrics::HealthProbe::new(&config.record_dir());
         health.watch(observations.latch());
 
@@ -158,7 +147,6 @@ impl AppState {
             http_client,
             metrics: metrics::Metrics::default(),
             health,
-            sync_locks,
         })
     }
 

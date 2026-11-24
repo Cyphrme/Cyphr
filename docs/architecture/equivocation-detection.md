@@ -89,10 +89,11 @@ it can be checked.
   in `rs/cyphr-server/tests/spec_conformance.rs`). The server keeps no
   record of the refused branch. Nothing in the server records a fork,
   tracks a consensus state, or attaches evidence to an answer.
-- **Witness mode pulls from one configured upstream.** A server started
-  with `--mode witness` refuses writes and pulls `/patch` from the
-  server named by `authority_url`, verifying each commit before it
-  persists it (`rs/cyphr-server/src/sync.rs`). The
+- **Witness mode follows its configured peers.** A server started with
+  `--mode witness` refuses writes, pulls the principals it holds from its
+  `[gossip]` peers on a timer, and fetches a principal it does not hold from
+  them when one is read, verifying each commit before it persists it
+  (`rs/cyphr-server/src/gossip.rs`). The
   [server operating guide](../guides/operating-a-server.md) describes
   the configuration.
 - **The comparison exists as a library function.**

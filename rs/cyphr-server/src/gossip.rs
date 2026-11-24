@@ -53,8 +53,10 @@ use std::time::Duration;
 use coz::Thumbprint;
 use cyphr::principal::system_clock;
 use cyphr_client::{
-    BindingPolicy, ChainSource, Connector, HttpConnector, PatchEntry, PatchRequest, PullPeer,
-    Record, branch_bundles, fetch_patch, fetch_resyncs, peer_heads, pull, verified_revokes,
+    BindingPolicy, ChainSource, Connector, HttpConnector, PatchEntry, PatchFailure, PatchRequest,
+    PeerKey, PullPeer, Record, TipReport, branch_bundles, fetch_patch, fetch_patch_keyed,
+    fetch_resyncs, fetch_tip_body, peer_heads, pull, statement_signer, verified_revokes,
+    verify_authenticated_envelope,
 };
 use cyphr_storage::engine::{PulledOffer, ResyncOffer};
 use cyphr_storage::index::Indexer as _;
@@ -73,35 +75,69 @@ enum RoundError {
     Empty,
 }
 
-/// Start the gossip timer if peers are configured and the server accepts
-/// writes. A witness takes its state from its authority, so it never
-/// gossips.
-///
-/// Peer URLs were checked at config resolution; one that still cannot
-/// become a connector (a state built without it) is skipped with a warning.
-pub fn spawn(state: &Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
-    let config = &state.config;
-    if config.gossip.peers.is_empty() || config.mode != crate::config::ServerMode::Authority {
-        return None;
+/// One configured peer: how it is dialled and, when the operator named it,
+/// the Principal Genesis of its server principal, whose chain holds the keys
+/// its signed tip reports are checked against.
+pub struct Peer {
+    /// The peer's configured URL, which names it in logs and reports.
+    pub name: String,
+    /// The carrier to it.
+    pub connector: HttpConnector,
+    /// The PG of the peer's server principal; `None` means its reports are
+    /// not checked (R4: a verifier decides whose claims to accept).
+    pub pg: Option<String>,
+}
+
+impl Peer {
+    /// A peer whose reports are not checked: no server principal named.
+    #[must_use]
+    pub fn new(name: String, connector: HttpConnector) -> Self {
+        Self {
+            name,
+            connector,
+            pg: None,
+        }
     }
-    let peers: Vec<(String, HttpConnector)> = config
+}
+
+/// The configured peers as connectors. Peer URLs were checked at config
+/// resolution; one that still cannot become a connector (a state built
+/// without it) is skipped with a warning.
+#[must_use]
+pub fn peers_of(state: &AppState) -> Vec<Peer> {
+    let config = &state.config;
+    config
         .gossip
         .peers
         .iter()
-        .filter_map(|url| {
+        .filter_map(|entry| {
             match HttpConnector::with_client(
                 state.http_client.clone(),
-                url,
+                entry.url(),
                 config.allow_cleartext_upstream,
             ) {
-                Ok(connector) => Some((url.clone(), connector)),
+                Ok(connector) => Some(Peer {
+                    name: entry.url().to_owned(),
+                    connector,
+                    pg: entry.pg().map(str::to_owned),
+                }),
                 Err(err) => {
-                    warn!(peer = %url, %err, "gossip peer refused; not dialled");
+                    warn!(peer = %entry.url(), %err, "gossip peer refused; not dialled");
                     None
                 },
             }
         })
-        .collect();
+        .collect()
+}
+
+/// Start the gossip timer if peers are configured, in either mode: a
+/// service pulls to stay in step with its peers, a witness to follow them.
+pub fn spawn(state: &Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
+    let config = &state.config;
+    if config.gossip.peers.is_empty() {
+        return None;
+    }
+    let peers = peers_of(state);
     let every = Duration::from_secs(config.gossip.interval_secs);
     let state = Arc::clone(state);
     Some(tokio::spawn(async move {
@@ -136,7 +172,7 @@ impl Gossip {
     /// One gossip round: pull every held principal from every peer, and
     /// skip the pull (not the revoke probe) of a principal every peer is
     /// idle on.
-    pub async fn round(&mut self, state: &Arc<AppState>, peers: &[(String, HttpConnector)]) {
+    pub async fn round(&mut self, state: &Arc<AppState>, peers: &[Peer]) {
         let principals = match state.engine.indexer().list_principals().await {
             Ok(principals) => principals,
             Err(err) => {
@@ -169,7 +205,7 @@ impl Gossip {
     async fn idle_keys(
         &self,
         state: &Arc<AppState>,
-        peers: &[(String, HttpConnector)],
+        peers: &[Peer],
         principal_id: &str,
     ) -> Option<Vec<Thumbprint>> {
         let tip = state.engine.get_tip(principal_id).await.ok()??;
@@ -181,7 +217,7 @@ impl Gossip {
             .keys
             .get(principal_id)
             .filter(|m| m.tip == tip.commit_id)?;
-        for (_, connector) in peers {
+        for Peer { connector, .. } in peers {
             let Ok(heads) = peer_heads(connector, principal_id).await else {
                 return None;
             };
@@ -214,14 +250,13 @@ impl Gossip {
 
 /// Ask every peer for the naked revokes of `keys`, as a full pull's last
 /// step does, and record what verified.
-async fn probe_revokes(
-    state: &Arc<AppState>,
-    peers: &[(String, HttpConnector)],
-    keys: &[Thumbprint],
-) {
+async fn probe_revokes(state: &Arc<AppState>, peers: &[Peer], keys: &[Thumbprint]) {
     let mut seen = BTreeSet::new();
     let mut revoked = Vec::new();
-    for (name, connector) in peers {
+    for Peer {
+        name, connector, ..
+    } in peers
+    {
         match verified_revokes(connector, name, keys).await {
             Ok((found, _rejected)) => {
                 revoked.extend(found.into_iter().filter(|r| seen.insert(r.tmb.to_b64())));
@@ -290,7 +325,7 @@ fn patch_entries(stored: &cyphr_storage::engine::PatchResponse) -> Vec<PatchEntr
 
 async fn round_principal(
     state: &Arc<AppState>,
-    peers: &[(String, HttpConnector)],
+    peers: &[Peer],
     principal_id: &str,
 ) -> Result<KeyMemo, RoundError> {
     let mut record = open_record(state, principal_id).await?;
@@ -309,9 +344,30 @@ async fn round_principal(
     };
     let mark = record.log_len();
 
-    let dialled: Vec<PullPeer<'_, HttpConnector>> = peers
+    // A peer with a configured server principal is asked for its signed tip
+    // report first, and checked against the keys of that principal's chain;
+    // one whose report does not verify is refused for the round, and nothing
+    // from it is applied.
+    let mut attested: Vec<(&Peer, TipReport)> = Vec::new();
+    let mut usable: Vec<&Peer> = Vec::new();
+    for peer in peers {
+        match verify_peer_tip(state, peer, principal_id).await {
+            Ok(Some(report)) => {
+                attested.push((peer, report));
+                usable.push(peer);
+            },
+            Ok(None) => usable.push(peer),
+            Err(why) => {
+                warn!(principal = %principal_id, peer = %peer.name, %why, "gossip: peer refused");
+            },
+        }
+    }
+    let dialled: Vec<PullPeer<'_, HttpConnector>> = usable
         .iter()
-        .map(|(name, connector)| PullPeer { name, connector })
+        .map(|peer| PullPeer {
+            name: &peer.name,
+            connector: &peer.connector,
+        })
         .collect();
     let report = pull(&mut record, &dialled).await;
     for outcome in &report.peers {
@@ -331,8 +387,10 @@ async fn round_principal(
     // commits only if they verify (SPEC 15.8).
     let offered = branch_bundles(&record, &report, &dialled).await;
     let mut served = Vec::new();
-    for (name, connector) in peers {
-        if let Some(offer) = peer_resync_offer(state, name, connector, principal_id).await {
+    for peer in &usable {
+        if let Some(offer) =
+            peer_resync_offer(state, &peer.name, &peer.connector, principal_id).await
+        {
             served.push(offer);
         }
     }
@@ -380,6 +438,26 @@ async fn round_principal(
             Err(err) => refused(principal_id, err, "resync proof answered"),
         }
     }
+    // The tip check proper: what this node now holds must be what the peer
+    // signed. A peer whose report this node does not reach after applying
+    // what verified is asked for its branches and evidence, which the engine
+    // keeps if they verify (I2: a fork is evidence, never merged).
+    for (peer, report) in &attested {
+        if tip_matches_report(
+            state
+                .engine
+                .get_tip(principal_id)
+                .await
+                .ok()
+                .flatten()
+                .as_ref(),
+            report,
+        ) {
+            continue;
+        }
+        warn!(principal = %principal_id, peer = %peer.name, "gossip: the resulting tip is not the one the peer attests");
+        offer_peer_branches(state, peer, principal_id).await;
+    }
     state.metrics.gossip_replayed(record.replayed());
     Ok(memo)
 }
@@ -415,43 +493,6 @@ pub(crate) async fn fresh_resyncs<C: Connector>(
                 .is_some_and(|id| !held.contains(id))
         })
         .collect()
-}
-
-/// Offer the engine each of `pops` with `chain`, the peer's chain, from
-/// the first commit this server does not hold: the line up to a tip it may
-/// not hold, whatever its caps kept. The engine verifies the line and the
-/// proof as it does a pushed one, and keeps what the fork rule over its
-/// commits and the proofs selects (SPEC 15.8).
-pub(crate) async fn offer_resyncs(
-    state: &AppState,
-    principal_id: &str,
-    pops: &[serde_json::Value],
-    chain: &[cyphr::replay::WireBundle],
-) {
-    let answers = state
-        .engine
-        .ingest_pulled(
-            principal_id,
-            &PulledOffer {
-                genesis: None,
-                commits: &[],
-                branches: &[],
-                resyncs: &[ResyncOffer { pops, chain }],
-            },
-        )
-        .await;
-    for answer in &answers.resyncs {
-        match answer {
-            Ok(receipt) if receipt.promoted => {
-                info!(principal = %principal_id, "a resync proof made its line the chain");
-            },
-            Ok(receipt) if receipt.stored => {
-                info!(principal = %principal_id, "a resync proof stored")
-            },
-            Ok(_) => {},
-            Err(err) => refused(principal_id, err, "resync proof answered"),
-        }
-    }
 }
 
 /// Fetch `connector`'s peer's resync proofs for `principal_id` and, when it
@@ -509,5 +550,371 @@ pub(crate) async fn record_revokes(state: &AppState, revoked: &[cyphr_client::Re
         {
             warn!(tmb = %revoked.tmb.to_b64(), %err, "naked revoke not recorded");
         }
+    }
+}
+
+// ========================================================================
+// The ingest core's other half: fetch a principal from a peer, check it
+// ========================================================================
+
+/// The key of `peer`'s server principal that signed a statement, from the
+/// chain this node holds of it.
+async fn peer_key(state: &AppState, pg: &str, tmb: &Thumbprint) -> Option<PeerKey> {
+    let chain = state.engine.at_tip(pg).await.ok()??;
+    chain
+        .active_keys()
+        .find(|k| k.tmb() == tmb)
+        .map(|k| PeerKey {
+            alg: k.alg().to_string(),
+            pub_key: k.pub_key().to_vec(),
+        })
+}
+
+/// Make sure this node holds `peer`'s server principal `pg`, fetching it
+/// from the peer through the same core as any other principal.
+async fn ensure_peer_chain(state: &Arc<AppState>, peer: &Peer, pg: &str) -> Result<(), String> {
+    if state
+        .engine
+        .get_tip(pg)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let request = PatchRequest {
+        principal_id: pg,
+        anchor: None,
+    };
+    let patch = fetch_patch(&peer.connector, &request, BindingPolicy::NotRequired, None)
+        .await
+        .map_err(|e| e.to_string())?;
+    apply_fetched(state, peer, pg, patch).await?;
+    Ok(())
+}
+
+/// The peer's signed tip report for `principal_id`, verified against a key
+/// active in the held chain of the peer's server principal. `Ok(None)` when
+/// the peer has no `pg` (no check), holds nothing for the principal, or is
+/// in Error (its statement names heads, not a tip). Until the chain is held,
+/// and if the signing key is not in it even after one more fetch (a
+/// rotation), the answer is an error: the peer is refused, not trusted.
+async fn verify_peer_tip(
+    state: &Arc<AppState>,
+    peer: &Peer,
+    principal_id: &str,
+) -> Result<Option<TipReport>, String> {
+    let Some(pg) = peer.pg.as_deref() else {
+        return Ok(None);
+    };
+    if bare(pg) == bare(principal_id) {
+        return Ok(None);
+    }
+    ensure_peer_chain(state, peer, pg).await?;
+    let body = match fetch_tip_body(&peer.connector, principal_id).await {
+        Ok(body) => body,
+        Err(PatchFailure::NonSuccess(404)) => return Ok(None),
+        Err(err) => return Err(err.to_string()),
+    };
+    let value: serde_json::Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+    if value["payload"]["state"] == "error" {
+        return Ok(None);
+    }
+    let tmb = statement_signer(&body).ok_or("the tip is not signed")?;
+    let mut key = peer_key(state, pg, &tmb).await;
+    if key.is_none() {
+        // The peer may have rotated: follow its chain once more.
+        let _ = Box::pin(round_principal(state, std::slice::from_ref(peer), pg)).await;
+        key = peer_key(state, pg, &tmb).await;
+    }
+    let key = key.ok_or("its signing key is not active in its server principal")?;
+    verify_authenticated_envelope(&value, &key, principal_id)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+fn bare(id: &str) -> &str {
+    cyphr_storage::engine::bare_digest(id)
+}
+
+/// Whether the tip this node holds is the one `report` attests. `report`'s
+/// `sequence` is the attested commit's 0-indexed position, one below the
+/// held commit count.
+fn tip_matches_report(
+    resulting: Option<&cyphr_storage::index::TipState>,
+    report: &TipReport,
+) -> bool {
+    let Some(tip) = resulting else {
+        return false;
+    };
+    if tip.commit_count == 0 || tip.commit_count - 1 != report.sequence {
+        return false;
+    }
+    if tip.commit_id != report.commit_id.to_string() {
+        return false;
+    }
+    if tip.pr != report.roots.pr.to_string()
+        || tip.sr != report.roots.sr.as_ref().map(ToString::to_string)
+        || tip.ar != report.roots.ar.as_ref().map(ToString::to_string)
+    {
+        return false;
+    }
+    let report_cr = report.roots.cr.as_ref().map(ToString::to_string);
+    tip.cr == report_cr.unwrap_or_default()
+}
+
+/// Ask `peer` for its branches and offer what comes back to the engine.
+async fn offer_peer_branches(state: &Arc<AppState>, peer: &Peer, principal_id: &str) {
+    let request = PatchRequest {
+        principal_id,
+        anchor: None,
+    };
+    let Ok(patch) = fetch_patch(&peer.connector, &request, BindingPolicy::NotRequired, None).await
+    else {
+        return;
+    };
+    let branches: Vec<cyphr::replay::WireBundle> = patch
+        .fork
+        .iter()
+        .flat_map(|f| &f.branches)
+        .flat_map(|b| &b.entries)
+        .filter_map(|e| e.bundle.clone().ok())
+        .collect();
+    let answers = state
+        .engine
+        .ingest_pulled(
+            principal_id,
+            &PulledOffer {
+                genesis: None,
+                commits: &[],
+                branches: &branches,
+                resyncs: &[],
+            },
+        )
+        .await;
+    for answer in &answers.branches {
+        if let Err(err) = &answer.result {
+            refused(principal_id, err, "gossip: peer branch answered");
+        }
+    }
+}
+
+/// Fetch `principal_id` from `peer` and apply it: the whole chain from
+/// genesis, for a principal this node holds nothing of, so there is no
+/// record to resume. The engine binds the id to the genesis the first
+/// commit discloses, as it does for a push. With `peer.pg` configured the
+/// patch's signed statement must verify under a key of the held chain of
+/// that principal, strictly before any entry is decoded, and the tip it
+/// attests must be the one this node holds after applying.
+///
+/// Returns the number of commits applied.
+async fn fetch_unheld(
+    state: &Arc<AppState>,
+    peer: &Peer,
+    principal_id: &str,
+    check: bool,
+) -> Result<usize, String> {
+    let request = PatchRequest {
+        principal_id,
+        anchor: None,
+    };
+    let patch = match peer
+        .pg
+        .as_deref()
+        .filter(|pg| check && bare(pg) != bare(principal_id))
+    {
+        None => fetch_patch(&peer.connector, &request, BindingPolicy::NotRequired, None).await,
+        Some(pg) => {
+            ensure_peer_chain(state, peer, pg).await?;
+            let mut chain = state.engine.at_tip(pg).await.map_err(|e| e.to_string())?;
+            let mut patch = None;
+            for attempt in 0..2 {
+                let held = chain.take();
+                let lookup = |tmb: &Thumbprint| {
+                    held.as_ref().and_then(|c| {
+                        c.active_keys().find(|k| k.tmb() == tmb).map(|k| PeerKey {
+                            alg: k.alg().to_string(),
+                            pub_key: k.pub_key().to_vec(),
+                        })
+                    })
+                };
+                match fetch_patch_keyed(
+                    &peer.connector,
+                    &request,
+                    BindingPolicy::NotRequired,
+                    lookup,
+                )
+                .await
+                {
+                    Err(PatchFailure::EnvelopeUnsignedOrMisSigned) if attempt == 0 => {
+                        // The peer may have rotated: follow its chain once more.
+                        let _ =
+                            Box::pin(round_principal(state, std::slice::from_ref(peer), pg)).await;
+                        chain = state.engine.at_tip(pg).await.map_err(|e| e.to_string())?;
+                    },
+                    other => {
+                        patch = Some(other);
+                        break;
+                    },
+                }
+            }
+            patch.unwrap_or(Err(PatchFailure::EnvelopeUnsignedOrMisSigned))
+        },
+    }
+    .map_err(|e| e.to_string())?;
+    apply_fetched(state, peer, principal_id, patch).await
+}
+
+/// Apply a verified patch of `principal_id` fetched from `peer`, and check
+/// the tip it attests against the one this node then holds.
+async fn apply_fetched(
+    state: &Arc<AppState>,
+    peer: &Peer,
+    principal_id: &str,
+    patch: cyphr_client::VerifiedPatch,
+) -> Result<usize, String> {
+    // In Error `entries` ends with the canonical branch, which is handled
+    // with the others below. The counts come off the wire: a peer
+    // overstating the canonical branch must not wrap the subtraction.
+    let common_len = patch.entries.len().saturating_sub(
+        patch
+            .fork
+            .iter()
+            .flat_map(|f| &f.branches)
+            .find(|b| b.canonical)
+            .map_or(0, |b| b.entries.len()),
+    );
+    let commits: Vec<cyphr::replay::WireBundle> = patch
+        .entries
+        .iter()
+        .take(common_len)
+        .filter_map(|e| match &e.bundle {
+            Ok(bundle) => Some(bundle.clone()),
+            Err(defect) => {
+                warn!(principal = %principal_id, sequence = e.sequence, ?defect, "patch entry undecodable; skipping");
+                None
+            },
+        })
+        .collect();
+    let branches: Vec<cyphr::replay::WireBundle> = patch
+        .fork
+        .iter()
+        .flat_map(|f| &f.branches)
+        .flat_map(|b| &b.entries)
+        .filter_map(|e| e.bundle.clone().ok())
+        .collect();
+
+    // The peer's verified revokes of the keys these commits name go to the
+    // engine first, so its admission refuses what a dead key signed after
+    // its death (SPEC 6.4).
+    let mut keys: Vec<Thumbprint> = Vec::new();
+    for named in commits
+        .iter()
+        .chain(&branches)
+        .filter_map(|b| b.decode().ok())
+        .flat_map(|b| b.named_keys())
+    {
+        if !keys.contains(&named) {
+            keys.push(named);
+        }
+    }
+    match verified_revokes(&peer.connector, &peer.name, &keys).await {
+        Ok((found, _)) => record_revokes(state, &found).await,
+        Err(err) => debug!(principal = %principal_id, %err, "revokes not fetched"),
+    }
+
+    // Resync proofs: a fork the peer resolved by proof, which no commit
+    // shows, resolves here before the tip is compared.
+    let pops = fresh_resyncs(state, &peer.name, &peer.connector, principal_id).await;
+    let chain: Vec<cyphr::replay::WireBundle> = patch
+        .entries
+        .iter()
+        .filter_map(|e| e.bundle.clone().ok())
+        .collect();
+    let resyncs = [ResyncOffer {
+        pops: &pops,
+        chain: &chain,
+    }];
+    let answers = state
+        .engine
+        .ingest_pulled(
+            principal_id,
+            &PulledOffer {
+                genesis: None,
+                commits: &commits,
+                branches: &branches,
+                resyncs: if pops.is_empty() { &[] } else { &resyncs },
+            },
+        )
+        .await;
+    let mut applied = 0;
+    for answer in &answers.commits {
+        match &answer.result {
+            Ok(_) => applied += 1,
+            Err(err) => refused(principal_id, err, "fetch: commit not stored"),
+        }
+    }
+    for answer in &answers.branches {
+        if let Err(err) = &answer.result {
+            refused(principal_id, err, "fetch: branch commit answered");
+        }
+    }
+    if let Some(report) = &patch.report {
+        let resulting = state
+            .engine
+            .get_tip(principal_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !tip_matches_report(resulting.as_ref(), report) {
+            return Err(
+                "the resulting tip is not the one the peer attests: entries were withheld or \
+                 substituted"
+                    .into(),
+            );
+        }
+    }
+    Ok(applied)
+}
+
+/// A read asked for `principal_id`: fetch it from the configured peers when
+/// the setting says so (`[gossip] fetch_on_read`, on for a witness). A
+/// principal this node holds is pulled as the gossip timer pulls it; one it
+/// does not hold is fetched from genesis, from the peers in order, stopping
+/// at the first that yields it. A refusal or a failure leaves the local
+/// answer as it was.
+pub(crate) async fn fetch_on_read(state: &Arc<AppState>, principal_id: &str) {
+    if state.config.fetches_on_read() {
+        fetch_from_peers(state, principal_id).await;
+    }
+}
+
+/// The fetch a read triggers, whatever `fetch_on_read` says: bring
+/// `principal_id` in step with the configured peers, as one gossip round
+/// does for a held principal and a fetch from genesis does for one that is
+/// not held.
+pub async fn fetch_from_peers(state: &Arc<AppState>, principal_id: &str) {
+    let peers = peers_of(state);
+    if peers.is_empty() {
+        return;
+    }
+    match state.engine.get_tip(principal_id).await {
+        Ok(Some(_)) => {
+            if let Err(err) = round_principal(state, &peers, principal_id).await {
+                debug!(principal = %principal_id, %err, "fetch on read: round skipped");
+            }
+        },
+        Ok(None) => {
+            for peer in &peers {
+                match fetch_unheld(state, peer, principal_id, true).await {
+                    Ok(_) => break,
+                    Err(why) => {
+                        warn!(principal = %principal_id, peer = %peer.name, %why, "fetch on read: refused");
+                    },
+                }
+            }
+        },
+        Err(err) => {
+            warn!(principal = %principal_id, %err, "fetch on read: local tip lookup failed")
+        },
     }
 }

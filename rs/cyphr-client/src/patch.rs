@@ -3,7 +3,7 @@
 //! Everything here is pure computation over bytes the [`Connector`]
 //! returned: the same body verifies identically whatever carried it.
 //!
-//! When an [`AuthorityKey`] is supplied, the response's signed statement
+//! When an [`PeerKey`] is supplied, the response's signed statement
 //! must verify against it, canonicalize via [`TipReport::parse`], and
 //! attest to the principal actually requested -- see
 //! [`verify_authenticated_envelope`]. A genuine, validly-signed report for
@@ -32,12 +32,12 @@ use crate::report::{HeldReport, ReportedForkPoint, TipReport};
 /// (`docs/specs/http-envelope.md`).
 pub(crate) const ENVELOPE_VERSION: u64 = 1;
 
-/// The authority key a signed statement must verify against.
+/// The key of a peer's server principal a signed statement must verify against.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthorityKey {
-    /// The authority's signature algorithm (e.g. `Ed25519`).
+pub struct PeerKey {
+    /// The key's signature algorithm (e.g. `Ed25519`).
     pub alg: String,
-    /// The authority's public key bytes.
+    /// The key's public key bytes.
     pub pub_key: Vec<u8>,
 }
 
@@ -140,10 +140,10 @@ pub struct VerifiedPatch {
     /// serves none.
     pub actions: Vec<ActionBundle>,
     /// The authenticated tip report; `Some` exactly when an
-    /// [`AuthorityKey`] was supplied.
+    /// [`PeerKey`] was supplied.
     pub report: Option<TipReport>,
     /// The authenticated held statement; `Some` exactly when an
-    /// [`AuthorityKey`] was supplied and the peer is in Error, where it
+    /// [`PeerKey`] was supplied and the peer is in Error, where it
     /// attests the heads instead of a tip.
     pub held: Option<HeldReport>,
     /// The carrier's channel binding, passed through for the caller.
@@ -246,8 +246,77 @@ pub async fn fetch_patch<C: Connector>(
     connector: &C,
     request: &PatchRequest<'_>,
     policy: BindingPolicy,
-    expected: Option<&AuthorityKey>,
+    expected: Option<&PeerKey>,
 ) -> Result<VerifiedPatch, PatchFailure> {
+    check_binding(connector, policy)?;
+    let body = connector.exchange(&Request::get(request.target())).await?;
+    let mut verified = verify_patch_body(&body, request.principal_id, expected)?;
+    verified.binding = connector.channel_binding().cloned();
+    Ok(verified)
+}
+
+/// [`fetch_patch`] for a peer whose signing key is not known up front but
+/// is held in a chain: the statement's signer is read first and `keys`
+/// resolves it (a key active in the peer's server principal). A signer
+/// `keys` does not know is [`PatchFailure::EnvelopeUnsignedOrMisSigned`],
+/// as an unsigned envelope is, and nothing is decoded.
+///
+/// # Errors
+///
+/// As [`fetch_patch`].
+pub async fn fetch_patch_keyed<C: Connector>(
+    connector: &C,
+    request: &PatchRequest<'_>,
+    policy: BindingPolicy,
+    keys: impl Fn(&coz::Thumbprint) -> Option<PeerKey>,
+) -> Result<VerifiedPatch, PatchFailure> {
+    check_binding(connector, policy)?;
+    let body = connector.exchange(&Request::get(request.target())).await?;
+    let key = statement_signer(&body)
+        .and_then(|tmb| keys(&tmb))
+        .ok_or(PatchFailure::EnvelopeUnsignedOrMisSigned)?;
+    let mut verified = verify_patch_body(&body, request.principal_id, Some(&key))?;
+    verified.binding = connector.channel_binding().cloned();
+    Ok(verified)
+}
+
+/// A peer's `GET /tip` answer for `principal_id`, as its raw body bytes: the
+/// signed tip report a verifier checks with [`verify_authenticated_envelope`]
+/// once it holds the signer's key ([`statement_signer`] names it).
+///
+/// # Errors
+///
+/// [`PatchFailure::NonSuccess`] with 404 for a principal the peer does not
+/// hold; any other carrier failure.
+pub async fn fetch_tip_body<C: Connector>(
+    connector: &C,
+    principal_id: &str,
+) -> Result<Vec<u8>, PatchFailure> {
+    let target = format!("/tip?pr={}", percent_encode_query_value(principal_id));
+    Ok(connector.exchange(&Request::get(target)).await?)
+}
+
+/// The thumbprint a response's signed statement names as its signer: read
+/// before any signature is checked, only to choose the key to check it
+/// against.
+#[must_use]
+pub fn statement_signer(body: &[u8]) -> Option<coz::Thumbprint> {
+    let body: Value = serde_json::from_slice(body).ok()?;
+    let Some(Statement::Signed(coz)) = body
+        .get("statement")
+        .and_then(|s| Statement::deserialize(s).ok())
+    else {
+        return None;
+    };
+    coz.pay["tmb"]
+        .as_str()
+        .and_then(|t| Base64UrlUnpadded::decode_vec(t).ok())
+        .map(coz::Thumbprint::from_bytes)
+}
+
+/// Refuse before the request leaves when the carrier cannot supply the
+/// binding `policy` requires.
+fn check_binding<C: Connector>(connector: &C, policy: BindingPolicy) -> Result<(), PatchFailure> {
     if let BindingPolicy::Required(required) = policy {
         match connector.channel_binding() {
             None => return Err(BindingError::Missing { required }.into()),
@@ -261,11 +330,7 @@ pub async fn fetch_patch<C: Connector>(
             Some(_) => {},
         }
     }
-
-    let body = connector.exchange(&Request::get(request.target())).await?;
-    let mut verified = verify_patch_body(&body, request.principal_id, expected)?;
-    verified.binding = connector.channel_binding().cloned();
-    Ok(verified)
+    Ok(())
 }
 
 /// Decode and authenticate one patch response body. Pure: no I/O, and the
@@ -280,7 +345,7 @@ pub async fn fetch_patch<C: Connector>(
 pub fn verify_patch_body(
     body: &[u8],
     principal_id: &str,
-    expected: Option<&AuthorityKey>,
+    expected: Option<&PeerKey>,
 ) -> Result<VerifiedPatch, PatchFailure> {
     let body: Value = serde_json::from_slice(body)
         .map_err(|err| PatchFailure::MalformedResponse(err.to_string()))?;
@@ -452,7 +517,7 @@ pub enum Statement {
 /// [`PatchFailure::MalformedReport`] or [`PatchFailure::PrincipalMismatch`].
 pub fn verify_authenticated_envelope(
     body: &Value,
-    expected: &AuthorityKey,
+    expected: &PeerKey,
     principal_id: &str,
 ) -> Result<TipReport, PatchFailure> {
     let coz = signed_by(body, expected)?;
@@ -479,7 +544,7 @@ pub fn verify_authenticated_envelope(
 /// also for a statement that is not a held report.
 pub fn verify_held_envelope(
     body: &Value,
-    expected: &AuthorityKey,
+    expected: &PeerKey,
     principal_id: &str,
 ) -> Result<HeldReport, PatchFailure> {
     let coz = signed_by(body, expected)?;
@@ -492,7 +557,7 @@ pub fn verify_held_envelope(
 
 /// The envelope's signed statement, once its signature verifies under
 /// `expected`.
-fn signed_by(body: &Value, expected: &AuthorityKey) -> Result<coz::CozJson, PatchFailure> {
+fn signed_by(body: &Value, expected: &PeerKey) -> Result<coz::CozJson, PatchFailure> {
     let statement: Option<Statement> = body
         .get("statement")
         .and_then(|s| Statement::deserialize(s).ok());

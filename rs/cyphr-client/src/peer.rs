@@ -42,8 +42,8 @@ use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector};
 use crate::patch::{
-    AuthorityKey, EntryDefect, PatchFailure, PatchRequest, Statement, Step, fetch_patch,
-    replay_order, verify_authenticated_envelope,
+    EntryDefect, PatchFailure, PatchRequest, PeerKey, Statement, Step, fetch_patch, replay_order,
+    verify_authenticated_envelope,
 };
 use crate::report::TipReport;
 use crate::revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
@@ -508,7 +508,7 @@ impl PeerChain {
             .active_keys()
             .find(|k| k.tmb() == &tmb)
             .ok_or_else(|| PeerFailure::KeyNotActive { tmb: tmb.to_b64() })?;
-        let authority = AuthorityKey {
+        let authority = PeerKey {
             alg: key.alg().to_string(),
             pub_key: key.pub_key().to_vec(),
         };

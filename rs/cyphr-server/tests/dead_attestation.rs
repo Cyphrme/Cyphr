@@ -6,7 +6,7 @@
 //! string, and a client must read both back as absent roots.
 
 use axum::http::StatusCode;
-use cyphr_client::{AuthorityKey, verify_authenticated_envelope};
+use cyphr_client::{PeerKey, verify_authenticated_envelope};
 use cyphr_server::build_router;
 
 mod common;
@@ -43,7 +43,7 @@ async fn dying_commit_push_and_tip_attest_absent_roots_as_null() {
         let blobs = build_bundle(commit);
         common::push_body(&principal_id, &blobs)
     };
-    let authority = AuthorityKey {
+    let authority = PeerKey {
         alg: identity.alg().name().to_string(),
         pub_key: identity.pub_key().to_vec(),
     };

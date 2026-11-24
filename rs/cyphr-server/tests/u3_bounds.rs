@@ -26,7 +26,7 @@ use common::Chain;
 use cyphr_client::HttpConnector;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::config::ServerConfig;
-use cyphr_server::gossip::Gossip;
+use cyphr_server::gossip::{Gossip, Peer};
 use cyphr_server::{AppState, build_router};
 use support::*;
 use tokio::sync::OnceCell;
@@ -139,7 +139,7 @@ async fn observe(n: usize) -> Obs {
     let session_replayed = replayed() - before;
 
     let (url, wire) = serve_counting(app_b.clone()).await;
-    let peers = [(
+    let peers = [Peer::new(
         url.clone(),
         HttpConnector::with_client(a.http_client.clone(), &url, true).expect("connector"),
     )];
@@ -226,7 +226,7 @@ async fn idle_gossip(peers: usize, n: usize) -> (u64, u64, u64) {
             assert_eq!(st, StatusCode::CREATED);
         }
         let (url, wire) = serve_counting(app_b).await;
-        connectors.push((
+        connectors.push(Peer::new(
             url.clone(),
             HttpConnector::with_client(a.http_client.clone(), &url, true).expect("connector"),
         ));

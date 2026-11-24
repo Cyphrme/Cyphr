@@ -466,9 +466,9 @@ pub enum EquivocationVerdict {
 /// claim the same typed `pr` and the same typed `sequence`; (5) they differ
 /// in typed `commit_id` or in any typed `roots` field -- compared by
 /// canonical value, so representation never causes a miss or a false alarm;
-/// (6) the report signed first does not name a commit the fork rule has
-/// passed over (`forks`, the [`Contest`]s of the fork rule over the commits
-/// and resync proofs a witness holds for the principal): a fork a valid
+/// (6) the report signed first (either, within one second) does not name a
+/// commit the fork rule has passed over (`forks`, the [`Contest`]s of the fork rule over the
+/// commits and resync proofs a witness holds for the principal): a fork a valid
 /// resolution settled is no longer a fork, and a server that followed the
 /// rule signed both ([`EquivocationVerdict::Resolved`]).
 /// Anything else is a diagnosed non-equivocation.
@@ -504,16 +504,18 @@ pub fn check_equivocation(
 
     // The pair differs. A fork resolved under the server explains it if the
     // report signed first names a commit the resolution passed over; a
-    // report signed after it names the commit the fork rule follows.
+    // report signed after it names the commit the fork rule follows. Both
+    // are dated in whole seconds, so a pair signed within one second cannot
+    // be ordered: it is explained when exactly one of its commits was
+    // passed over, and the other is not.
     let (earlier, later) = (a.pay["now"].as_i64(), b.pay["now"].as_i64());
-    let superseded = match (earlier, later) {
-        (Some(x), Some(y)) if x < y => Some(&a_report),
-        (Some(x), Some(y)) if y < x => Some(&b_report),
-        _ => None,
+    let passed_over = |report: &TipReport| abandoned(forks, &report.commit_id.to_string());
+    let explained = match (earlier, later) {
+        (Some(x), Some(y)) if x < y => passed_over(&a_report),
+        (Some(x), Some(y)) if y < x => passed_over(&b_report),
+        _ => passed_over(&a_report) != passed_over(&b_report),
     };
-    if let Some(report) = superseded
-        && abandoned(forks, &report.commit_id.to_string())
-    {
+    if explained {
         return EquivocationVerdict::Resolved;
     }
 

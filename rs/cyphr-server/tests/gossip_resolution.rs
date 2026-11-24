@@ -13,6 +13,7 @@ use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
 use cyphr_client::HttpConnector;
+use cyphr_server::gossip::Peer;
 use cyphr_server::{AppState, build_router};
 
 mod common;
@@ -202,7 +203,7 @@ async fn one_round_takes_a_peers_resolution() {
     let connector =
         HttpConnector::with_client(p2.http_client.clone(), &url, true).expect("connector");
     cyphr_server::gossip::Gossip::default()
-        .round(&p2, &[(url, connector)])
+        .round(&p2, &[Peer::new(url, connector)])
         .await;
 
     assert_eq!(tip_pr(&app2, &id).await, want, "P2 took C in one round");
@@ -285,7 +286,7 @@ async fn one_round(from: &Arc<AppState>, to: &Arc<AppState>) {
     let connector =
         HttpConnector::with_client(from.http_client.clone(), &url, true).expect("connector");
     cyphr_server::gossip::Gossip::default()
-        .round(from, &[(url, connector)])
+        .round(from, &[Peer::new(url, connector)])
         .await;
 }
 

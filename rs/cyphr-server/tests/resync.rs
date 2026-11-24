@@ -254,7 +254,7 @@ async fn a_gossiping_peer_in_error_reaches_active_on_the_asserted_tip() {
     let url = serve(&a).await;
     let peer = HttpConnector::with_client(b.http_client.clone(), &url, true).expect("connector");
     cyphr_server::gossip::Gossip::default()
-        .round(&b, &[(url, peer)])
+        .round(&b, &[cyphr_server::gossip::Peer::new(url, peer)])
         .await;
     assert_eq!(
         b.engine.assess(&f.id).await.expect("assess").heads,
@@ -268,8 +268,7 @@ async fn a_gossiping_peer_in_error_reaches_active_on_the_asserted_tip() {
 /// leaves the witness Active on the authority's tip.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_witness_in_error_reaches_active_on_the_asserted_tip() {
-    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
-    use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+    use cyphr_server::config::{ServerConfig, ServerMode};
 
     let f = fork().await;
     let (astate, identity, adir) = attestor_server().await;
@@ -299,17 +298,12 @@ async fn a_witness_in_error_reaches_active_on_the_asserted_tip() {
         AppState::new(ServerConfig {
             mode: ServerMode::Witness,
             data_dir: wdir.path().join("data"),
-            authority_url: Some(instance.url().expect("url")),
-            authority_identity: Some(AuthorityIdentity {
-                alg: identity.alg().name().to_string(),
-                pub_key: identity.pub_key().to_vec(),
-            }),
+            gossip: common::pinned_gossip(instance.url().expect("url"), &astate),
             ..Default::default()
         })
         .expect("witness"),
     );
-    let first = sync_from_authority(&witness, &f.id).await;
-    assert!(matches!(first, SyncOutcome::Synced { .. }), "{first:?}");
+    cyphr_server::gossip::fetch_from_peers(&witness, &f.id).await;
     assert!(
         witness.engine.is_errored(&f.id).await.expect("verdict"),
         "premise: Error"
@@ -317,8 +311,7 @@ async fn a_witness_in_error_reaches_active_on_the_asserted_tip() {
 
     let (status, body) = post_json(app, "/resync", resync_body(&f.id, &f.pop_l(), &[])).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
-    let second = sync_from_authority(&witness, &f.id).await;
-    assert!(!matches!(second, SyncOutcome::Failed { .. }), "{second:?}");
+    cyphr_server::gossip::fetch_from_peers(&witness, &f.id).await;
     assert_eq!(
         witness.engine.assess(&f.id).await.expect("assess").heads,
         vec![commit_id(&f.l_states[1])],

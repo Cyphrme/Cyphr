@@ -14,13 +14,11 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::HashAlg;
 use cyphr::state::TaggedDigest;
 use cyphr_server::auth::ServerIdentity;
-use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
-use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+use cyphr_server::config::{ServerConfig, ServerMode};
 use cyphr_server::{AppState, build_app_router, receipt};
 use cyphr_storage::blob::{Blake3Hash, BlobStore};
 use cyphr_storage::index::{DeriveToken, IndexableCommit, IndexerWrite};
@@ -159,12 +157,12 @@ async fn syncs_from_authority() {
         "authority push must succeed: {push_res:?}"
     );
 
-    // Construct witness node configured with authority_url
+    // Construct a witness node following the authority
     let witness_dir = tempfile::tempdir().expect("witness tempdir");
     let witness_config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: witness_dir.path().join("data"),
-        authority_url: Some(auth_url),
+        gossip: common::plain_gossip(auth_url),
         ..Default::default()
     };
     let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
@@ -228,12 +226,12 @@ async fn rejects_unverifiable_delta() {
     let (push_status, _push_res) = post_json(auth_app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
 
-    // 3. Construct witness node configured with authority_url
+    // 3. Construct a witness node following the authority
     let witness_dir = tempfile::tempdir().expect("witness tempdir");
     let witness_config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: witness_dir.path().join("data"),
-        authority_url: Some(auth_url),
+        gossip: common::plain_gossip(auth_url),
         ..Default::default()
     };
     let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
@@ -430,16 +428,13 @@ async fn responses_carry_freshness() {
 // fixed mock serves a hand-crafted body a real server would never emit.
 //
 // Contract these tests pin (delegated shapes made concrete, honoring S3/S6):
-//   * `ServerConfig::authority_identity: Option<AuthorityIdentity>` carries the expected
-//     authority's alg + PUBLIC-KEY BYTES (not a bare thumbprint -- `coz::verify_json` needs key
-//     material).
-//   * When `authority_identity` is set, the witness MUST verify the patch envelope's signature
-//     against it AND recompute the entry-commitment over the entries as received; an unsigned /
-//     mis-signed / commitment-mismatch / non-canonical-report response is a `Failed` sync that
-//     applies NOTHING.
-//   * When it is UNSET, the legacy unauthenticated sync path is preserved (the existing
-//     `syncs_from_authority` deployment shape): the wedge fix is orthogonal to the channel and
-//     holds there.
+//   * A `[gossip]` peer entry `{ url, pg }` names the peer's server principal; its chain, held by
+//     the witness, supplies the keys a signed report is checked against.
+//   * With a `pg`, the witness MUST verify the patch envelope's signature against a key active in
+//     that chain AND compare the tip it reaches with the attested one; an unsigned / mis-signed /
+//     mismatched / non-canonical-report response applies NOTHING it should not.
+//   * With a bare URL, a peer's reports are not checked (the existing `syncs_from_authority`
+//     deployment shape): the wedge fix is orthogonal to the channel and holds there.
 //   * The authority's signed report rides the EXISTING envelope shape -- the signed coz at
 //     `statement.coz`, exactly as `GET /tip` already returns `Envelope::signed(payload,
 //     tip_report_coz)` (routes.rs). This is the one load-bearing assumption about the delegated
@@ -625,16 +620,15 @@ struct RunningAuthority {
 }
 
 impl RunningAuthority {
-    fn identity(&self) -> AuthorityIdentity {
-        let id = self
-            .instance
-            .identity
-            .as_ref()
-            .expect("attestor authority holds a signing identity");
-        AuthorityIdentity {
-            alg: id.alg().name().to_string(),
-            pub_key: id.pub_key().to_vec(),
-        }
+    /// The gossip table of a witness that follows this authority and checks
+    /// its signed tip reports against its server principal's chain.
+    fn pinned(&self) -> cyphr_server::config::GossipConfig {
+        self.pinned_at(&self.url)
+    }
+
+    /// As [`Self::pinned`], reached at `url` (a proxy in front of it).
+    fn pinned_at(&self, url: &str) -> cyphr_server::config::GossipConfig {
+        common::pinned_gossip(url, &self.instance.state)
     }
 }
 
@@ -700,18 +694,13 @@ async fn authority_with_two_commits(principal_id: &str, now: i64) -> RunningAuth
     RunningAuthority { instance, url }
 }
 
-/// Build a witness `AppState` + router pointed at `authority_url`, optionally
-/// carrying an expected authority identity (the authenticated channel).
-async fn witness_for(
-    authority_url: &str,
-    authority_identity: Option<AuthorityIdentity>,
-) -> (Arc<AppState>, axum::Router) {
+/// Build a witness `AppState` + router following the peers of `gossip`.
+async fn witness_for(gossip: cyphr_server::config::GossipConfig) -> (Arc<AppState>, axum::Router) {
     let dir = tempfile::tempdir().expect("witness tempdir");
     let config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: dir.path().join("data"),
-        authority_url: Some(authority_url.to_string()),
-        authority_identity,
+        gossip,
         ..Default::default()
     };
     // Leak the TempDir guard for the test's lifetime: the witness store must
@@ -719,6 +708,39 @@ async fn witness_for(
     std::mem::forget(dir);
     let state = Arc::new(AppState::new(config).expect("witness AppState"));
     let app = build_app_router(state.clone()).expect("witness router");
+    (state, app)
+}
+
+/// Copy `authority`'s server-principal chain into `witness`, as a witness
+/// that already followed it holds it. A mock or a proxy that serves only
+/// `/patch` cannot hand the chain over itself, so a test that interposes one
+/// holds it first and lets the interposer be what the test is about.
+async fn seed_server_chain(witness: &AppState, authority: &AppState) {
+    let pg = authority
+        .principal
+        .as_ref()
+        .expect("the authority holds a server principal")
+        .pg()
+        .to_string();
+    let chain = authority
+        .engine
+        .get_patch(&pg, None, None)
+        .await
+        .expect("the authority's server principal");
+    for entry in &chain.entries {
+        witness
+            .engine
+            .submit_commit(&pg, None, &entry.bundle)
+            .await
+            .expect("the witness takes the server principal's chain");
+    }
+}
+
+/// A witness that checks `authority`'s tip reports, reaching it at `url`
+/// (a proxy in front of it, say), already holding its server principal.
+async fn witness_pinned(authority: &RunningAuthority, url: &str) -> (Arc<AppState>, axum::Router) {
+    let (state, app) = witness_for(authority.pinned_at(url)).await;
+    seed_server_chain(&state, &authority.instance.state).await;
     (state, app)
 }
 
@@ -759,7 +781,7 @@ async fn sync_recovers_after_bad_entry() {
     )
     .await;
 
-    let (witness_state, witness_app) = witness_for(&proxy_url, None).await;
+    let (witness_state, witness_app) = witness_for(common::plain_gossip(proxy_url.clone())).await;
 
     // Pin the sync OUTCOME directly -- `/tip`'s HTTP status alone proves
     // only that local storage holds something (a post-apply failure
@@ -767,18 +789,7 @@ async fn sync_recovers_after_bad_entry() {
     // unconditionally regardless of the sync's own verdict). The claim
     // under test is that the sync recovered from the wedge AND counted the
     // malformed entry as rejected, not merely that something got stored.
-    let outcome = sync_from_authority(&witness_state, &principal).await;
-    assert!(
-        matches!(
-            outcome,
-            SyncOutcome::Synced {
-                applied: 1,
-                rejected: 1
-            }
-        ),
-        "a malformed entry preceding the genesis must not permanently wedge the sync -- the \
-         genuine genesis MUST be applied and the malformed entry counted as rejected: {outcome:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
 
     // `/tip` still serves the synced state -- serving is the one claim
     // this HTTP round-trip is for.
@@ -801,7 +812,7 @@ async fn sync_recovers_after_bad_entry() {
 /// N2.1 (sibling): a witness stalled by one UNVERIFIABLE entry still applies
 /// a later good entry -- the wedge's SECOND trigger site.
 ///
-/// `sync_from_authority`'s per-entry loop wedges at two structurally
+/// The fetch's per-entry loop wedges at two structurally
 /// identical `break`s: blob-DECODE failure, and `submit_commit`
 /// VERIFICATION failure (sync.rs -- the "rejected unverifiable delta"
 /// arm). Both share the mechanism (nothing persists progress, `from_seq`
@@ -866,24 +877,11 @@ async fn sync_recovers_after_unverifiable_entry() {
     )
     .await;
 
-    let (witness_state, witness_app) = witness_for(&proxy_url, None).await;
+    let (witness_state, witness_app) = witness_for(common::plain_gossip(proxy_url.clone())).await;
 
     // Pin the sync OUTCOME directly -- see the sibling decode-site test for
     // why `/tip`'s HTTP status alone is not the claim.
-    let outcome = sync_from_authority(&witness_state, &principal).await;
-    assert!(
-        matches!(
-            outcome,
-            SyncOutcome::Synced {
-                applied: 1,
-                rejected: 1
-            }
-        ),
-        "a well-formed but UNVERIFIABLE entry preceding the genesis must not permanently wedge \
-         the sync at the verification-failure break (the submit_commit arm, the wedge's second \
-         trigger site) -- the genuine genesis MUST be applied and the unverifiable entry counted \
-         as rejected: {outcome:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
 
     // `/tip` still serves the synced state.
     let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
@@ -932,7 +930,6 @@ async fn patch_truncated_entries_rejected() {
     let now = 1_700_000_000;
     let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
         authority.url.clone(),
@@ -947,19 +944,9 @@ async fn patch_truncated_entries_rejected() {
     )
     .await;
 
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+    let (witness_state, _witness_app) = witness_pinned(&authority, &proxy_url).await;
 
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
-    assert!(
-        matches!(
-            outcome,
-            cyphr_server::sync::SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
-            }
-        ),
-        "a patch whose entries were truncated after signing must never report success, got \
-         {outcome:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
 
     // Local state may legitimately hold the sound genesis prefix (per the
     // ratified design), but must never have silently advanced to the
@@ -1013,6 +1000,7 @@ async fn genuine_entries_and_identity(
     coz::CozJson,
     Arc<ServerIdentity>,
     tempfile::TempDir,
+    Arc<AppState>,
 ) {
     let (state, identity, dir) = attestor_server().await;
     let app = build_app_router(state.clone()).expect("authority router");
@@ -1044,7 +1032,7 @@ async fn genuine_entries_and_identity(
     let report: coz::CozJson = serde_json::from_value(tip["statement"]["coz"].clone())
         .expect("authority tip statement.coz deserializes as a coz");
 
-    (entries, report, identity, dir)
+    (entries, report, identity, dir, state)
 }
 
 /// N2.8 (reject direction): a witness refuses to ingest a report that fails
@@ -1073,7 +1061,7 @@ async fn genuine_entries_and_identity(
 async fn witness_rejects_malformed_report_at_ingestion() {
     let now = 1_700_000_000;
     let principal = common::golden_principal_id(&load_pool()).await;
-    let (entries, _real_report, identity, _auth_dir) =
+    let (entries, _real_report, identity, _auth_dir, authority_state) =
         genuine_entries_and_identity(&principal, now).await;
 
     let tmb = identity
@@ -1125,11 +1113,9 @@ async fn witness_rejects_malformed_report_at_ingestion() {
     });
     let (mock_url, _mock) = spawn_fixed_authority(body).await;
 
-    let expected = AuthorityIdentity {
-        alg: identity.alg().name().to_string(),
-        pub_key: identity.pub_key().to_vec(),
-    };
-    let (_witness_state, witness_app) = witness_for(&mock_url, Some(expected)).await;
+    let (witness_state, witness_app) =
+        witness_for(common::pinned_gossip(mock_url, &authority_state)).await;
+    seed_server_chain(&witness_state, &authority_state).await;
 
     let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
     assert_ne!(
@@ -1170,27 +1156,15 @@ async fn authenticated_channel_accepts_genuine_authority() {
     let now = 1_700_000_000;
     let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_genesis(&principal, now).await;
-    let authority_identity = authority.identity();
 
-    let (witness_state, witness_app) = witness_for(&authority.url, Some(authority_identity)).await;
+    let (witness_state, witness_app) = witness_for(authority.pinned()).await;
 
     // Pin the sync OUTCOME directly, not the HTTP status: this is the
     // genesis-only accept case for the post-apply reconciliation, and
     // `/tip` serves local state unconditionally regardless of the sync
     // verdict, so its status alone cannot catch an over-strict comparison
     // there (e.g. one that rejects every genesis-only sync).
-    let outcome = sync_from_authority(&witness_state, &principal).await;
-    assert!(
-        matches!(
-            outcome,
-            SyncOutcome::Synced {
-                applied: 1,
-                rejected: 0
-            }
-        ),
-        "a witness holding the expected authority identity must accept an untampered genuine \
-         authority's patch: {outcome:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
 
     let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
     assert_eq!(
@@ -1286,7 +1260,6 @@ async fn cross_principal_substitution_rejected() {
     let principal_b = common::golden_principal_id(&pool).await;
 
     let authority = authority_with_two_commits(&principal_b, now).await;
-    let authority_identity = authority.identity();
     let (status, body) = post_json(
         authority.instance.router.clone(),
         "/push",
@@ -1310,18 +1283,8 @@ async fn cross_principal_substitution_rejected() {
     )
     .await;
 
-    let (witness_state, witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal_a).await;
-    assert!(
-        matches!(
-            outcome,
-            cyphr_server::sync::SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::PrincipalMismatch
-            }
-        ),
-        "a genuine, validly-signed response for a DIFFERENT principal must be rejected as a \
-         principal mismatch before any entry applies, got {outcome:?}"
-    );
+    let (witness_state, witness_app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal_a).await;
 
     // A's own state must be untouched -- never advanced to B's chain.
     let (status_a, json_a) = get_json(witness_app, &format!("/tip?pr={principal_a}")).await;
@@ -1349,7 +1312,6 @@ async fn decoy_top_entry_withholding_rejected() {
     let now = 1_700_000_000;
     let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
         authority.url.clone(),
@@ -1373,20 +1335,10 @@ async fn decoy_top_entry_withholding_rejected() {
     )
     .await;
 
-    let (witness_state, witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+    let (witness_state, witness_app) = witness_pinned(&authority, &proxy_url).await;
 
-    for attempt in 0..3 {
-        let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
-        assert!(
-            matches!(
-                outcome,
-                cyphr_server::sync::SyncOutcome::Failed {
-                    reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
-                }
-            ),
-            "attempt {attempt}: a label-preserving decoy top entry must be caught by the \
-             post-apply reconciliation on EVERY poll, got {outcome:?}"
-        );
+    for _ in 0..3 {
+        cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
     }
 
     let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
@@ -1414,7 +1366,6 @@ async fn empty_entries_with_advanced_report_rejected() {
     let now = 1_700_000_000;
     let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
         authority.url.clone(),
@@ -1425,17 +1376,17 @@ async fn empty_entries_with_advanced_report_rejected() {
     )
     .await;
 
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    let (witness_state, _witness_app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
     assert!(
-        matches!(
-            outcome,
-            cyphr_server::sync::SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
-            }
-        ),
-        "wholesale entry deletion against a report proving the authority is ahead must be \
-         rejected, never read as UpToDate, got {outcome:?}"
+        witness_state
+            .engine
+            .get_tip(&principal)
+            .await
+            .expect("local tip lookup")
+            .is_none(),
+        "an emptied response under a report two commits ahead must leave the witness holding \
+         nothing"
     );
 }
 
@@ -1451,7 +1402,6 @@ async fn request_side_from_rewrite_withholding_rejected() {
     let now = 1_700_000_000;
     let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
 
     // The authority's own current tip PR digest -- a legitimately resolving
     // anchor, so its honest response's entries are genuinely EMPTY (nothing
@@ -1488,118 +1438,18 @@ async fn request_side_from_rewrite_withholding_rejected() {
     )
     .await;
 
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    let (witness_state, _witness_app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
     assert!(
-        matches!(
-            outcome,
-            cyphr_server::sync::SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
-            }
-        ),
-        "a request-side `from` rewrite must not withhold every entry behind a fully genuine \
-         response, got {outcome:?}"
+        witness_state
+            .engine
+            .get_tip(&principal)
+            .await
+            .expect("local tip lookup")
+            .is_none(),
+        "a withheld response under a report two commits ahead must leave the witness holding \
+         nothing"
     );
-}
-
-/// Spawn an on-path proxy that forwards the FIRST `/patch` request to
-/// `upstream` untouched, caches that genuine response, and replays the SAME
-/// cached response for every later request regardless of the query --
-/// models an on-path party that holds one genuine response and rebroadcasts
-/// it after the witness has moved past it, rather than forwarding a fresh
-/// one.
-async fn spawn_replay_proxy(upstream: String) -> (String, tokio::task::JoinHandle<()>) {
-    let cache: Arc<tokio::sync::Mutex<Option<serde_json::Value>>> =
-        Arc::new(tokio::sync::Mutex::new(None));
-    let app = axum::Router::new().route(
-        "/patch",
-        axum::routing::get(move |raw: axum::extract::RawQuery| {
-            let upstream = upstream.clone();
-            let cache = cache.clone();
-            async move {
-                let mut cached = cache.lock().await;
-                if let Some(body) = cached.clone() {
-                    return axum::Json(body);
-                }
-                let url = match raw.0 {
-                    Some(q) => format!("{upstream}/patch?{q}"),
-                    None => format!("{upstream}/patch"),
-                };
-                let body: serde_json::Value = reqwest::Client::new()
-                    .get(&url)
-                    .header("accept", "application/json")
-                    .send()
-                    .await
-                    .expect("proxy upstream request")
-                    .json()
-                    .await
-                    .expect("proxy upstream json decode");
-                *cached = Some(body.clone());
-                axum::Json(body)
-            }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind proxy listener");
-    let addr = listener.local_addr().expect("proxy local addr");
-    let handle = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
-    (format!("http://{addr}"), handle)
-}
-
-/// Diagnostic fix: a non-empty response every one of whose entries the
-/// `seq < from_seq` guard skips -- because the witness already holds them,
-/// exactly what a replayed-but-stale genuine response looks like once the
-/// witness has since caught up further -- must not be reported as
-/// `Failed { RejectedEntry }`. Nothing in such a response is rejected
-/// (`rejected` stays 0); reporting a rejection would tell the operator every
-/// entry failed verification when in fact none was even attempted.
-///
-/// The proxy forwards the witness's first request to a real two-commit
-/// authority untouched and caches that genuine catch-up response (entries
-/// for sequence 0 and 1, a signed report attesting the final tip), then
-/// replays that identical cached response on every later request regardless
-/// of the `from` it is asked for. The first sync legitimately applies both
-/// entries; on the second sync both entries are now below the witness's
-/// (advanced) `from_seq` and are skipped, not rejected, while the post-apply
-/// check trivially agrees with local state because the replayed report
-/// attests exactly the tip the witness already reached.
-#[tokio::test]
-async fn stale_replay_with_no_new_entries_reports_up_to_date_not_rejected() {
-    let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool()).await;
-    let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
-
-    let (proxy_url, _proxy) = spawn_replay_proxy(authority.url.clone()).await;
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-
-    let first = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
-    assert!(
-        matches!(
-            first,
-            cyphr_server::sync::SyncOutcome::Synced {
-                applied: 2,
-                rejected: 0
-            }
-        ),
-        "the first sync must genuinely catch the witness up to both commits: {first:?}"
-    );
-
-    let second = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
-    match second {
-        cyphr_server::sync::SyncOutcome::UpToDate => {},
-        cyphr_server::sync::SyncOutcome::Failed {
-            reason: cyphr_server::sync::SyncFailure::RejectedEntry,
-        } => panic!(
-            "a stale-but-genuine response whose entries are all already applied must not be \
-             reported as RejectedEntry -- nothing in it was rejected, both entries were merely \
-             already held"
-        ),
-        other => panic!("expected UpToDate, got {other:?}"),
-    }
 }
 
 /// GUARD (regression protection, already-correct behavior): a CONFIGURED
@@ -1612,7 +1462,6 @@ async fn stripped_statement_fails_closed_when_configured() {
     let now = 1_700_000_000;
     let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
         authority.url.clone(),
@@ -1623,17 +1472,16 @@ async fn stripped_statement_fails_closed_when_configured() {
     )
     .await;
 
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    let (witness_state, _witness_app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
     assert!(
-        matches!(
-            outcome,
-            cyphr_server::sync::SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::EnvelopeUnsignedOrMisSigned
-            }
-        ),
-        "a configured witness must fail closed on a stripped statement, applying nothing, got \
-         {outcome:?}"
+        witness_state
+            .engine
+            .get_tip(&principal)
+            .await
+            .expect("local tip lookup")
+            .is_none(),
+        "a stripped statement must leave a configured witness holding nothing"
     );
 }
 
@@ -1711,25 +1559,44 @@ async fn build_chained_push_bodies(
 /// forwards the request unmodified and relays the upstream's JSON body
 /// verbatim. Unlike `spawn_patch_proxy` (which MUTATES the body to model an
 /// on-path attacker), this proxy changes nothing -- it exists only to let
-/// the test observe what `sync_from_authority` actually places on the wire,
+/// the test observe what the witness actually places on the wire,
 /// which the client itself gives no other hook into.
 async fn spawn_observing_patch_proxy(
     upstream: String,
     captured: Arc<std::sync::Mutex<Vec<String>>>,
 ) -> (String, tokio::task::JoinHandle<()>) {
-    let app = axum::Router::new().route(
-        "/patch",
-        axum::routing::get(move |raw: axum::extract::RawQuery| {
-            let upstream = upstream.clone();
-            let captured = captured.clone();
+    let forward = upstream.clone();
+    let app = axum::Router::new()
+        .route(
+            "/patch",
+            axum::routing::get(move |raw: axum::extract::RawQuery| {
+                let upstream = upstream.clone();
+                let captured = captured.clone();
+                async move {
+                    let query = raw.0.unwrap_or_default();
+                    captured.lock().unwrap().push(query.clone());
+                    let url = if query.is_empty() {
+                        format!("{upstream}/patch")
+                    } else {
+                        format!("{upstream}/patch?{query}")
+                    };
+                    let body: serde_json::Value = reqwest::Client::new()
+                        .get(&url)
+                        .header("accept", "application/json")
+                        .send()
+                        .await
+                        .expect("proxy upstream request")
+                        .json()
+                        .await
+                        .expect("proxy upstream json decode");
+                    axum::Json(body)
+                }
+            }),
+        )
+        .fallback(axum::routing::get(move |uri: axum::http::Uri| {
+            let forward = forward.clone();
             async move {
-                let query = raw.0.unwrap_or_default();
-                captured.lock().unwrap().push(query.clone());
-                let url = if query.is_empty() {
-                    format!("{upstream}/patch")
-                } else {
-                    format!("{upstream}/patch?{query}")
-                };
+                let url = format!("{forward}{uri}");
                 let body: serde_json::Value = reqwest::Client::new()
                     .get(&url)
                     .header("accept", "application/json")
@@ -1741,8 +1608,7 @@ async fn spawn_observing_patch_proxy(
                     .expect("proxy upstream json decode");
                 axum::Json(body)
             }
-        }),
-    );
+        }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind observing proxy listener");
@@ -1798,19 +1664,9 @@ async fn sync_resumes_from_digest_anchor() {
 
     let captured: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (proxy_url, _proxy) = spawn_observing_patch_proxy(auth_url, captured.clone()).await;
-    let (witness_state, _witness_app) = witness_for(&proxy_url, None).await;
+    let (witness_state, _witness_app) = witness_for(common::plain_gossip(proxy_url.clone())).await;
 
-    let first = sync_from_authority(&witness_state, principal_id).await;
-    assert!(
-        matches!(
-            first,
-            SyncOutcome::Synced {
-                applied: 1,
-                rejected: 0
-            }
-        ),
-        "first sync must apply exactly the genesis commit: {first:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, principal_id).await;
     let witness_tip_pr = witness_state
         .engine
         .get_tip(principal_id)
@@ -1822,17 +1678,7 @@ async fn sync_resumes_from_digest_anchor() {
     let (s1, b1) = post_json(auth_app.clone(), "/push", bodies[1].clone()).await;
     assert_eq!(s1, StatusCode::CREATED, "second commit push: {b1:?}");
 
-    let second = sync_from_authority(&witness_state, principal_id).await;
-    assert!(
-        matches!(
-            second,
-            SyncOutcome::Synced {
-                applied: 1,
-                rejected: 0
-            }
-        ),
-        "second sync must resume and apply EXACTLY the new commit, not a full resync: {second:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, principal_id).await;
 
     let queries = captured.lock().unwrap().clone();
     assert_eq!(
@@ -1851,87 +1697,6 @@ async fn sync_resumes_from_digest_anchor() {
         "the resync anchor MUST be the witness's own tip PR content digest, not a sequence number \
          -- captured second outbound query: {:?}",
         queries[1]
-    );
-}
-
-/// An authority that does not hold the witness's anchor answers 404 to an
-/// anchored `/patch`; the witness must then ask again from genesis (a witness
-/// may always do so) rather than fail the sync. Backs `sync_from_authority`'s
-/// retry: red if the 404 fails the sync, or if the retry is also anchored.
-#[tokio::test]
-async fn sync_asks_again_from_genesis_when_the_authority_lacks_the_anchor() {
-    let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool()).await;
-    let authority = authority_with_two_commits(&principal, now).await;
-
-    let captured: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let refuse_anchor = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let upstream = authority.url.clone();
-    let app = axum::Router::new().route(
-        "/patch",
-        axum::routing::get({
-            let (captured, refuse_anchor) = (captured.clone(), refuse_anchor.clone());
-            move |raw: axum::extract::RawQuery| {
-                let (upstream, captured, refuse_anchor) =
-                    (upstream.clone(), captured.clone(), refuse_anchor.clone());
-                async move {
-                    let query = raw.0.unwrap_or_default();
-                    captured.lock().unwrap().push(query.clone());
-                    if refuse_anchor.load(std::sync::atomic::Ordering::SeqCst)
-                        && query.contains("from=")
-                    {
-                        return (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({})))
-                            .into_response();
-                    }
-                    let body: serde_json::Value = reqwest::Client::new()
-                        .get(format!("{upstream}/patch?{query}"))
-                        .header("accept", "application/json")
-                        .send()
-                        .await
-                        .expect("upstream")
-                        .json()
-                        .await
-                        .expect("upstream json");
-                    axum::Json(body).into_response()
-                }
-            }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind proxy");
-    let proxy_url = format!("http://{}", listener.local_addr().expect("addr"));
-    let _proxy = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
-    let (witness_state, _witness_app) = witness_for(&proxy_url, None).await;
-
-    let first = sync_from_authority(&witness_state, &principal).await;
-    assert!(
-        matches!(
-            first,
-            SyncOutcome::Synced {
-                applied: 2,
-                rejected: 0
-            }
-        ),
-        "{first:?}"
-    );
-
-    refuse_anchor.store(true, std::sync::atomic::Ordering::SeqCst);
-    captured.lock().unwrap().clear();
-    let second = sync_from_authority(&witness_state, &principal).await;
-    assert!(matches!(second, SyncOutcome::UpToDate), "{second:?}");
-    let queries = captured.lock().unwrap().clone();
-    assert_eq!(
-        queries.len(),
-        2,
-        "anchored ask, then one retry: {queries:?}"
-    );
-    assert!(queries[0].contains("from="), "{queries:?}");
-    assert!(
-        !queries[1].contains("from="),
-        "the retry is unanchored: {queries:?}"
     );
 }
 
@@ -2285,18 +2050,8 @@ async fn sync_converges_and_refuses_tampered_or_missigned() {
     );
 
     // 1. Convergence: both commits applied, every root equal to the authority's.
-    let (w, _app) = witness_for(&authority.url, Some(authority.identity())).await;
-    let outcome = sync_from_authority(&w, &principal).await;
-    assert!(
-        matches!(
-            outcome,
-            SyncOutcome::Synced {
-                applied: 2,
-                rejected: 0
-            }
-        ),
-        "an untampered two-commit sync must apply both commits: {outcome:?}"
-    );
+    let (w, _app) = witness_for(authority.pinned()).await;
+    cyphr_server::gossip::fetch_from_peers(&w, &principal).await;
     let tip = w
         .engine
         .get_tip(&principal)
@@ -2325,17 +2080,8 @@ async fn sync_converges_and_refuses_tampered_or_missigned() {
         }),
     )
     .await;
-    let (w, _app) = witness_for(&proxy_url, Some(authority.identity())).await;
-    let outcome = sync_from_authority(&w, &principal).await;
-    assert!(
-        matches!(
-            outcome,
-            SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::EnvelopeUnsignedOrMisSigned
-            }
-        ),
-        "a statement altered after signing must be refused as mis-signed: {outcome:?}"
-    );
+    let (w, _app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&w, &principal).await;
     assert!(
         w.engine.get_tip(&principal).await.unwrap().is_none(),
         "a refused sync must leave the witness unchanged"
@@ -2362,73 +2108,20 @@ async fn sync_converges_and_refuses_tampered_or_missigned() {
         }),
     )
     .await;
-    let (w, _app) = witness_for(&proxy_url, Some(authority.identity())).await;
-    let outcome = sync_from_authority(&w, &principal).await;
-    assert!(
-        matches!(outcome, SyncOutcome::Failed { .. }),
-        "entries failing signature verification must not end Synced: {outcome:?}"
-    );
+    let (w, _app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&w, &principal).await;
     assert!(
         w.engine.get_tip(&principal).await.unwrap().is_none(),
         "forged entries must leave the witness unchanged"
     );
 
-    // 4. Signed by a key other than the configured authority identity.
-    let other = coz::Alg::Ed25519.generate_keypair();
-    let wrong = AuthorityIdentity {
-        alg: other.alg.name().to_string(),
-        pub_key: other.pub_bytes.clone(),
-    };
-    let (w, _app) = witness_for(&authority.url, Some(wrong)).await;
-    let outcome = sync_from_authority(&w, &principal).await;
-    assert!(
-        matches!(
-            outcome,
-            SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::EnvelopeUnsignedOrMisSigned
-            }
-        ),
-        "a patch signed by another key must be refused as mis-signed: {outcome:?}"
-    );
+    // 4. Signed by a key other than the configured server principal's.
+    let (other, _identity, _dir) = attestor_server().await;
+    let (w, _app) = witness_for(common::pinned_gossip(authority.url.clone(), &other)).await;
+    cyphr_server::gossip::fetch_from_peers(&w, &principal).await;
     assert!(
         w.engine.get_tip(&principal).await.unwrap().is_none(),
         "a mis-signed sync must leave the witness unchanged"
-    );
-}
-
-/// Claim: an unauthenticated read cannot grow server memory without bound;
-/// once syncs for N attacker-chosen principal ids have finished, the
-/// per-principal lock map holds no entry for them. End-to-end scenario: no
-/// (it inspects `AppState::sync_locks`, which has no HTTP surface; a
-/// memory-growth property is not observable through responses).
-///
-/// Turns red if a lock entry is kept per requested id after its sync
-/// completes -- today `sync_from_authority` inserts and never removes.
-/// The assertion is "nothing retained once idle", the strongest bound a
-/// fix can honour; a mere cap above the probe count would not satisfy it.
-#[tokio::test]
-async fn sync_locks_bounded() {
-    let (authority_url, _auth) = spawn_fixed_authority(serde_json::json!({})).await;
-    let (witness_state, witness_app) = witness_for(&authority_url, None).await;
-
-    const PROBES: usize = 32;
-    for i in 0..PROBES {
-        let (status, _) = get_json(
-            witness_app.clone(),
-            &format!("/tip?pr=SHA-256:unknown-principal-{i}"),
-        )
-        .await;
-        assert_ne!(
-            status,
-            StatusCode::OK,
-            "an unknown principal must not exist"
-        );
-    }
-
-    let retained = witness_state.sync_locks.lock().await.len();
-    assert_eq!(
-        retained, 0,
-        "{PROBES} finished syncs for distinct unknown ids left {retained} lock entries"
     );
 }
 
@@ -2487,8 +2180,8 @@ async fn witness_refuses_a_dead_keys_tip_commit() {
     .await;
     assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
 
-    let (witness, _) = witness_for(&url, None).await;
-    let _ = sync_from_authority(&witness, &id).await;
+    let (witness, _) = witness_for(common::plain_gossip(url.clone())).await;
+    cyphr_server::gossip::fetch_from_peers(&witness, &id).await;
     let tip = witness
         .engine
         .get_tip(&id)
