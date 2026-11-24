@@ -162,7 +162,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         cyphr::resync::verify_resync(pop, &held_key)
             .map_err(|_| EngineError::Protocol(cyphr::Error::InvalidSignature))?;
         let signer = resync.tmb.to_b64();
-        if self.deaths.is_dead_at(&signer, resync.now) {
+        if self.deaths.is_dead(&signer) {
             return Err(EngineError::DeadKey { key: signer });
         }
         if self.resyncs.asserted(principal_id).contains(&resync.id) {

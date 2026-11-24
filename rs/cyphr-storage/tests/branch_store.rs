@@ -15,7 +15,7 @@ use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
-use cyphr_storage::engine::StorageEngine;
+use cyphr_storage::engine::{EngineError, StorageEngine};
 use cyphr_storage::index::MemoryIndexer;
 
 const NOW: i64 = 1_700_100_000;
@@ -395,16 +395,16 @@ async fn after_revocation(r: &Revoked) -> WireBundle {
     bundle
 }
 
-/// Backs SPEC 6.4 and 15.8: a revoke inside a commit is state of its own
-/// branch only; it is no naked revoke ("signed outside of a commit"), so
-/// it does not stop the key on a rival branch. The canonical commit at 1
-/// revokes `golden`; a `golden`-signed rival R is retained at 1, and B
-/// over R extends it, the only extended branch: B is admitted as the tip
-/// and the principal is Active, at the engine seam every holder ingests
-/// through.
-/// Turns red if an in-chain revoke disqualifies a rival branch's commits.
+/// Backs SPEC 6.4: a revoke inside a commit stops the key from the commit's
+/// receipt on every branch, not on its own branch only (the spec author on
+/// #203: "A revoked stops the key at the time the revoke was received").
+/// The canonical commit at 1 revokes `golden`; a `golden`-signed rival R
+/// at 1 that arrives after it is refused as a dead key and not retained,
+/// and so is B over R, so the principal stays Active on the revoking
+/// chain, at the engine seam every holder ingests through.
+/// Turns red if an in-chain revoke leaves the key alive on a rival branch.
 #[tokio::test]
-async fn an_in_chain_revoke_is_state_of_its_own_branch() {
+async fn an_in_chain_revoke_stops_the_key_on_every_branch() {
     let r = revoked().await;
     let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     r.f.submit(&e, &r.f.first).await.expect("commit 0");
@@ -415,14 +415,15 @@ async fn an_in_chain_revoke_is_state_of_its_own_branch() {
     let mut rival = r.f.base.fork().await.expect("fork");
     create_key(&mut rival, &r.f.golden, &kp(&pool, "key_b"), NOW + 11).await;
     create_key(&mut rival, &r.f.golden, &kp(&pool, "bob"), NOW + 12).await;
-    assert!(
-        r.f.submit(&e, &blobs(&rival, 1)).await.is_err(),
-        "R is a rival"
-    );
-    r.f.submit(&e, &blobs(&rival, 2))
-        .await
-        .expect("B extends the only extended branch");
+    for position in [1, 2] {
+        let refused = r.f.submit(&e, &blobs(&rival, position)).await;
+        assert!(
+            matches!(refused, Err(EngineError::DeadKey { .. })),
+            "position {position}: {refused:?}"
+        );
+    }
     assert!(!e.is_errored(&r.f.id).await.expect("verdict"));
+    assert_eq!(e.list_branches(&r.f.id).await.expect("branches").len(), 1);
 }
 
 /// Backs the retention bound on promotion: `golden` already has its
@@ -525,14 +526,15 @@ async fn a_dead_keys_commit_after_its_death_is_refused() {
     );
 }
 
-/// Backs the cutoff as this node's receipt time (#203: "honor it from the
+/// Backs the cutoff as this node's receipt (#203: "honor it from the
 /// witness's own receipt time"; SPEC 14.12): `key_a`'s revoke is dated 1,
-/// far back, and received at NOW+5. A backdated revoke gains nothing: a
-/// `key_a` commit dated NOW+4 is history and admitted, one dated NOW+5 is
-/// refused, live and after a rebuild from the blobs. Turns red if the
-/// revoke's own `now` sets the cutoff, or a rebuild loses the receipt time.
+/// far back, and received at NOW+5. A backdated revoke gains nothing, and
+/// neither does a backdated commit: a `key_a` commit that arrives after the
+/// receipt is refused whatever `now` it is dated, live and after a rebuild
+/// from the blobs. Turns red if the signer's `now` is compared with the
+/// receipt, or a rebuild loses the death.
 #[tokio::test]
-async fn a_revoke_cuts_off_at_its_receipt_time() {
+async fn a_revoke_cuts_off_at_its_receipt() {
     let f = Fork::new(0).await;
     let pool = load_pool();
     let key_a = kp(&pool, "key_a");
@@ -544,17 +546,16 @@ async fn a_revoke_cuts_off_at_its_receipt_time() {
     let mut p = f.base.fork().await.expect("fork");
     create_key(&mut p, &key_a, &kp(&pool, "bob"), NOW + 4).await;
     create_key(&mut p, &key_a, &kp(&pool, "carol"), NOW + 5).await;
-    f.submit(&e, &blobs(&p, 1))
-        .await
-        .expect("dated before the receipt: history");
-    assert!(
-        f.submit(&e, &blobs(&p, 2)).await.is_err(),
-        "dated at the receipt: dead"
-    );
+    for position in [1, 2] {
+        assert!(
+            f.submit(&e, &blobs(&p, position)).await.is_err(),
+            "position {position}: refused whatever its `now`"
+        );
+    }
     e.rebuild_index_from_scratch().await.expect("rebuild");
     assert!(
-        f.submit(&e, &blobs(&p, 2)).await.is_err(),
-        "a rebuild keeps the receipt time"
+        f.submit(&e, &blobs(&p, 1)).await.is_err(),
+        "a rebuild keeps the death"
     );
 }
 
@@ -580,7 +581,7 @@ async fn a_dead_keys_self_revoke_lands() {
 /// by that revoked key, is refused and stores nothing. The control builds
 /// the same position-2 commit with the active `key_a` and it is accepted,
 /// so the refusal is about the swapped signer and not the position. Green
-/// today; must stay green. The refusal is `KeyRevoked` (observed), not an
+/// today; must stay green. The refusal is `DeadKey` (observed), not an
 /// arrow mismatch, so it is attributable to the revocation.
 #[tokio::test]
 async fn revoked_key_bundle_is_refused_and_stores_nothing() {
@@ -616,11 +617,9 @@ async fn revoked_key_bundle_is_refused_and_stores_nothing() {
     assert!(
         matches!(
             refused,
-            Err(cyphr_storage::engine::EngineError::Protocol(
-                cyphr::Error::KeyRevoked
-            ))
+            Err(cyphr_storage::engine::EngineError::DeadKey { .. })
         ),
-        "a bundle signed by a revoked key must be refused as KeyRevoked: {refused:?}"
+        "a bundle signed by a revoked key must be refused as a dead key: {refused:?}"
     );
     assert_eq!(
         blob_count(&e).await,
@@ -632,7 +631,6 @@ async fn revoked_key_bundle_is_refused_and_stores_nothing() {
 }
 
 mod retained {
-    use cyphr_storage::engine::EngineError;
 
     use super::*;
 
@@ -1228,13 +1226,13 @@ mod retained {
         );
     }
 
-    /// Backs a-verify (theft evidence): a rival AT the revocation position,
-    /// signed by a key that was still active at its `pre`, is retained
-    /// beside the revocation, while the revocation stays canonical and the
-    /// tip does not move. Turns red if such a rival is dropped. End to end
-    /// at the engine seam: yes.
+    /// Backs SPEC 6.4: a rival AT the revocation position, signed by the
+    /// key the canonical commit revokes, is refused when it arrives after
+    /// the revocation: the revoke stops the key on every branch, so the
+    /// rival is not retained and the revocation stays the only commit
+    /// there. Turns red if such a rival is kept as a branch.
     #[tokio::test]
-    async fn rival_at_the_revocation_position_is_retained() {
+    async fn rival_signed_by_the_revoked_key_is_refused_not_retained() {
         let r = revoked().await;
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         r.f.submit(&e, &r.f.first).await.expect("commit 0");
@@ -1243,9 +1241,10 @@ mod retained {
             .expect("revocation");
         let tip = e.get_tip(&r.f.id).await.expect("tip").expect("stored");
 
+        let refused = r.f.submit(&e, &r.theft).await;
         assert!(
-            r.f.submit(&e, &r.theft).await.is_err(),
-            "premise: refused as the tip"
+            matches!(refused, Err(EngineError::DeadKey { .. })),
+            "refused as a dead key: {refused:?}"
         );
         assert_eq!(
             e.get_tip(&r.f.id)
@@ -1258,12 +1257,8 @@ mod retained {
         );
         let got = e.list_branches(&r.f.id).await.expect("list_branches");
         let at_rev: Vec<_> = got.iter().filter(|b| b.sequence == 1).collect();
-        assert_eq!(at_rev.len(), 2, "revocation and the rival listed: {got:?}");
-        let canonical = at_rev.iter().find(|b| b.canonical).expect("one canonical");
-        assert_eq!(
-            canonical.tip, tip.commit_id,
-            "the revocation stays canonical"
-        );
+        assert_eq!(at_rev.len(), 1, "only the revocation is listed: {got:?}");
+        assert_eq!(at_rev[0].tip, tip.commit_id);
     }
 
     /// Backs a-verify: the refused revoked-key bundle is not listed either.

@@ -13,6 +13,7 @@ use super::{
     BlobStore, EngineError, Indexer, IndexerWrite, REVOKE_RECORD_PREFIX, RevokeRecord,
     StorageEngine,
 };
+use crate::index::IndexableCommit;
 /// Verify a naked revoke's `{pay, sig, key}` envelope by the one core
 /// rule ([`cyphr::revoke::verify_naked_revoke`]), returning the revoked
 /// thumbprint (base64url).
@@ -54,10 +55,12 @@ impl Revoked {
         self.0.is_empty()
     }
 
-    /// Whether `tmb` was dead at `now`: revoked, with `now` at or after
-    /// this node's receipt time of the revoke.
-    fn is_dead_at(&self, tmb: &str, now: i64) -> bool {
-        self.0.get(tmb).is_some_and(|death| now >= death.wrt)
+    /// Whether `tmb` is dead: this node holds a revoke of it. What arrives
+    /// after the receipt is refused whatever `now` its signer dated it;
+    /// retrospection is not supported (SPEC 6.4, 14.12; the spec author on
+    /// #203).
+    fn is_dead(&self, tmb: &str) -> bool {
+        self.0.contains_key(tmb)
     }
 
     /// The revoked thumbprints (base64url).
@@ -91,13 +94,21 @@ impl DeathSet {
             .contains_key(tmb)
     }
 
-    /// Whether `tmb` was dead at `now`: revoked, with `now` at or after
-    /// this node's receipt time of the revoke.
-    pub(super) fn is_dead_at(&self, tmb: &str, now: i64) -> bool {
+    /// Whether `tmb` is dead ([`Revoked::is_dead`]).
+    pub(super) fn is_dead(&self, tmb: &str) -> bool {
         self.revoked
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .is_dead_at(tmb, now)
+            .is_dead(tmb)
+    }
+
+    /// Note a revoke found in a commit, as [`Revoked::note`] does for one
+    /// found in the store.
+    pub(super) fn note(&self, tmb: String, death: Death) {
+        self.revoked
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .note(tmb, death);
     }
 
     pub(super) fn insert(&self, tmb: String, death: Death) {
@@ -119,40 +130,38 @@ impl DeathSet {
 
 /// Key death at admission (SPEC 6.4), the one check every path that hands
 /// the engine a bundle passes (`/push`, gossip, witness sync, a verifier's
-/// store): the refusal for `bundle` if a coz in it is signed by a revoked
-/// key and the coz is dated at or after the key's cutoff, this node's
-/// receipt time of its revoke ([`Death::wrt`]; a coz with no readable
-/// `now` is judged dated after it). Introducing a revoked key is not
-/// refused: the introduction is the introducer's act, not the key's (SPEC
-/// 6.4 rejects "further use of the revoked key"), and a revoke is in no
-/// commit's causal past, so a rule that depends on it splits holders of
-/// the same messages. That convergence is guaranteed for introductions
-/// only: a coz the revoked key itself signs, dated within the window
-/// between two holders' receipt times of its revoke, is still admitted by
-/// one and refused by the other, and nothing re-joins them (no
-/// retrospection, SPEC 14.12). That split waits on the spec author's
-/// answer (forge #203).
+/// store): the refusal for `bundle` if a coz in it is signed by a key this
+/// node holds revoked, whatever `now` the signer dated it: the key is
+/// dead from this node's receipt of its revoke (the spec author on #203:
+/// "A revoked stops the key at the time the revoke was received"). A key
+/// revoked inside a commit is dead the same way, on every branch
+/// ([`self_revoked_keys`]). Introducing a revoked key is not refused: the
+/// introduction is the introducer's act, not the key's (SPEC 6.4 rejects
+/// "further use of the revoked key"), and a revoke is in no commit's causal
+/// past, so a rule that depends on it splits holders of the same messages.
+/// A coz the revoked key itself signs that reaches one holder before the
+/// revoke and another after is still admitted by one and refused by the
+/// other, and nothing re-joins them (no retrospection, SPEC 14.12).
 ///
-/// Not retroactive: history a key signed before the cutoff stands, so a
-/// node that learned the revoke first still syncs it. A coz that revokes
-/// its own signer is never refused: it can only end the key (SPEC 6.4:
-/// "sign a standard revoke, a subsequent `key/delete` ... and commit").
+/// Not retroactive: history a key signed before the receipt stands. A coz
+/// that revokes its own signer is never refused: it can only end the key
+/// (SPEC 6.4: "sign a standard revoke, a subsequent `key/delete` ... and
+/// commit").
 ///
 /// The revokes are read here, against what arrives, and held in no
 /// principal's state: a revoke judges nothing already held (SPEC 14.12), so
 /// no verified state changes when one is recorded.
 ///
-/// The key's holder chooses `now`, so a holder of a compromised key can
-/// date a commit below the cutoff. That is not prevented here: the owner
-/// recovers by mutating the principal forward (SPEC 14.12), since Cyphr
-/// does not use reversion. Where that leaves both branches extended, the
-/// fork is in Error (rule E) and the exit is a resync PoP asserting the
-/// owner's tip ([`StorageEngine::submit_resync`], SPEC 15.8 item 2).
+/// What a holder of a compromised key signs before the revoke arrives is
+/// admitted; the owner recovers by mutating the principal forward (SPEC
+/// 14.12), since Cyphr does not use reversion. Where that leaves both
+/// branches extended, the fork is in Error (rule E) and the exit is a
+/// resync PoP asserting the owner's tip ([`StorageEngine::submit_resync`],
+/// SPEC 15.8 item 2).
 ///
-/// Refusal-only: it reads each coz's declared `pay.tmb`, `pay.typ` and
-/// `pay.now` before any signature is checked, so a forgery
-/// can at worst refuse the bundle it travels in. It must never admit or
-/// authorize on these fields.
+/// Refusal-only: it reads each coz's declared signer and `typ` before any
+/// signature is checked, so a forgery can at worst refuse the bundle it
+/// travels in. It must never admit or authorize on these fields.
 pub(super) fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
     if revoked.is_empty() {
         return None;
@@ -160,10 +169,7 @@ pub(super) fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<Engi
     // A bundle that does not decode is refused by the admission that
     // follows; this gate only names a dead key.
     let decoded = bundle.decode().ok()?;
-    let dead_at = |coz: &cyphr::replay::StoredCoz| {
-        let header = coz.header();
-        revoked.is_dead_at(&header.tmb.to_b64(), header.now)
-    };
+    let dead = |coz: &cyphr::replay::StoredCoz| revoked.is_dead(&coz.header().tmb.to_b64());
     // A data action a dead key signs is refused as the core refuses one
     // signed by a key revoked in the chain: `KeyRevoked`. That is the
     // answer whoever the key belonged to. Key death is global by
@@ -171,7 +177,7 @@ pub(super) fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<Engi
     // is answered `KeyRevoked` here too, where a live key it never held is
     // answered `UnknownKey` by the core: a client sees the revoke, not the
     // absence, when both are true.
-    if decoded.action_cozies().iter().any(dead_at) {
+    if decoded.action_cozies().iter().any(dead) {
         return Some(EngineError::Protocol(cyphr::Error::KeyRevoked));
     }
     for coz in decoded.txs().iter().flatten() {
@@ -179,7 +185,7 @@ pub(super) fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<Engi
             &coz.header().typ,
             cyphr::parsed_coz::typ::KEY_REVOKE,
         );
-        if dead_at(coz) && !self_revoke {
+        if dead(coz) && !self_revoke {
             return Some(EngineError::DeadKey {
                 key: coz.header().tmb.to_b64(),
             });
@@ -256,4 +262,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     pub fn is_revoked(&self, tmb: &str) -> bool {
         self.deaths.contains(tmb)
     }
+}
+
+/// The keys a commit revokes by their own signature: each `key/revoke` coz
+/// of it names its signer (SPEC 6.4: "a self-signed declaration"). A key
+/// so revoked is dead on this node from the commit's receipt, on every
+/// branch ([`DeathSet::note`]): the revoke is the node's, not one branch's.
+pub(super) fn self_revoked_keys(commit: &IndexableCommit) -> impl Iterator<Item = &str> {
+    commit
+        .cozies
+        .iter()
+        .filter(|coz| {
+            cyphr::parsed_coz::typ::has_suffix(&coz.typ, cyphr::parsed_coz::typ::KEY_REVOKE)
+        })
+        .map(|coz| coz.tmb.as_str())
 }

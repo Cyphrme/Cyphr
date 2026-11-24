@@ -39,7 +39,7 @@ pub use cyphr::fork::{Assessment, Consensus, Contest, ForkPoint};
 use cyphr::fork::{Held, assessed_from, assessment};
 use cyphr::replay::WireBundle;
 use cyphr::state::{StateDigest, TaggedDigest};
-use death::{Death, DeathSet, Revoked, dead_key_in, verify_revoke};
+use death::{Death, DeathSet, Revoked, dead_key_in, self_revoked_keys, verify_revoke};
 pub use error::EngineError;
 pub use ingest::{
     BundleAnswer, CommittedTip, IngestResult, PulledAnswers, PulledOffer, ResyncOffer,

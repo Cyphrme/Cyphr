@@ -526,6 +526,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             ))
         });
 
+        // A key a held commit revokes by its own signature is dead from the
+        // receipt of that commit, on every branch: derived from the
+        // manifests, which record when each was first seen (I1).
+        for (hash, manifest) in manifests.iter().chain(&branch_manifests) {
+            for tmb in self_revoked_keys(&manifest.commit) {
+                revoked.note(
+                    tmb.to_owned(),
+                    Death::new(manifest.seen.unwrap_or_default(), *hash.as_bytes()),
+                );
+            }
+        }
         let unbound = self.unbound_principals(&manifests).await?;
         for (hash, manifest) in &manifests {
             if let Some(why) = unbound.get(&manifest.commit.principal_id) {

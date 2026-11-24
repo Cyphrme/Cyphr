@@ -507,6 +507,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         serde_json::to_writer(&mut manifest_bytes, &manifest)
             .map_err(|e| EngineError::MalformedBlob(format!("commit manifest serialize: {e}")))?;
         let manifest_hash = self.blob_store.put(&manifest_bytes).await?;
+        // The key a commit revokes is dead from its receipt, whichever
+        // branch the commit is kept on. Noted here, where the record that
+        // derives it is written, so a rebuild reaches the same set; the
+        // caller's sync follows, and an engine whose sync fails refuses
+        // every write until it restarts and re-derives the set.
+        for tmb in self_revoked_keys(&commit) {
+            self.deaths.note(
+                tmb.to_owned(),
+                Death::new(seen.unwrap_or_default(), *manifest_hash.as_bytes()),
+            );
+        }
 
         Ok((commit, manifest_hash))
     }

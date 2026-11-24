@@ -123,8 +123,9 @@ pub struct Held {
 /// again (SPEC 14.12: "Cyphr does not use reversion"; the spec author on
 /// #203: "Retrospection isn't supported"). A signature from a key's
 /// active period stands after the key is deleted or replaced too (SPEC
-/// 6.2), and a revoke inside a commit is state of its own branch only
-/// (SPEC 6.4, 15.8).
+/// 6.2). A key deleted in a commit is state of that branch only; a key
+/// revoked, naked or inside a commit, is the node's: it stops what arrives
+/// after the receipt on every branch (SPEC 6.4).
 ///
 /// A pure function of the held commits, so a live engine and one rebuilt
 /// from the blobs answer alike (I1): whether a candidate commit would
