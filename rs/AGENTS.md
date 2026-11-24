@@ -54,8 +54,11 @@ level if and where possible."
   integration tests, and e2e scenarios against real `cyphr-server`
   instances and clients. `../tests/golden` pins byte-exact formats;
   `fuzz/` covers parsers of untrusted input.
-- A unit test is allowed only for a tricky edge none of those reach, and
-  carries a comment naming the edge. Prefer making the edge
+- A unit test is allowed only as a regression test for a defect actually
+  found, usually written after the fact, and its doc comment says which
+  defect. nrd: "The only time we should be unit testing is for regression
+  testing. If we find an edge case and we want to make sure it doesn't
+  recur, that's about the only time." Prefer making the edge
   unrepresentable in the types over testing it.
 - Every test names the spec rule or user-visible behaviour it checks.
 - Delete a test that cannot fail for a real defect: green by
