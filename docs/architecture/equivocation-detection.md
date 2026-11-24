@@ -97,9 +97,13 @@ it can be checked.
   the configuration.
 - **The comparison exists as a library function.**
   `check_equivocation` in `rs/cyphr-server/src/receipt.rs` takes two tip
-  reports and a public key for each. It returns `Proven` only when both
-  verify, name the same principal and the same `sequence`, and differ in
-  `commit_id` or in a root. Reports at different sequences return
+  reports, a public key for each, and the forks a witness holds for the
+  principal. It returns `Proven` only when both verify, name the same
+  principal and the same `sequence`, and differ in `commit_id` or in a
+  root, and the report signed first does not name a commit the fork rule
+  passed over. A fork settled by a valid resolution (a resync proof or a
+  commit extending one branch) is no longer a fork, so that pair returns
+  `Resolved`. Reports at different sequences return
   `DifferentSequence`, which settles nothing: the function makes no
   prefix check. It does not check that the two keys belong to one
   server; the receipts specification requires the caller to have

@@ -312,12 +312,16 @@ Two cozies are a proven equivocation if and only if:
 
 Anything else is a diagnosed non-equivocation, distinguished by
 outcome: wrong `typ`, an unverifiable signature, a different
-principal, a different sequence, or claim-identical reports (no
-conflict at all).
+principal, a different sequence, claim-identical reports (no
+conflict at all), or a pair whose earlier report names a commit that a
+valid resolution abandoned (SPEC 15.8: "the abandoned branch's
+transactions become permanently invalid"), read from the forks the
+witness holds for the principal.
 
 Implemented in `rs/cyphr-server/src/receipt.rs`'s
-`EquivocationVerdict` and `check_equivocation`; all seven arms are
-covered by `rs/cyphr-server/tests/equivocation.rs`.
+`EquivocationVerdict` and `check_equivocation`; the arms are covered by
+`rs/cyphr-server/tests/equivocation.rs` and, for the resolved fork,
+`rs/cyphr-server/tests/equivocation_resolved.rs`.
 
 ### What a verifier retains
 

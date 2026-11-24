@@ -18,6 +18,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use cyphr::HashAlg;
+use cyphr::fork::Contest;
 use cyphr::signer::{SignerError, SoftwareSigner};
 use cyphr::state::TaggedDigest;
 // The canonical report parse lives in the client crate; `check_equivocation`
@@ -417,6 +418,14 @@ pub enum EquivocationVerdict {
     DifferentSequence,
     /// The two reports are claim-identical -- not a conflict.
     IdenticalClaims,
+    /// The pair differs at one position and one of its commits was
+    /// abandoned: the earlier report names a commit on a branch the fork
+    /// rule over what the witness holds has since passed over, because a
+    /// valid resolution (a `resync/create` proof, or a commit extending the
+    /// other branch) settled the fork (SPEC 15.8: "the abandoned branch's
+    /// transactions become permanently invalid"). A server that follows the
+    /// fork rule signs both reports, so this is not equivocation.
+    Resolved,
     /// One or both reports fail to canonicalize via [`TipReport::parse`] --
     /// a validly-signed report whose claims cannot be typed.
     ///
@@ -434,7 +443,8 @@ pub enum EquivocationVerdict {
 /// Check whether two signed tip reports constitute proven equivocation.
 ///
 /// Pure: a function over the two raw coz values plus caller-supplied key
-/// material only -- no engine, no `AppState`, no I/O, no clock, so a
+/// material and the forks a witness holds (`forks`, plain core values) --
+/// no engine, no `AppState`, no I/O, no clock, so a
 /// verifier anywhere can run it on retained bytes. `a_pub_key` verifies
 /// `a`'s signature and `b_pub_key` verifies `b`'s -- they may be
 /// identical (the degenerate same-key case) or different (a
@@ -455,13 +465,19 @@ pub enum EquivocationVerdict {
 /// other outcome (no production code calls this function today); (4) both
 /// claim the same typed `pr` and the same typed `sequence`; (5) they differ
 /// in typed `commit_id` or in any typed `roots` field -- compared by
-/// canonical value, so representation never causes a miss or a false alarm.
+/// canonical value, so representation never causes a miss or a false alarm;
+/// (6) the report signed first does not name a commit the fork rule has
+/// passed over (`forks`, the [`Contest`]s of the fork rule over the commits
+/// and resync proofs a witness holds for the principal): a fork a valid
+/// resolution settled is no longer a fork, and a server that followed the
+/// rule signed both ([`EquivocationVerdict::Resolved`]).
 /// Anything else is a diagnosed non-equivocation.
 pub fn check_equivocation(
     a: &coz::CozJson,
     a_pub_key: &[u8],
     b: &coz::CozJson,
     b_pub_key: &[u8],
+    forks: &[Contest],
 ) -> EquivocationVerdict {
     let tip_typ = Value::String(TIP_REPORT_TYP.to_string());
     if a.pay["typ"] != tip_typ || b.pay["typ"] != tip_typ {
@@ -486,7 +502,35 @@ pub fn check_equivocation(
         return EquivocationVerdict::IdenticalClaims;
     }
 
+    // The pair differs. A fork resolved under the server explains it if the
+    // report signed first names a commit the resolution passed over; a
+    // report signed after it names the commit the fork rule follows.
+    let (earlier, later) = (a.pay["now"].as_i64(), b.pay["now"].as_i64());
+    let superseded = match (earlier, later) {
+        (Some(x), Some(y)) if x < y => Some(&a_report),
+        (Some(x), Some(y)) if y < x => Some(&b_report),
+        _ => None,
+    };
+    if let Some(report) = superseded
+        && abandoned(forks, &report.commit_id.to_string())
+    {
+        return EquivocationVerdict::Resolved;
+    }
+
     EquivocationVerdict::Proven
+}
+
+/// Whether the fork rule's walk over what a witness holds passed over
+/// `commit_id`: it is a commit the walk skipped at a resolved contest, or a
+/// tip of a branch it skipped ([`Contest::abandoned`]). A commit between
+/// the two is not listed, so a report of one is read as unexplained.
+fn abandoned(forks: &[Contest], commit_id: &str) -> bool {
+    forks.iter().any(|contest| {
+        contest
+            .abandoned
+            .iter()
+            .any(|(head, tips)| head == commit_id || tips.iter().any(|t| t == commit_id))
+    })
 }
 
 /// Verify one receipt cozy's signature against a caller-supplied key,

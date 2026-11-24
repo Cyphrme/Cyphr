@@ -723,7 +723,9 @@ No `cyphr` command runs this check. The comparison exists as a Rust
 function, `check_equivocation` in the `cyphr-server` crate's `receipt`
 module, which returns `Proven` or the specific reason a pair is not a
 proven conflict (`WrongTyp`, `InvalidSignature`, `DifferentPrincipal`,
-`DifferentSequence`, `IdenticalClaims`, `Malformed`). Call it from Rust,
+`DifferentSequence`, `IdenticalClaims`, `Malformed`), or `Resolved` when the
+earlier report names a commit a valid resolution abandoned, read from the
+forks you hold. Call it from Rust,
 or write the predicate in whatever your watcher is written in. Both
 statements have to be tip reports, both signatures
 have to verify under their own key, both have to name the same
