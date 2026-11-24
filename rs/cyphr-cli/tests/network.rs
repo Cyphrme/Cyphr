@@ -543,14 +543,13 @@ fn trust_remote_discards_only_diverged_commits_and_keeps_actions() {
 }
 
 /// Claim: `push --assert-local` sends local commits that differ from the
-/// peer's as a fork, and without the flag the same push is refused with
-/// nothing sent. A single diverged commit is sent too, and the answer is the
-/// peer's: it refuses a lone fork root with 409, which the CLI reports as
-/// `stale` (the CLI sets no minimum of its own). End-to-end: yes (two
-/// devices, one real server).
-/// Turns red on: a push that sends the fork with no flag, or one that refuses
-/// two diverged commits with the flag. The lone-commit case does not tell the
-/// CLI's refusal from the peer's: both read `stale`.
+/// peer's as a fork, whether one or two, and without the flag the same push
+/// is refused with nothing sent. The peer answers a lone fork root with 409
+/// but keeps it as a fork participant; the push reads the peer's tip, finds
+/// the commit among its heads, and reports the fork as pushed (`peer_in_error`,
+/// exit 0). End-to-end: yes (two devices, one real server).
+/// Turns red on: a push that sends the fork with no flag, or one that
+/// reports a kept fork as a refusal (`stale`, non-zero exit).
 #[test]
 fn assert_local_pushes_the_fork() {
     for diverged in [2, 1] {
@@ -574,20 +573,11 @@ fn assert_local_pushes_the_fork() {
             &format!("--peer={}", server.url),
             "--assert-local",
         ]);
-        if diverged == 1 {
-            assert!(
-                !sent.ok,
-                "the peer refuses a lone fork root: {}",
-                sent.stdout
-            );
-            assert!(
-                sent.stderr.contains(r#""kind":"stale""#),
-                "the peer's 409 is reported as stale: {}",
-                sent.stderr
-            );
-            continue;
-        }
-        assert!(sent.ok, "the asserted fork is sent: {}", sent.stderr);
+        assert!(
+            sent.ok,
+            "the asserted fork of {diverged} commit(s) is pushed: {}",
+            sent.stderr
+        );
         assert_eq!(sent.json()["pushed"], diverged, "{}", sent.stdout);
     }
 }

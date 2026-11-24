@@ -210,8 +210,20 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
                     parent = Some(&commit.bundle);
                 },
                 // A lone commit over a tip the peer holds, with nothing after
-                // it to offer it with: the peer did not take it.
+                // it to offer it with. The 409 does not say whether the peer
+                // kept it as a fork participant, so its tip says: in Error
+                // with this commit among its heads, the fork was taken and the
+                // push is done; otherwise the peer did not take it.
                 Err(PeerError::Stale { .. }) if forking.is_some() => {
+                    let kept = peer
+                        .tip(&wire)
+                        .await?
+                        .and_then(|tip| held_position(&tip, &local))
+                        .is_some_and(|held| held >= i);
+                    if kept {
+                        in_error = true;
+                        continue;
+                    }
                     return Err(PeerError::Stale {
                         peer: peer.url().to_owned(),
                         detail: format!(
