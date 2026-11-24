@@ -257,6 +257,9 @@ pub struct Verdict {
     pub observed_at: std::time::Instant,
 }
 
+/// What a push came to. A refusal is a result a scenario must look at, so
+/// an outcome that is dropped unread is a compile error under `-D warnings`.
+#[must_use = "a push may have been refused; read it with `accepted` or `refused`"]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PushOutcome {
     Accepted(Tip),
@@ -973,15 +976,33 @@ impl Client<'_> {
     }
 
     /// `cyphr push` to each peer in turn; the first refusal is the outcome.
+    /// A local history that differs from a peer's is refused (`Stale`):
+    /// sending it as a fork is [`Client::push_fork`].
     pub async fn push(&self, p: &Principal, to: &[&str]) -> ActionResult<PushOutcome> {
+        self.push_with(p, to, false).await
+    }
+
+    /// `cyphr push --assert-local`: the user's explicit choice to send the
+    /// local branch as a fork where it differs from a peer's history.
+    pub async fn push_fork(&self, p: &Principal, to: &[&str]) -> ActionResult<PushOutcome> {
+        self.push_with(p, to, true).await
+    }
+
+    async fn push_with(
+        &self,
+        p: &Principal,
+        to: &[&str],
+        assert_local: bool,
+    ) -> ActionResult<PushOutcome> {
         self.know(p, to);
         let mut tip = None;
         for peer in to {
             let url = self.url(peer).await;
-            match self
-                .cyphr(&["push", "--identity", &p.0, "--peer", &url])
-                .await
-            {
+            let mut args = vec!["push", "--identity", &p.0, "--peer", &url];
+            if assert_local {
+                args.push("--assert-local");
+            }
+            match self.cyphr(&args).await {
                 Ok(v) => tip = Some(field(&v, "tip")?),
                 Err(ActionError::Refused(r)) => return Ok(PushOutcome::Refused(r)),
                 Err(e) => return Err(e),
