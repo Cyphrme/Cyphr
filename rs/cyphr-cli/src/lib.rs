@@ -398,6 +398,51 @@ pub enum Commands {
         assert_local: bool,
     },
 
+    /// Sign in to a service: sign a login request with a key of an identity
+    ///
+    /// Signs `{alg, now, pg, tmb, typ}` with the named key, for the service
+    /// named by `--audience` (SPEC 17.2). With `--peer` the login is posted
+    /// to that Cyphr server's `/auth/login` and the bearer token it issues
+    /// is printed; with `--sign-only` the signed login is printed for any
+    /// other service to take. A login carries no challenge unless asked
+    /// (`--challenge`): a timestamp inside the service's window is enough
+    /// for most uses. The principal's `pg` and the key's `tmb` are the same
+    /// at every service, so accounts can be correlated across sites. To
+    /// sign out, delete the token.
+    Login {
+        /// Principal Genesis (base64url)
+        #[arg(long, allow_hyphen_values = true)]
+        identity: String,
+
+        /// Thumbprint of the key to sign with
+        #[arg(long, allow_hyphen_values = true)]
+        signer: String,
+
+        /// The service signed in to: the authority segment of the login
+        /// `typ`, which the service accepts only when it is its own name
+        #[arg(long)]
+        audience: String,
+
+        /// Post the login to this peer (e.g., http://127.0.0.1:8080) and
+        /// print the token
+        #[arg(long, conflicts_with = "sign_only")]
+        peer: Option<String>,
+
+        /// Print the signed login instead of sending it
+        #[arg(long)]
+        sign_only: bool,
+
+        /// A challenge the service signed (the JSON it served), answered
+        /// instead of a timestamp
+        #[arg(long)]
+        challenge: Option<std::path::PathBuf>,
+
+        /// Handshake hash (base64url) of the authenticated channel the
+        /// login will be sent over, signed into the login
+        #[arg(long, allow_hyphen_values = true)]
+        channel_hash: Option<String>,
+    },
+
     /// Resolve a fork by a proof of possession of the local tip
     ///
     /// Signs a `resync/create` over this store's tip with a key of the

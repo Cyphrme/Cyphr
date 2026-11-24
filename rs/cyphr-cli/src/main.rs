@@ -58,6 +58,26 @@ fn run(cli: Cli) -> cyphr_cli::Result<()> {
             peer,
             assert_local,
         } => commands::network::push(&cli, identity, peer, *assert_local),
+        Commands::Login {
+            identity,
+            signer,
+            audience,
+            peer,
+            sign_only,
+            challenge,
+            channel_hash,
+        } => commands::login::run(
+            &cli,
+            &commands::login::Request {
+                identity,
+                signer,
+                audience,
+                peer: peer.as_deref(),
+                sign_only: *sign_only,
+                challenge: challenge.as_deref(),
+                channel_hash: channel_hash.as_deref(),
+            },
+        ),
         Commands::Resync {
             identity,
             peer,

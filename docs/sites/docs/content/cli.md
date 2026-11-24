@@ -194,6 +194,27 @@ Import an identity from a JSONL file.
 cyphr import --input principal.jsonl
 ```
 
+### `cyphr login`
+
+Sign in to a service (SPEC 17.2). Signs `{alg, now, pg, tmb, typ}` with a key
+of the identity, for the service named by `--audience`:
+
+```bash
+cyphr login --identity <PG> --signer <TMB> --audience example.com --peer http://127.0.0.1:8080
+# Signed in to http://127.0.0.1:8080 as audience example.com
+#   token: {"pay":{...},"sig":"..."}
+```
+
+`--peer` posts the login to a Cyphr server's `/auth/login` and prints the
+bearer token it issues. `--sign-only` prints the signed login instead, for any
+other service to take. A login carries a timestamp unless `--challenge FILE`
+answers a challenge the service signed. `--channel-hash` signs the handshake
+hash of an authenticated channel into the login. To sign out, delete the
+token.
+
+The principal's PG and the key's thumbprint are the same at every service, so
+two services can correlate one person's accounts.
+
 ## Walkthrough
 
 A complete session creating an identity, adding a key, and verifying:

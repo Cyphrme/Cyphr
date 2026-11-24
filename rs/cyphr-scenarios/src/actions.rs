@@ -1436,8 +1436,35 @@ impl Client<'_> {
             .party
             .challenge()
             .map_err(|e| ActionError::Failed(e.to_string()))?;
-        let entry = cli::key_entry(&self.dev.keystore, &key)?;
-        let login = sign_login(&entry, &key, p.bare(), &rp.config.audience, &challenge, &h).await?;
+        // The device signs with the real binary: the relying party's
+        // challenge is a file the person saves, and the channel is named by
+        // its hash.
+        let file = self
+            .dev
+            .save(
+                "challenge.json",
+                &serde_json::to_vec(&challenge).map_err(|e| ActionError::Failed(e.to_string()))?,
+            )
+            .map_err(|e| ActionError::Failed(e.to_string()))?;
+        let signed = self
+            .cyphr(&[
+                "login",
+                "--sign-only",
+                "--identity",
+                &p.0,
+                "--signer",
+                &key,
+                "--audience",
+                &rp.config.audience,
+                "--challenge",
+                &file.to_string_lossy(),
+                "--channel-hash",
+                &<coz::base64ct::Base64UrlUnpadded as coz::base64ct::Encoding>::encode_string(&h),
+            ])
+            .await?;
+        let login: cyphr_client::login::LoginRequest =
+            serde_json::from_value(signed["login"].clone())
+                .map_err(|e| ActionError::Failed(format!("login answer: {e}: {signed}")))?;
         let session = enrolled
             .party
             .sign_in_on(&login, &conn)
@@ -1568,46 +1595,6 @@ fn key_of_entry(entry: &serde_json::Value) -> ActionResult<cyphr::Key> {
     let tmb = coz::compute_thumbprint_for_alg(alg, &public).ok_or_else(|| bad("a usable key"))?;
     cyphr::Key::new(alg.to_owned(), tmb, public)
         .map_err(|e| ActionError::Failed(format!("keystore key: {e:?}")))
-}
-
-/// The login `entry`'s key signs for `challenge`, over the channel `h`.
-async fn sign_login(
-    entry: &serde_json::Value,
-    tmb: &str,
-    pg: &str,
-    audience: &str,
-    challenge: &coz::CozJson,
-    h: &[u8],
-) -> ActionResult<cyphr_client::login::LoginRequest> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    let bytes = |name: &str| {
-        entry[name]
-            .as_str()
-            .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
-            .ok_or_else(|| ActionError::Failed(format!("keystore entry has no {name}")))
-    };
-    let alg = entry["alg"]
-        .as_str()
-        .ok_or_else(|| ActionError::Failed("keystore entry has no alg".into()))?;
-    let thumbprint = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(tmb).map_err(|e| ActionError::Failed(e.to_string()))?,
-    );
-    let signer = cyphr::signer::SoftwareSigner::new(
-        alg,
-        &bytes("prv_key")?,
-        &bytes("pub_key")?,
-        &thumbprint,
-    );
-    cyphr_client::login::sign_request(
-        &signer,
-        audience,
-        pg,
-        cyphr::principal::system_clock(),
-        Some(challenge),
-        Some(h),
-    )
-    .await
-    .map_err(|e| ActionError::Failed(e.to_string()))
 }
 
 fn refusal_of(r: &cyphr_client::Refusal) -> Refusal {
