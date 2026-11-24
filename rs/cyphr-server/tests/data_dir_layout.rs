@@ -503,10 +503,10 @@ fn login_body(
     pay.alg = Some(signer.alg.clone());
     pay.now = Some(now);
     pay.tmb = Some(tmb);
-    pay.typ = Some(format!("{audience}/cyphr/auth/login"));
+    pay.typ = Some(format!("{audience}/user/login/request/create"));
     if let Some(pr) = claimed_pr {
         pay.extra
-            .insert("pr".to_string(), serde_json::Value::String(pr.into()));
+            .insert("pg".to_string(), serde_json::Value::String(pr.into()));
     }
     if let Some(c) = challenge {
         pay.extra

@@ -268,9 +268,9 @@ async fn s17_2_challenge_is_256_bits_and_unique() {
     for _ in 0..10 {
         let (status, env) = post_json(app.clone(), "/auth/challenge", String::new()).await;
         assert_eq!(status, StatusCode::OK, "{env:?}");
-        let c = envelope_payload(&env)["challenge"]
+        let c = envelope_payload(&env)["challenge"]["pay"]["nonce"]
             .as_str()
-            .expect("challenge string");
+            .expect("challenge nonce");
         let bytes = Base64UrlUnpadded::decode_vec(c).expect("challenge is b64ut");
         assert_eq!(bytes.len(), 32, "challenge is not 256 bits");
         assert!(seen.insert(bytes), "a challenge repeated");

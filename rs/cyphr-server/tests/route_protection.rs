@@ -538,9 +538,9 @@ fn login_body(pool: &test_fixtures::Pool, signer_name: &str, pr: &str) -> String
     pay.alg = Some(signer.alg.clone());
     pay.now = Some(real_now());
     pay.tmb = Some(signer.compute_tmb().expect("signer tmb"));
-    pay.typ = Some(format!("{AUDIENCE}/cyphr/auth/login"));
+    pay.typ = Some(format!("{AUDIENCE}/user/login/request/create"));
     pay.extra
-        .insert("pr".to_string(), serde_json::Value::String(pr.into()));
+        .insert("pg".to_string(), serde_json::Value::String(pr.into()));
 
     let pay_bytes = serde_json::to_vec(&pay).unwrap();
     let (sig, _cad) = coz::sign_json(&pay_bytes, &signer.alg, &prv, &pub_key).expect("sign login");

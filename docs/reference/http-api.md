@@ -810,33 +810,40 @@ choices recorded in the frame for the spec author.
 
 ## Authentication
 
-Login follows `SPEC.md` §17.2. These three routes answer `501` when the
-server has no signing key, or no configured `audience`; `GET /server` states
-which tier the server declared.
+Login follows `SPEC.md` §17.2 and the spec author's login design
+(`login/README.md` on the `zami` branch). These three routes answer `501`
+when the server has no signing key, or no configured `audience`;
+`GET /server` states which tier the server declared. The contract (the
+`typ` names, the claims, the signed challenge) is defined once in the
+`cyphr-client` crate, `cyphr_client::login`.
 
 ### `POST /auth/challenge`
 
-Issue a single-use 256-bit challenge, valid for 120 seconds. No body is
-read.
+Issue a signed challenge, valid for 120 seconds and redeemable once. No
+body is read.
 
-**200:** payload `{"challenge": "<b64url>"}`, `unsigned`. Statuses: `501`
-as above. Example: `login_challenge_flow_issues_valid_token`
+**200:** payload `{"challenge": {"pay": {...}, "sig": "<b64ut>"}}`, `unsigned`.
+The challenge is a coz the server signed with its own key: `pay` is
+`{alg, now, nonce, tmb, typ}`, `nonce` a fresh 256-bit value (b64ut) and
+`typ` `<audience>/user/login/challenge/create`. The signer returns it whole
+beside its login. Statuses: `501` as above. Example: `login_challenge_flow_issues_valid_token`
 (`rs/cyphr-server/tests/login.rs`).
 
 ### `POST /auth/login`
 
-Exchange a signed login for a bearer token. Body: a coz, JSON `{pay, sig}`
-(read as raw text; no content type is required).
+Exchange a signed login for a bearer token. Body: JSON `{pay, sig}`, plus
+`challenge` (the coz `POST /auth/challenge` served) when the login answers
+one (read as raw text; no content type is required).
 
 `pay` fields:
 
-| Field               | Required                | Meaning                                                                                    |
-| :------------------ | :---------------------- | :----------------------------------------------------------------------------------------- |
-| `typ`               | yes                     | `<audience>/cyphr/auth/login`. `<audience>` must equal the server's configured `audience`. |
-| `alg`, `tmb`, `now` | yes                     | Signing algorithm, signing key thumbprint, signer's timestamp.                             |
-| `pr`                | yes                     | The principal the signer claims. The key is looked up in that principal only.              |
-| `challenge`         | challenge-response flow | A challenge from `/auth/challenge`, consumed once. Absent selects the timestamp flow.      |
-| `h`                 | over Noise only         | The session's handshake hash, base64url. Must be present over Noise and absent over HTTP.  |
+| Field               | Required                | Meaning                                                                                                                  |
+| :------------------ | :---------------------- | :----------------------------------------------------------------------------------------------------------------------- |
+| `typ`               | yes                     | `<audience>/user/login/request/create`. `<audience>` must equal the server's configured `audience`.                      |
+| `alg`, `tmb`, `now` | yes                     | Signing algorithm, signing key thumbprint, signer's timestamp.                                                           |
+| `pg`                | yes                     | The principal the signer claims. The key is looked up in that principal only.                                            |
+| `challenge`         | challenge-response flow | The nonce of the challenge returned beside the login; the challenge is consumed once. Absent selects the timestamp flow. |
+| `h`                 | over Noise only         | The session's handshake hash, base64url. Must be present over Noise and absent over HTTP.                                |
 
 Timestamp flow: `now` must be within 60 seconds of server time.
 
@@ -856,13 +863,15 @@ Examples (all in `rs/cyphr-server/tests/login.rs`):
 `login_timestamp_flow_issues_valid_token`,
 `login_challenge_flow_issues_valid_token`, `login_rejects_replayed_challenge`.
 
-**Divergences from SPEC** (§17.2 examples). The code requires `pr` in the
-payload, which neither example carries (the code names the reason: a key can
-belong to several principals, so a `tmb` alone is ambiguous). It requires
-the `typ` to end in `/cyphr/auth/login`, so Option B's
-`<authority>/<service>/auth/login` is accepted only when `<service>` is
-`cyphr`. It adds `h` for Noise. The code's own header marks these field
-choices as interim, pending the spec author's review.
+**Divergences from SPEC** (§17.2 examples). The code requires `pg` in the
+payload, which neither example carries (a key can belong to several
+principals, so a `tmb` alone is ambiguous). It takes the spec author's `typ`
+names (`<authority>/user/login/request/create`) rather than §17.2's
+`<authority>/<service>/auth/login`, and the challenge is the spec author's
+server-signed coz rather than a bare nonce. It adds `h` for Noise.
+Verification is §17.2's: the signature is valid, `tmb` is an active key of
+the claimed principal, the principal is Active, and the challenge or
+timestamp is fresh.
 
 ### `POST /auth/session`
 

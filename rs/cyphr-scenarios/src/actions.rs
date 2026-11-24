@@ -302,7 +302,7 @@ pub struct Session {
     pub token: Token,
     /// The login the client signed, kept so a scenario can carry it to
     /// another channel.
-    pub login: coz::CozJson,
+    pub login: cyphr_client::login::LoginRequest,
     pub key: KeyRef,
     /// The canonical token subject: the principal, however the caller
     /// spelled it when signing in.
@@ -570,6 +570,15 @@ impl Harness {
             h: self,
             config: cyphr_client::RpConfig {
                 audience: RP_AUDIENCE.to_owned(),
+                // The relying party's own key, which a site would supply.
+                issuer: {
+                    let site = coz::Alg::Ed25519.generate_keypair();
+                    std::sync::Arc::new(cyphr_client::login::SoftwareIssuer::new(
+                        site.alg.name(),
+                        &site.prv_bytes,
+                        &site.pub_bytes,
+                    ))
+                },
                 pull_age_bound: Duration::from_secs(30),
                 refresh_interval: Duration::from_secs(5),
             },
@@ -1401,7 +1410,6 @@ impl Client<'_> {
         key: &KeyRef,
     ) -> ActionResult<Session> {
         let (p, key) = (p.clone(), key.0.clone());
-        let entry = cli::key_entry(&self.dev.keystore, &key)?;
         let mut guard = rp.enrolled.lock().await;
         if guard.is_none() {
             let genesis = key_of_entry(&self.h.genesis_of(&p)?)?;
@@ -1424,15 +1432,12 @@ impl Client<'_> {
             .ok_or_else(|| ActionError::Failed("the session exposed no binding".into()))?
             .as_bytes()
             .to_vec();
-        let challenge = enrolled.party.challenge();
-        let login = sign_login(
-            &entry,
-            &key,
-            p.bare(),
-            &rp.config.audience,
-            &challenge,
-            Some(&h),
-        )?;
+        let challenge = enrolled
+            .party
+            .challenge()
+            .map_err(|e| ActionError::Failed(e.to_string()))?;
+        let entry = cli::key_entry(&self.dev.keystore, &key)?;
+        let login = sign_login(&entry, &key, p.bare(), &rp.config.audience, &challenge, &h).await?;
         let session = enrolled
             .party
             .sign_in_on(&login, &conn)
@@ -1565,15 +1570,15 @@ fn key_of_entry(entry: &serde_json::Value) -> ActionResult<cyphr::Key> {
         .map_err(|e| ActionError::Failed(format!("keystore key: {e:?}")))
 }
 
-/// The login Coz (SPEC 17.2 Option A) `entry`'s key signs for `challenge`.
-fn sign_login(
+/// The login `entry`'s key signs for `challenge`, over the channel `h`.
+async fn sign_login(
     entry: &serde_json::Value,
     tmb: &str,
-    pr: &str,
+    pg: &str,
     audience: &str,
-    challenge: &str,
-    h: Option<&[u8]>,
-) -> ActionResult<coz::CozJson> {
+    challenge: &coz::CozJson,
+    h: &[u8],
+) -> ActionResult<cyphr_client::login::LoginRequest> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     let bytes = |name: &str| {
         entry[name]
@@ -1584,24 +1589,24 @@ fn sign_login(
     let alg = entry["alg"]
         .as_str()
         .ok_or_else(|| ActionError::Failed("keystore entry has no alg".into()))?;
-    let mut pay = serde_json::json!({
-        "alg": alg,
-        "now": cyphr::principal::system_clock(),
-        "tmb": tmb,
-        "typ": format!("{audience}{}", cyphr_client::LOGIN_TYP_SUFFIX),
-        "pr": pr,
-        "challenge": challenge,
-    });
-    if let Some(h) = h {
-        pay["h"] = Base64UrlUnpadded::encode_string(h).into();
-    }
-    let pay_bytes = serde_json::to_vec(&pay).map_err(|e| ActionError::Failed(e.to_string()))?;
-    let (sig, _) = coz::sign_json(&pay_bytes, alg, &bytes("prv_key")?, &bytes("pub_key")?)
-        .ok_or_else(|| ActionError::Failed("signing the login failed".into()))?;
-    serde_json::from_value(serde_json::json!({
-        "pay": pay,
-        "sig": Base64UrlUnpadded::encode_string(&sig),
-    }))
+    let thumbprint = coz::Thumbprint::from_bytes(
+        Base64UrlUnpadded::decode_vec(tmb).map_err(|e| ActionError::Failed(e.to_string()))?,
+    );
+    let signer = cyphr::signer::SoftwareSigner::new(
+        alg,
+        &bytes("prv_key")?,
+        &bytes("pub_key")?,
+        &thumbprint,
+    );
+    cyphr_client::login::sign_request(
+        &signer,
+        audience,
+        pg,
+        cyphr::principal::system_clock(),
+        Some(challenge),
+        Some(h),
+    )
+    .await
     .map_err(|e| ActionError::Failed(e.to_string()))
 }
 

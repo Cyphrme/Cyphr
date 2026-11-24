@@ -275,9 +275,9 @@ fn login_body(pool: &Pool, signer_name: &str, claimed_pr: &str, now: i64) -> Str
     pay.alg = Some(signer.alg.clone());
     pay.now = Some(now);
     pay.tmb = Some(tmb);
-    pay.typ = Some(format!("{AUDIENCE}/cyphr/auth/login"));
+    pay.typ = Some(format!("{AUDIENCE}/user/login/request/create"));
     pay.extra.insert(
-        "pr".to_string(),
+        "pg".to_string(),
         serde_json::Value::String(claimed_pr.into()),
     );
 

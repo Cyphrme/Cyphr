@@ -64,7 +64,7 @@ pub const DEFAULT_TTL_SECS: i64 = 15 * 60;
 /// token. Stamping issuance and checking verification against this one
 /// constant makes the two symmetric, so a token's kind is bound into
 /// the signature, not merely assumed by the reader.
-pub const BEARER_TOKEN_TYP: &str = "cyphr.me/user/login/bearer/create";
+pub const BEARER_TOKEN_TYP: &str = cyphr_client::login::BEARER_TYP;
 
 /// The signed claim naming the thumbprint (b64ut) of the principal key
 /// that logged in. The server signs it, so a holder cannot rebind a

@@ -1,6 +1,7 @@
 #![no_main]
 
-use cyphr_server::auth::login::{LOGIN_TYP_SUFFIX, parse_login};
+use cyphr_client::login::{LoginRequest, REQUEST_TYP_SUFFIX};
+use cyphr_server::auth::login::parse_login;
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Map, Value, json};
@@ -8,7 +9,7 @@ use serde_json::{Map, Value, json};
 const AUDIENCE: &str = "fuzz.example";
 
 // Mode 0 fuzzes the login-body parse the `login` handler runs on an
-// unauthenticated request: `CozJson` deserialization followed by
+// unauthenticated request: `LoginRequest` deserialization followed by
 // `parse_login` (schema and audience binding). The handler itself needs a
 // full `AppState`; everything before its principal load is exactly these two
 // calls.
@@ -25,9 +26,9 @@ fuzz_target!(|data: &[u8]| {
 
     if mode % 2 == 0 {
         if let Ok(body) = std::str::from_utf8(rest)
-            && let Ok(coz_json) = serde_json::from_str::<coz::CozJson>(body)
+            && let Ok(coz_json) = serde_json::from_str::<LoginRequest>(body)
         {
-            let _ = parse_login(coz_json, AUDIENCE);
+            let _ = parse_login(&coz_json, AUDIENCE);
         }
         return;
     }
@@ -35,7 +36,10 @@ fuzz_target!(|data: &[u8]| {
     let mut u = Unstructured::new(rest);
     let mut pay = Map::new();
     if bool::arbitrary(&mut u).unwrap_or(false) {
-        pay.insert("typ".into(), json!(format!("{AUDIENCE}{LOGIN_TYP_SUFFIX}")));
+        pay.insert(
+            "typ".into(),
+            json!(format!("{AUDIENCE}{REQUEST_TYP_SUFFIX}")),
+        );
     }
     if bool::arbitrary(&mut u).unwrap_or(false) {
         pay.insert(
@@ -60,7 +64,7 @@ fuzz_target!(|data: &[u8]| {
     }
     if bool::arbitrary(&mut u).unwrap_or(false) {
         pay.insert(
-            "pr".into(),
+            "pg".into(),
             json!(String::arbitrary(&mut u).unwrap_or_default()),
         );
     }
@@ -72,9 +76,12 @@ fuzz_target!(|data: &[u8]| {
     }
     let sig = Vec::<u8>::arbitrary(&mut u).unwrap_or_default();
     let _ = parse_login(
-        coz::CozJson {
-            pay: Value::Object(pay),
-            sig,
+        &LoginRequest {
+            coz: coz::CozJson {
+                pay: Value::Object(pay),
+                sig,
+            },
+            challenge: None,
         },
         AUDIENCE,
     );

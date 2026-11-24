@@ -89,8 +89,15 @@ async fn run(server: &str, audience: &str) -> Result<(), String> {
         &HttpOptions::new(Duration::from_secs(10)),
     )
     .map_err(|e| format!("server: {e}"))?;
+    // The site's own challenge-signing key; this demo mints a throwaway one.
+    let site = coz::Alg::Ed25519.generate_keypair();
     let config = RpConfig {
         audience: audience.to_owned(),
+        issuer: std::sync::Arc::new(cyphr_client::login::SoftwareIssuer::new(
+            site.alg.name(),
+            &site.prv_bytes,
+            &site.pub_bytes,
+        )),
         pull_age_bound: Duration::from_secs(30),
         refresh_interval: Duration::from_secs(10),
     };
@@ -101,28 +108,11 @@ async fn run(server: &str, audience: &str) -> Result<(), String> {
     }])
     .await;
 
-    let challenge = rp.challenge();
-    let pay = json!({
-        "alg": keypair.alg.name(),
-        "now": now,
-        "tmb": tmb.to_b64(),
-        "typ": format!("{audience}{}", cyphr_client::LOGIN_TYP_SUFFIX),
-        "pr": pg,
-        "challenge": challenge,
-    });
-    let pay_bytes = serde_json::to_vec(&pay).map_err(|e| e.to_string())?;
-    let (sig, _) = coz::sign_json(
-        &pay_bytes,
-        keypair.alg.name(),
-        &keypair.prv_bytes,
-        &keypair.pub_bytes,
-    )
-    .ok_or("signing the login")?;
-    let login: coz::CozJson = serde_json::from_value(json!({
-        "pay": pay,
-        "sig": Base64UrlUnpadded::encode_string(&sig),
-    }))
-    .map_err(|e| e.to_string())?;
+    let challenge = rp.challenge().map_err(|e| e.to_string())?;
+    let login =
+        cyphr_client::login::sign_request(&signer, audience, &pg, now, Some(&challenge), None)
+            .await
+            .map_err(|e| e.to_string())?;
 
     let session = rp.sign_in(&login).map_err(|r| r.to_string())?;
     let trust = rp
