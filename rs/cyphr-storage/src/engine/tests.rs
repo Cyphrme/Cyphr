@@ -637,8 +637,12 @@ async fn rebuild_keeps_a_rival_manifest_at_one_position_as_a_branch() {
             "SHA-256:commit-alice-2"
         ]
     );
-    let held = engine.branches.lock().unwrap().get("alice").cloned();
-    let rivals: Vec<String> = held.into_iter().flatten().map(|r| r.tip.tip).collect();
+    let rivals: Vec<String> = engine
+        .branches
+        .retained("alice")
+        .into_iter()
+        .map(|r| r.tip.tip)
+        .collect();
     assert_eq!(rivals, ["SHA-256:commit-alice-rival"]);
 }
 

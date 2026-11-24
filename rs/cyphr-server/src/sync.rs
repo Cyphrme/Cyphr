@@ -722,7 +722,7 @@ async fn head_is_bound(
         let Some(first_off) = (0..ids.len()).find(|&i| !on_chain(i)) else {
             continue;
         };
-        let cap = cyphr_storage::engine::BRANCH_DEPTH;
+        let cap = state.engine.branch_depth();
         let line_held = held[first_off] && held.get(first_off + 1).is_none_or(|h| *h);
         let past: Vec<usize> = (first_off + cap..ids.len()).collect();
         let past_answered = past

@@ -152,7 +152,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             None => None,
         }
         .or_else(|| {
-            self.retained_keys(principal_id)
+            self.branches
+                .keys(principal_id)
                 .iter()
                 .find(|k| k.tmb == resync.tmb.to_b64())
                 .and_then(|k| k.to_key().ok())
@@ -183,13 +184,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
         // The state at the asserted tip, where the signer is read.
         let stored = self.stored_entries(principal_id, None).await?;
-        let rivals = self
-            .branches
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(principal_id)
-            .cloned()
-            .unwrap_or_default();
+        let rivals = self.branches.retained(principal_id);
         let by_pr: HashMap<(u64, &str), &Retained> = rivals
             .iter()
             .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
@@ -261,7 +256,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .cozies()
                     .map(|b| Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))
                     .collect();
-                let held = self.is_retained(principal_id, &hashes, &Shape::of(bundle))
+                let held = self
+                    .branches
+                    .is_retained(principal_id, &hashes, &Shape::of(bundle))
                     || self.is_already_stored(principal_id, bundle).await?;
                 if !held && let Some(dead) = dead_key_in(bundle, &revoked) {
                     return Err(dead);
@@ -323,13 +320,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
 
         let head = after.heads.first().cloned().unwrap_or_default();
-        let rivals = self
-            .branches
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(principal_id)
-            .cloned()
-            .unwrap_or_default();
+        let rivals = self.branches.retained(principal_id);
         let by_pr: HashMap<(u64, &str), &Retained> = rivals
             .iter()
             .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
