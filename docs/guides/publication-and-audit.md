@@ -168,7 +168,7 @@ done
         "now": 1795229090,
         "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
         "typ": "cyphr-server/receipt/commit",
-        "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+        "pg": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
         "sequence": 0,
         "commit_id": "SHA-256:eVZPpSYrDKvm8x-O1SyyvzXzqWJ6o3FSCIQloYP325Q",
         "roots": {
@@ -337,7 +337,7 @@ below reports in full, so the numbers here and there match on purpose:
         "now": 1795229120,
         "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
         "typ": "cyphr-server/receipt/commit",
-        "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+        "pg": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
         "sequence": 2,
         "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
         "roots": {
@@ -666,7 +666,7 @@ curl -s "http://127.0.0.1:4101/tip?pg=$PR" | jq -c '.statement.coz.pay'
   "now": 1795229090,
   "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "typ": "cyphr-server/receipt/tip",
-  "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+  "pg": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "sequence": 2,
   "commit_id": "SHA-256:82H2RINvYeqEghpLkyeg9rOOY4LWkUk9glEs8Cm--0Y",
   "roots": {
@@ -686,7 +686,7 @@ curl -s "http://127.0.0.1:4101/tip?pg=$PR" | jq -c '.statement.coz.pay'
   "now": 1795229090,
   "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "typ": "cyphr-server/receipt/tip",
-  "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+  "pg": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "sequence": 2,
   "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
   "roots": {
@@ -700,7 +700,7 @@ curl -s "http://127.0.0.1:4101/tip?pg=$PR" | jq -c '.statement.coz.pay'
 }
 ```
 
-Same `tmb`, same `pr`, same `sequence`, different `commit_id` and
+Same `tmb`, same `pg`, same `sequence`, different `commit_id` and
 different roots. Two statements one key signed, about one chain position,
 that cannot both be true.
 
@@ -745,7 +745,7 @@ function checkEquivocation(a, aPub, b, bPub) {
   if (a.pay.typ !== TIP || b.pay.typ !== TIP) return "WrongTyp";
   if (!verifyReceipt(a, aPub) || !verifyReceipt(b, bPub))
     return "InvalidSignature";
-  if (a.pay.pr !== b.pay.pr) return "DifferentPrincipal";
+  if (a.pay.pg !== b.pay.pg) return "DifferentPrincipal";
   if (a.pay.sequence !== b.pay.sequence) return "DifferentSequence";
   if (
     a.pay.commit_id === b.pay.commit_id &&

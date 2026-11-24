@@ -104,7 +104,7 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     // The receipt names the principal in its default wire spelling, the
     // bare digest (SPEC 2.2.3); the pushed id is the engine's labelled PG.
     assert_eq!(
-        claims["pr"],
+        claims["pg"],
         serde_json::json!(cyphr_storage::engine::bare_digest(principal_id))
     );
     assert_eq!(claims["sequence"], payload["sequence"]);
@@ -140,7 +140,7 @@ async fn attestor_tip_response_carries_signed_tip_report() {
     // The receipt names the principal in its default wire spelling, the
     // bare digest (SPEC 2.2.3); the pushed id is the engine's labelled PG.
     assert_eq!(
-        claims["pr"],
+        claims["pg"],
         serde_json::json!(cyphr_storage::engine::bare_digest(principal_id))
     );
     assert_eq!(

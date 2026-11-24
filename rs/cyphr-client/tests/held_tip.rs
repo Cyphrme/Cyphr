@@ -54,7 +54,7 @@ fn held_envelope(a: &Authority, typ: &str) -> Value {
         "now": 1_700_000_500,
         "tmb": tmb.to_b64(),
         "typ": typ,
-        "pr": b64(7),
+        "pg": b64(7),
         "fork_point": { "height": 3, "pre": digest(1) },
         "heads": [
             { "commit_id": digest(8), "sequence": 4, "held_since": 1_700_000_100 },

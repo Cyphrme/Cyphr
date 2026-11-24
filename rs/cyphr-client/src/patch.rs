@@ -458,10 +458,10 @@ pub fn verify_authenticated_envelope(
     let coz = signed_by(body, expected)?;
     let report = TipReport::parse(&coz).map_err(|_| PatchFailure::MalformedReport)?;
 
-    // `report.pr` (a bare b64ut genesis identifier, SPEC section 2.2.3's
+    // `report.pg` (a bare b64ut genesis identifier, SPEC section 2.2.3's
     // default form) and the bare form of `principal_id` share one wire
     // form: a direct string comparison, no re-encoding.
-    if report.pr.to_string() != bare_digest(principal_id) {
+    if report.pg.to_string() != bare_digest(principal_id) {
         return Err(PatchFailure::PrincipalMismatch);
     }
 
@@ -484,7 +484,7 @@ pub fn verify_held_envelope(
 ) -> Result<HeldReport, PatchFailure> {
     let coz = signed_by(body, expected)?;
     let report = HeldReport::parse(&coz).map_err(|_| PatchFailure::MalformedReport)?;
-    if report.pr.to_string() != bare_digest(principal_id) {
+    if report.pg.to_string() != bare_digest(principal_id) {
         return Err(PatchFailure::PrincipalMismatch);
     }
     Ok(report)

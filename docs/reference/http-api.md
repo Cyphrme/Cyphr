@@ -94,14 +94,14 @@ answer as an error.
 
 | Response                                  | `statement.coz.pay.typ`       | Claims                                                                                     |
 | :---------------------------------------- | :---------------------------- | :----------------------------------------------------------------------------------------- |
-| `GET /tip`, Active                        | `cyphr-server/receipt/tip`    | `pr`, `sequence`, `commit_id`, `roots{pr,sr,ar,cr}`, `commit_count`, `last_updated`        |
-| `GET /tip`, in Error; `GET /patch`, Error | `cyphr-server/receipt/held`   | `pr`, `fork_point{height,pre}`, `heads[{commit_id,sequence,held_since}]`; no roots, no tip |
+| `GET /tip`, Active                        | `cyphr-server/receipt/tip`    | `pg`, `sequence`, `commit_id`, `roots{pr,sr,ar,cr}`, `commit_count`, `last_updated`        |
+| `GET /tip`, in Error; `GET /patch`, Error | `cyphr-server/receipt/held`   | `pg`, `fork_point{height,pre}`, `heads[{commit_id,sequence,held_since}]`; no roots, no tip |
 | `GET /patch`, Active                      | `cyphr-server/receipt/tip`    | as `/tip`; only when `to` is absent and the served range reaches the tip (else `unsigned`) |
-| `POST /push` (201)                        | `cyphr-server/receipt/commit` | `pr`, `sequence`, `commit_id`, `roots{pr,sr,ar,cr}`                                        |
+| `POST /push` (201)                        | `cyphr-server/receipt/commit` | `pg`, `sequence`, `commit_id`, `roots{pr,sr,ar,cr}`                                        |
 
 Every statement's `pay` also carries `alg`, `now` and `tmb` (the signer's
 key). `roots.cr` is JSON `null` when no commit root exists yet, never `""`.
-`pr` in a statement is the bare principal genesis identifier. Receipt design
+`pg` in a statement is the bare principal genesis identifier. Receipt design
 is in `docs/specs/receipts.md`. Wire bytes are pinned by
 `commit_receipt_matches_golden_vector` and `tip_report_matches_golden_vector`
 in `rs/cyphr-server/tests/receipts.rs`; an Error-state `/patch` is signed

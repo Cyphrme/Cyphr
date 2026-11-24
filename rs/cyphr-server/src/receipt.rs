@@ -107,7 +107,7 @@ pub enum ReceiptError {
 /// carries them (`docs/specs/http-envelope.md` `[envelope-r-cr]`).
 ///
 /// Nested under the `roots` claim so its `pr` (the post-commit Principal
-/// Root) never collides with the receipt's top-level `pr` claim (the
+/// Root) never collides with the receipt's top-level `pg` claim (the
 /// attested principal's genesis identifier) -- the two are different
 /// facts that happen to share a SPEC field name.
 ///
@@ -140,7 +140,7 @@ impl Roots {
 /// Compose and sign a commit-acceptance receipt for `/push`'s statement
 /// slot.
 ///
-/// `pr` is the attested principal's genesis identifier; `sequence` is the
+/// `pg` is the attested principal's genesis identifier; `sequence` is the
 /// accepted commit's 0-indexed position (the post-state tip's
 /// `commit_count - 1`); `roots` is the post-state roots exactly as the
 /// tip payload carries them.
@@ -152,19 +152,19 @@ impl Roots {
 pub async fn commit_receipt(
     signer: &dyn ReceiptSigner,
     now: i64,
-    pr: impl Into<String>,
+    pg: impl Into<String>,
     sequence: u64,
     commit_id: impl Into<String>,
     roots: &Roots,
 ) -> Result<coz::CozJson, ReceiptError> {
-    let (pr, commit_id) = (pr.into(), commit_id.into());
-    validate(&pr, &commit_id, roots)?;
+    let (pg, commit_id) = (pg.into(), commit_id.into());
+    validate(&pg, &commit_id, roots)?;
     sign_statement(
         signer,
         now,
         COMMIT_RECEIPT_TYP,
         [
-            ("pr", Value::String(pr)),
+            ("pg", Value::String(pg)),
             ("sequence", Value::from(sequence)),
             ("commit_id", Value::String(commit_id)),
             ("roots", roots.to_value()),
@@ -186,21 +186,21 @@ pub async fn commit_receipt(
 pub async fn tip_report(
     signer: &dyn ReceiptSigner,
     now: i64,
-    pr: impl Into<String>,
+    pg: impl Into<String>,
     sequence: u64,
     commit_id: impl Into<String>,
     roots: &Roots,
     commit_count: u64,
     last_updated: i64,
 ) -> Result<coz::CozJson, ReceiptError> {
-    let (pr, commit_id) = (pr.into(), commit_id.into());
-    validate(&pr, &commit_id, roots)?;
+    let (pg, commit_id) = (pg.into(), commit_id.into());
+    validate(&pg, &commit_id, roots)?;
     sign_statement(
         signer,
         now,
         TIP_REPORT_TYP,
         [
-            ("pr", Value::String(pr)),
+            ("pg", Value::String(pg)),
             ("sequence", Value::from(sequence)),
             ("commit_id", Value::String(commit_id)),
             ("roots", roots.to_value()),
@@ -231,16 +231,16 @@ pub struct HeldClaim {
 pub async fn held_report(
     signer: &dyn ReceiptSigner,
     now: i64,
-    pr: impl Into<String>,
+    pg: impl Into<String>,
     fork_height: u64,
     fork_pre: Option<&str>,
     heads: &[HeldClaim],
 ) -> Result<coz::CozJson, ReceiptError> {
-    let pr = pr.into();
-    parse_genesis_id_str(&pr)
+    let pg = pg.into();
+    parse_genesis_id_str(&pg)
         .map(drop)
         .map_err(|source| ReceiptError::Field {
-            field: "pr",
+            field: "pg",
             source,
         })?;
     let digest = |field: &'static str, s: &str| {
@@ -259,7 +259,7 @@ pub async fn held_report(
         now,
         HELD_REPORT_TYP,
         [
-            ("pr", Value::String(pr)),
+            ("pg", Value::String(pg)),
             (
                 "fork_point",
                 serde_json::json!({"height": fork_height, "pre": fork_pre}),
@@ -288,22 +288,22 @@ pub async fn held_report(
 /// is parsed (and discarded) at construction, not just at the wire
 /// boundary, so a value that is not valid never reaches a signature.
 ///
-/// `pr` is the attested principal's GENESIS IDENTIFIER, not a tagged
+/// `pg` is the attested principal's GENESIS IDENTIFIER, not a tagged
 /// digest: SPEC §2.2.3's DEFAULT identifier form is bare canonical b64ut --
 /// tagging is the labeled exemption `commit_id`/`roots` use, not this
 /// field. At Level 1/2 a principal's genesis identifier IS its raw
 /// thumbprint via implicit promotion, so requiring a tag here would reject
 /// every Level 1/2 principal's receipt.
-fn validate(pr: &str, commit_id: &str, roots: &Roots) -> Result<(), ReceiptError> {
+fn validate(pg: &str, commit_id: &str, roots: &Roots) -> Result<(), ReceiptError> {
     fn digest(field: &'static str, s: &str) -> Result<(), ReceiptError> {
         s.parse::<TaggedDigest>()
             .map(drop)
             .map_err(|source| ReceiptError::Field { field, source })
     }
-    parse_genesis_id_str(pr)
+    parse_genesis_id_str(pg)
         .map(drop)
         .map_err(|source| ReceiptError::Field {
-            field: "pr",
+            field: "pg",
             source,
         })?;
     digest("commit_id", commit_id)?;
@@ -476,7 +476,7 @@ pub fn check_equivocation(
         return EquivocationVerdict::Malformed;
     };
 
-    if a_report.pr != b_report.pr {
+    if a_report.pg != b_report.pg {
         return EquivocationVerdict::DifferentPrincipal;
     }
     if a_report.sequence != b_report.sequence {

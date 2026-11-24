@@ -467,7 +467,7 @@ async fn own_tip_keyed_server_signs_its_own_pg_tip() {
         assert_eq!(status, axum::http::StatusCode::OK, "{spelling}: {env:?}");
         assert_eq!(env["statement"]["kind"], "signed", "{spelling}: {env:?}");
         assert_eq!(
-            env["statement"]["coz"]["pay"]["pr"], bare,
+            env["statement"]["coz"]["pay"]["pg"], bare,
             "the report attests the server's own PG"
         );
     }
