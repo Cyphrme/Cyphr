@@ -120,35 +120,20 @@ fn add(
         },
     };
 
-    // The genesis commit of a two-key principal names it by its PG, which no
-    // single key's thumbprint equals, so the identity moves with it.
-    let mut identity = identity.to_owned();
+    // The same principal moves up: its genesis commit carries only its
+    // existing key, so its PG (the permanent identifier) is unchanged, and
+    // the new key is then added by the ordinary commit.
     if principal.pg().is_none() {
-        // One genesis commit carries the new key.
-        super::init::commit_genesis(
-            &mut principal,
-            &keystore,
-            std::slice::from_ref(&new_key),
-            authority,
-        )?;
-        if let Some(pg) = principal.pg() {
-            use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            use cyphr::StateDigest;
-            identity = pg
-                .as_multihash()
-                .first_variant()
-                .map(Base64UrlUnpadded::encode_string)?;
-        }
-    } else {
-        apply_key_create(
-            &mut principal,
-            &keystore,
-            &new_key_tmb,
-            &new_key,
-            signer_tmb,
-            authority,
-        )?;
+        super::init::commit_genesis(&mut principal, &keystore, &[], authority)?;
     }
+    apply_key_create(
+        &mut principal,
+        &keystore,
+        &new_key_tmb,
+        &new_key,
+        signer_tmb,
+        authority,
+    )?;
 
     // Store updated state
     save_principal_to_engine(&store, &keystore, &principal)?;

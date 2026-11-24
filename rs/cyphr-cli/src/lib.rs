@@ -627,8 +627,8 @@ pub enum KeyCommands {
         #[arg(long, allow_hyphen_values = true)]
         signer: String,
 
-        /// On a Level 1 identity (no genesis commit), create the genesis
-        /// commit with the new key in it, instead of refusing
+        /// On a Level 1 identity (no genesis commit), create its genesis
+        /// commit first (as `cyphr upgrade` does), instead of refusing
         #[arg(long)]
         upgrade: bool,
     },

@@ -18,11 +18,11 @@ fn commits(u: &User, id: &str) -> u64 {
 /// Claim: on a Level 1 identity, `key add` and `data action` without
 /// `--upgrade` refuse naming the way up and sign nothing; `upgrade` then
 /// makes the genesis commit (and refuses a second time); and `key add
-/// --upgrade` on a fresh Level 1 identity makes one commit that carries the
-/// new key. End-to-end: yes (CLI processes).
+/// --upgrade` on a fresh Level 1 identity makes the genesis commit and then
+/// the key's own, under the same identity. End-to-end: yes (CLI processes).
 /// Turns red on: a command that commits the genesis on its own, an `upgrade`
-/// that accepts a committed identity, or an `--upgrade` that adds a second
-/// commit for the key.
+/// that accepts a committed identity, or an `--upgrade` that changes the identity or
+/// skips the genesis commit.
 #[test]
 fn level_one_moves_up_only_when_the_user_says_so() {
     let u = User::new();
@@ -64,11 +64,9 @@ fn level_one_moves_up_only_when_the_user_says_so() {
         &format!("--signer={vid}"),
         "--upgrade",
     ]);
-    // Two keys in one genesis commit: the identity is their PG now.
-    let pg = added["identity"].as_str().expect("identity").to_owned();
-    assert_ne!(pg, vid, "the identity names the key set: {added}");
-    assert_eq!(commits(&v, &pg), 1, "one genesis commit carries the key");
-    let seen = v.setup(&["inspect", &format!("--identity={pg}")]);
+    assert_eq!(added["identity"], vid.as_str(), "the identity is unchanged");
+    assert_eq!(commits(&v, &vid), 2, "the genesis commit, then the key add");
+    let seen = v.setup(&["inspect", &format!("--identity={vid}")]);
     assert_eq!(
         seen["active_keys"].as_array().map(Vec::len),
         Some(2),

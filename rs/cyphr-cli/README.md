@@ -41,9 +41,9 @@ cyphr upgrade --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc
 ```
 
 or repeat the command with `--upgrade`, which creates the genesis commit as
-part of it (for `key add`, the new key goes into that one genesis commit, and
-the identity becomes the key set's Principal Genesis, which the output names).
-Nothing is signed without one of the two.
+part of it. The principal and its identifier stay the same; `key add
+--upgrade` makes the genesis commit, then the key's own commit. Nothing is
+signed without one of the two.
 
 ### View Principal keys
 
