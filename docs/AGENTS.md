@@ -7,17 +7,15 @@ pass lands, calibrate trust as below.
 
 ## Layout & how to work here
 
-| Path                            | What it is / how to approach                                                                                                                                                                                                                                                                     |
-| :------------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `specs/`                        | Machine specs with `[tag]`-anchored constraints; behavior contracts for `rs/`. Edit alongside the code they govern; keep tags stable (tests and `protocol/constraint_coverage.md` reference them)                                                                                                |
-| `reference/`                    | Reference for the server's HTTP routes (`reference/http-api.md`), written from the router and handlers; keep it in step with `rs/cyphr-server/src/lib.rs`. `reference/performance.md` holds measured per-operation costs; re-measure with the commands it lists after a change to a bounded path |
-| `adr/`                          | Architecture decision records                                                                                                                                                                                                                                                                    |
-| `architecture/`                 | How the system fits together, per critical path. Carries `requirement` claim blocks registered with docket (below); claim ids are `[kebab-id]` headings                                                                                                                                          |
-| `models/`                       | Formal models (self-flagged staleness applies)                                                                                                                                                                                                                                                   |
-| `protocol/`                     | Constraint→test traceability matrix                                                                                                                                                                                                                                                              |
-| `charters/`, `audit/`, `plans/` | Historical; `plans/` is legacy (root I6) — read for archaeology only                                                                                                                                                                                                                             |
-| `sites/`                        | Published websites — see below                                                                                                                                                                                                                                                                   |
-| `level_2.5.md`                  | Orphaned; not linked from any spec — verify with the human operator before relying on it                                                                                                                                                                                                         |
+| Path            | What it is / how to approach                                                                                                                                                                                                                                                                     |
+| :-------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `specs/`        | Machine specs with `[tag]`-anchored constraints; behavior contracts for `rs/`. Edit alongside the code they govern; keep tags stable (tests and `protocol/constraint_coverage.md` reference them)                                                                                                |
+| `reference/`    | Reference for the server's HTTP routes (`reference/http-api.md`), written from the router and handlers; keep it in step with `rs/cyphr-server/src/lib.rs`. `reference/performance.md` holds measured per-operation costs; re-measure with the commands it lists after a change to a bounded path |
+| `adr/`          | Architecture decision records                                                                                                                                                                                                                                                                    |
+| `architecture/` | How the system fits together, per critical path. Carries `requirement` claim blocks registered with docket (below); claim ids are `[kebab-id]` headings                                                                                                                                          |
+| `models/`       | Formal models (self-flagged staleness applies)                                                                                                                                                                                                                                                   |
+| `protocol/`     | Constraint→test traceability matrix                                                                                                                                                                                                                                                              |
+| `sites/`        | Published websites — see below                                                                                                                                                                                                                                                                   |
 
 Markdown is formatted by `treefmt` (prettier) from the repo root; the
 pre-commit hook audits local links in touched files. Follow the
@@ -151,9 +149,8 @@ sites; Netlify builds on push.
   §-numbers, and five specs cite dead `.sketches/` paths (that material was
   never published in the repository). Check the `be0663f` TOC before following any
   §-reference.
-- **`docs/plans/` is legacy.** Never plan-of-record (root I6); campaign
-  workflow supersedes. Same for `docs/protocol/constraint_coverage.md`
-  tag-counts (stale ~3 months, still says "MALT" where SPEC.md now says
+- **No plan documents** (root I6); the campaign workflow supersedes them.
+  `docs/protocol/constraint_coverage.md` has tag-counts that are stale (~3 months, still says "MALT" where SPEC.md now says
   "EMT"). ADR-0001's status was corrected 2026-07-08 from "PROPOSED" to
   "ACCEPTED (architecture); implementation partial" — its axioms and
   vocabulary are the governing mental model, but the specific consequence

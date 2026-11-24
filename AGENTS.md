@@ -36,7 +36,7 @@ proofs, crash recovery, typed errors, per-principal write serialization)
 and server receipts (response envelope, signed receipts, equivocation
 evidence). The current campaign builds the MVP on an integration branch
 (`campaign/mvp-close`) that merges onward to `server`, then `master`,
-only at its end. Docs under `docs/plans/` are legacy (I6); the Roadmap section
+only at its end. The Roadmap section
 of PR #23 is the candidate list for what comes after.
 
 ## Structure
@@ -276,9 +276,10 @@ Procedure when a contradiction surfaces during any work:
   runtime without an explicit, stated justification. Grounding: forge #37.
   Signpost: any new `.unwrap()`/`.expect()` in non-test code without a
   justification comment.
-- **I6 — Plans are legacy.** `docs/plans/*.md` are never plan-of-record;
-  the campaign workflow (forge issues and git history) supersedes them.
-  Grounding: human operator directive 2026-07-06. Signpost: n/a — do not update them as plans.
+- **I6 — No plan documents.** Plans are never kept in the tree; the
+  campaign workflow (forge issues and git history) is the plan of record.
+  Grounding: human operator directive 2026-07-06. Signpost: a plan
+  document committed under `docs/`.
 - **I7 — No tags in hash inputs.** Hash inputs carry no domain
   separation, prefixes or kind tags, and agents do not propose adding
   them. This is a settled maintainer decision, not an open design
