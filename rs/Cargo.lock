@@ -712,16 +712,13 @@ dependencies = [
 name = "cyphr-index-fjall"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "cyphr",
  "cyphr-storage",
  "fjall",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.17",
  "tokio",
- "tracing",
 ]
 
 [[package]]
