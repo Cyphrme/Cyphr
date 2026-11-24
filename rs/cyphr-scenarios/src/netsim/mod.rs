@@ -12,7 +12,7 @@
 //! - N1: after quiescence every holder of an unforked principal agrees with the owner's own signed
 //!   chain (tip, height, `pr`, `ar`).
 //! - N2: an honest op over an unfaulted link is accepted, or is refused Stale and then accepted
-//!   after a rebase; nothing else.
+//!   after trusting the remote and redoing the op; nothing else.
 //! - N6: no peer ever answered 5xx or 429 (summed over every process lifetime), and no peer log
 //!   holds a panic.
 
