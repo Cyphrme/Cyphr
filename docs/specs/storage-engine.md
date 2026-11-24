@@ -46,9 +46,8 @@ responses. The engine is the layer that the HTTP server programs against.
 `cyphr-index-fjall` is the production Indexer implementation (see
 [`indexer.md`](indexer.md) § Implementations); it has no separate
 implementation-level spec document yet (unlike `blob-store-fjall.md`'s
-split for the BlobStore side). The prior SQLite-backed Indexer's spec is deleted; that
-implementation was retired 2026-07-08 by the KV-index migration in
-favor of Fjall.
+split for the BlobStore side). The SQLite-backed Indexer was retired
+2026-07-08 by the KV-index migration in favor of Fjall.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md) (§4 AS/DS
@@ -421,9 +420,8 @@ in their respective sub-specifications. They are NOT duplicated here.
 (Fjall-backed). It has no dedicated implementation-level spec document yet
 (unlike the BlobStore side's `blob-store-fjall.md` split) — schema/key-layout
 design lives in the crate itself (`rs/cyphr-index-fjall/src/lib.rs`).
-The prior SQLite implementation's spec (with its own now-inapplicable
-`[sqlite-write-transaction]` constraint) is deleted; that implementation
-was retired 2026-07-08 by the KV-index migration.
+The SQLite implementation was retired 2026-07-08 by the KV-index
+migration.
 
 ### For Testing
 
@@ -469,7 +467,7 @@ was retired 2026-07-08 by the KV-index migration.
    [`indexer.md`](indexer.md) § Implementations. Original entry, kept for
    decision history: ~~SQLite replaces Fjall for the index layer. B-trees
    match the read-heavy workload; schema flexibility is critical for a
-   pre-alpha protocol. See `indexer-sqlite.md` (2026-06-01, now deleted).~~
+   pre-alpha protocol.~~
 
 6. **Separate durability** — **RESOLVED: yes (2026-06-01).** Content store
    and index are separate databases. Cross-store atomicity is not a

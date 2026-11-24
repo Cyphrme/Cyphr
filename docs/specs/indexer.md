@@ -164,7 +164,7 @@ across all principals for database management and observability (e.g.,
 
 The retired `cyphr-index-sqlite` backend achieved this by indexing universal
 Coz metadata (`typ`, `tmb`, `now`, `alg`, `czd`) in a single `cozies` table
-(its spec is deleted), though no
+though no
 `Indexer` trait method ever exposed a query over it. `cyphr-index-fjall`
 does not currently maintain per-coz metadata at all — its own source
 documents this as deliberate, since no live trait method reads it. This
@@ -297,8 +297,8 @@ No index can shortcut this.
 
 ## Implementations
 
-| Backend           | Crate                | Status                   | Notes                                                            |
-| :---------------- | :------------------- | :----------------------- | :--------------------------------------------------------------- |
-| Fjall (LSM-tree)  | `cyphr-index-fjall`  | Implemented (production) | No dedicated spec doc yet; see crate source                      |
-| SQLite (B-tree)   | `cyphr-index-sqlite` | Retired (2026-07-08)     | Replaced by Fjall in the KV-index migration; its spec is deleted |
-| In-memory HashMap | `cyphr-storage`      | Testing                  | `MemoryIndexer`                                                  |
+| Backend           | Crate                | Status                   | Notes                                       |
+| :---------------- | :------------------- | :----------------------- | :------------------------------------------ |
+| Fjall (LSM-tree)  | `cyphr-index-fjall`  | Implemented (production) | No dedicated spec doc yet; see crate source |
+| SQLite (B-tree)   | `cyphr-index-sqlite` | Retired (2026-07-08)     | Replaced by Fjall in the KV-index migration |
+| In-memory HashMap | `cyphr-storage`      | Testing                  | `MemoryIndexer`                             |
