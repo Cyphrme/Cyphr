@@ -783,11 +783,14 @@ pub fn opener_of(genesis: &WireBundle) -> Result<Key, &'static str> {
     let opener = bundle
         .cozies()
         .next()
-        .and_then(|c| c.pay().get("tmb").and_then(Value::as_str))
+        .map(|c| &c.header().tmb)
         .ok_or("the genesis commit has no opener")?;
     bundle
-        .introduced_keys()
-        .find(|k| k.tmb().to_b64() == opener)
+        .genesis_keys()
+        .and_then(Result::ok)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|k| k.tmb() == opener)
         .cloned()
         .ok_or("the genesis commit does not carry its opener's key")
 }

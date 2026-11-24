@@ -371,7 +371,16 @@ async fn sync_locked(
     // thumbprints it invented. The death-set ceiling bounds what that can
     // store: `record_revokes` refuses a revoke of a key no stored
     // principal holds once the set is full.
-    let keys = named_keys(&bundles);
+    let mut keys: Vec<coz::Thumbprint> = Vec::new();
+    for named in bundles
+        .iter()
+        .filter_map(|b| b.decode().ok())
+        .flat_map(|b| b.named_keys())
+    {
+        if !keys.contains(&named) {
+            keys.push(named);
+        }
+    }
     match cyphr_client::verified_revokes(&connector, "authority", &keys).await {
         Ok((found, _)) => crate::gossip::record_revokes(state, &found).await,
         Err(err) => warn!(principal = %principal_id, %err, "witness sync: revokes not fetched"),
@@ -605,33 +614,6 @@ fn resulting_tip_matches_report(resulting: Option<&TipState>, report: &TipReport
         .map(ToString::to_string)
         .unwrap_or_default();
     tip.cr == report_cr
-}
-
-/// Every key `bundles` name, as signer (`pay.tmb`) or as introduced
-/// (`pay.id` of a key-introducing coz): what a revoke could bear on.
-fn named_keys(bundles: &[cyphr::replay::WireBundle]) -> Vec<coz::Thumbprint> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let mut keys: Vec<coz::Thumbprint> = Vec::new();
-    for raw in bundles.iter().flat_map(cyphr::replay::WireBundle::cozies) {
-        let Ok(coz) = serde_json::from_slice::<serde_json::Value>(raw) else {
-            continue;
-        };
-        let pay = &coz["pay"];
-        let introduced =
-            cyphr::parsed_coz::typ::is_key_introducing(pay["typ"].as_str().unwrap_or(""))
-                .then(|| pay["id"].as_str())
-                .flatten();
-        for named in [pay["tmb"].as_str(), introduced].into_iter().flatten() {
-            if let Ok(bytes) = Base64UrlUnpadded::decode_vec(named) {
-                let tmb = coz::Thumbprint::from_bytes(bytes);
-                if !keys.contains(&tmb) {
-                    keys.push(tmb);
-                }
-            }
-        }
-    }
-    keys
 }
 
 /// Whether the attested head `head` is bound to a branch of the authority's

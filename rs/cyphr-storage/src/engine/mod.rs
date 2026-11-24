@@ -44,7 +44,7 @@ pub use error::EngineError;
 pub use ingest::{CommittedTip, IngestResult};
 use ingest::{
     Durability, PrincipalLocks, StagedBuild, authenticated_signers, bundle_signer,
-    canonical_bundle, disclosed_genesis, is_commit_create_typ, no_disclosed_genesis, record_key,
+    canonical_bundle, disclosed_genesis, no_disclosed_genesis, record_key,
 };
 pub use kept::AtTip;
 use kept::{
@@ -100,14 +100,14 @@ fn key_entries(keys: &[crate::PublicKeyInfo]) -> Vec<KeyEntry> {
 /// The key that signed a commit: its closing `commit/create` coz, else
 /// the last coz.
 fn commit_signer(commit: &IndexableCommit) -> String {
-    commit
-        .cozies
-        .iter()
-        .rev()
-        .find(|c| is_commit_create_typ(&c.typ))
-        .or(commit.cozies.last())
-        .map(|c| c.tmb.clone())
-        .unwrap_or_default()
+    cyphr::replay::commit_signer(
+        commit
+            .cozies
+            .iter()
+            .map(|c| (c.typ.as_str(), c.tmb.as_str())),
+    )
+    .map(str::to_owned)
+    .unwrap_or_default()
 }
 
 /// Opens each principal's commit log (its EML, a cache of its canonical

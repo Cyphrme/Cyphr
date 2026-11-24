@@ -54,8 +54,10 @@ impl Revoked {
         self.0.is_empty()
     }
 
-    fn get(&self, tmb: &str) -> Option<&Death> {
-        self.0.get(tmb)
+    /// Whether `tmb` was dead at `now`: revoked, with `now` at or after
+    /// this node's receipt time of the revoke.
+    fn is_dead_at(&self, tmb: &str, now: i64) -> bool {
+        self.0.get(tmb).is_some_and(|death| now >= death.wrt)
     }
 
     /// The revoked thumbprints (base64url).
@@ -95,8 +97,7 @@ impl DeathSet {
         self.revoked
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get(tmb)
-            .is_some_and(|death| now >= death.wrt)
+            .is_dead_at(tmb, now)
     }
 
     pub(super) fn insert(&self, tmb: String, death: Death) {
@@ -156,10 +157,12 @@ pub(super) fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<Engi
     if revoked.is_empty() {
         return None;
     }
-    let dead_at = |pay: &serde_json::Value, tmb: &str| {
-        revoked
-            .get(tmb)
-            .is_some_and(|death| pay["now"].as_i64().is_none_or(|now| now >= death.wrt))
+    // A bundle that does not decode is refused by the admission that
+    // follows; this gate only names a dead key.
+    let decoded = bundle.decode().ok()?;
+    let dead_at = |coz: &cyphr::replay::StoredCoz| {
+        let header = coz.header();
+        revoked.is_dead_at(&header.tmb.to_b64(), header.now)
     };
     // A data action a dead key signs is refused as the core refuses one
     // signed by a key revoked in the chain: `KeyRevoked`. That is the
@@ -168,28 +171,17 @@ pub(super) fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<Engi
     // is answered `KeyRevoked` here too, where a live key it never held is
     // answered `UnknownKey` by the core: a client sees the revoke, not the
     // absence, when both are true.
-    for raw in &bundle.actions {
-        let Ok(coz) = serde_json::from_slice::<serde_json::Value>(raw) else {
-            continue;
-        };
-        let pay = &coz["pay"];
-        if pay["tmb"].as_str().is_some_and(|tmb| dead_at(pay, tmb)) {
-            return Some(EngineError::Protocol(cyphr::Error::KeyRevoked));
-        }
+    if decoded.action_cozies().iter().any(dead_at) {
+        return Some(EngineError::Protocol(cyphr::Error::KeyRevoked));
     }
-    for raw in bundle.txs.iter().flatten() {
-        let Ok(coz) = serde_json::from_slice::<serde_json::Value>(raw) else {
-            continue;
-        };
-        let pay = &coz["pay"];
-        let typ = pay["typ"].as_str().unwrap_or_default();
-        let self_revoke =
-            cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE);
-        if let Some(tmb) = pay["tmb"].as_str().filter(|t| dead_at(pay, t))
-            && !self_revoke
-        {
+    for coz in decoded.txs().iter().flatten() {
+        let self_revoke = cyphr::parsed_coz::typ::has_suffix(
+            &coz.header().typ,
+            cyphr::parsed_coz::typ::KEY_REVOKE,
+        );
+        if dead_at(coz) && !self_revoke {
             return Some(EngineError::DeadKey {
-                key: tmb.to_owned(),
+                key: coz.header().tmb.to_b64(),
             });
         }
     }

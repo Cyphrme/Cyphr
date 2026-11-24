@@ -1641,38 +1641,24 @@ pub(super) fn authenticated_signers(
 ) -> Option<Vec<coz::Thumbprint>> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
+    let decoded = bundle.decode().ok()?;
     // The keys of the bundle's signers: those the principal has held, and
     // those a principal it embeds has held (SPEC 10.3), by the views `tip`
     // holds of them. A key known to the store for some other principal is
     // nobody's here: a stranger's signature authenticates nothing, however
     // well the store knows the stranger.
     let mut history: HashMap<String, (String, Vec<u8>)> = HashMap::new();
-    for blob in bundle.cozies() {
-        let value: serde_json::Value = serde_json::from_slice(blob).ok()?;
-        for named in ["tmb", "id"] {
-            let Some(tmb) = value
-                .pointer(&format!("/pay/{named}"))
-                .and_then(|v| v.as_str())
-            else {
-                continue;
-            };
-            let Ok(bytes) = Base64UrlUnpadded::decode_vec(tmb) else {
-                continue;
-            };
-            let tmb_bytes = coz::Thumbprint::from_bytes(bytes);
-            if let Some(key) = tip
-                .key_ever_held(&tmb_bytes)
-                .or_else(|| tip.embedded_key_ever_held(&tmb_bytes))
-            {
-                history.insert(
-                    tmb.to_owned(),
-                    (key.alg().to_owned(), key.pub_key().to_vec()),
-                );
-            } else if let Some(k) = retained.iter().find(|k| k.tmb == tmb)
-                && let Ok(public) = Base64UrlUnpadded::decode_vec(&k.pub_key)
-            {
-                history.insert(tmb.to_owned(), (k.alg.clone(), public));
-            }
+    for named in decoded.named_keys() {
+        let tmb = named.to_b64();
+        if let Some(key) = tip
+            .key_ever_held(&named)
+            .or_else(|| tip.embedded_key_ever_held(&named))
+        {
+            history.insert(tmb, (key.alg().to_owned(), key.pub_key().to_vec()));
+        } else if let Some(k) = retained.iter().find(|k| k.tmb == tmb)
+            && let Ok(public) = Base64UrlUnpadded::decode_vec(&k.pub_key)
+        {
+            history.insert(tmb, (k.alg.clone(), public));
         }
     }
 
@@ -1680,43 +1666,26 @@ pub(super) fn authenticated_signers(
     // Keys this bundle introduces: they are not held at any `pre`, so
     // they are not signers retention looks for there.
     let mut introduced: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for blob in bundle.cozies() {
-        let value: serde_json::Value = serde_json::from_slice(blob).ok()?;
-        let mut pay = value.get("pay")?.clone();
-        crate::import::canonicalize_value(&mut pay);
-        let header = cyphr::parsed_coz::CozHeader::parse(&pay).ok()?;
-        let sig = Base64UrlUnpadded::decode_vec(value.get("sig")?.as_str()?).ok()?;
+    for coz in decoded.cozies() {
+        let header = coz.header();
         let (alg, public) = history.get(&header.tmb.to_b64())?;
-        let pay_json = serde_json::to_vec(&pay).ok()?;
-        if coz::verify_json(&pay_json, &sig, alg, public) != Some(true) {
+        if coz::verify_json(coz.pay_json(), coz.sig(), alg, public) != Some(true) {
             return None;
         }
         // A key a verified coz of this bundle introduces (`key/create`,
         // `key/replace`) may sign the cozies after it, as its own commit
         // does when it finalizes a rotation; the bundle discloses it, bound
-        // to the `id` by its thumbprint.
-        if cyphr::parsed_coz::typ::is_key_introducing(&header.typ)
-            && let Some(id) = pay.get("id").and_then(|v| v.as_str())
-        {
-            // A key the principal already held is no new signer.
-            let disclosed = bundle
-                .keys
-                .iter()
-                .find(|k| k.tmb == id && !history.contains_key(id));
-            if let Some(k) = disclosed {
-                let public = Base64UrlUnpadded::decode_vec(&k.pub_key).ok()?;
-                let bound = coz::compute_thumbprint_for_alg(&k.alg, &public)
-                    .is_some_and(|t| t.to_b64() == id);
-                if bound {
-                    history.insert(id.to_string(), (k.alg.clone(), public));
-                    introduced.insert(id.to_string());
-                }
+        // to the `id` by its thumbprint. A key the principal already held
+        // is no new signer.
+        if let Some(key) = decoded.introduced_key(coz) {
+            let id = key.tmb().to_b64();
+            if !history.contains_key(&id) {
+                history.insert(id.clone(), (key.alg().to_owned(), key.pub_key().to_vec()));
+                introduced.insert(id);
             }
         }
-        if cyphr::parsed_coz::typ::is_transaction(&header.typ)
-            && !introduced.contains(&header.tmb.to_b64())
-        {
-            signers.push(header.tmb);
+        if coz.is_transaction() && !introduced.contains(&header.tmb.to_b64()) {
+            signers.push(header.tmb.clone());
         }
     }
     (!signers.is_empty()).then_some(signers)
@@ -1734,44 +1703,24 @@ pub(super) fn authenticated_signers(
 pub(super) fn disclosed_genesis(
     bundle: &WireBundle,
 ) -> Option<Result<crate::Genesis, EngineError>> {
-    use cyphr::parsed_coz::typ::{KEY_CREATE, PRINCIPAL_CREATE, has_suffix};
-
-    let values: Vec<serde_json::Value> = bundle
-        .txs
-        .iter()
-        .flatten()
-        .filter_map(|b| serde_json::from_slice(b).ok())
-        .collect();
-    let typ = |v: &serde_json::Value| v.pointer("/pay/typ")?.as_str().map(str::to_owned);
-    let to_key = |v: &serde_json::Value| -> Result<cyphr::Key, EngineError> {
-        let id = v.pointer("/pay/id").and_then(serde_json::Value::as_str);
-        let entry = bundle
-            .keys
-            .iter()
-            .find(|k| Some(k.tmb.as_str()) == id)
-            .ok_or_else(|| {
-                EngineError::MalformedBlob("a genesis key/create discloses no key".into())
-            })?;
-        crate::import::key_entry_to_key(entry)
-            .map_err(|e| EngineError::MalformedBlob(format!("genesis key conversion: {e}")))
+    // A bundle that does not decode discloses nothing: the admission or the
+    // replay that follows names what is malformed.
+    let decoded = bundle.decode().ok()?;
+    let keys = match decoded.genesis_keys()? {
+        Ok(keys) => keys,
+        Err(_) => {
+            return Some(Err(EngineError::MalformedBlob(
+                "a genesis key/create discloses no key".into(),
+            )));
+        },
     };
-    if let Some(pc) = values
-        .iter()
-        .position(|v| typ(v).is_some_and(|t| has_suffix(&t, PRINCIPAL_CREATE)))
-    {
-        let keys = values[..pc]
-            .iter()
-            .filter(|v| typ(v).is_some_and(|t| has_suffix(&t, KEY_CREATE)))
-            .map(to_key)
-            .collect::<Result<Vec<_>, _>>();
-        return match keys {
-            Err(e) => Some(Err(e)),
-            Ok(mut keys) if keys.len() == 1 => keys.pop().map(|k| Ok(crate::Genesis::Implicit(k))),
-            Ok(keys) if keys.is_empty() => None,
-            Ok(keys) => Some(Ok(crate::Genesis::Disclosed(keys))),
-        };
+    match keys.as_slice() {
+        [] => None,
+        [only] => Some(Ok(crate::Genesis::Implicit((*only).clone()))),
+        _ => Some(Ok(crate::Genesis::Disclosed(
+            keys.into_iter().cloned().collect(),
+        ))),
     }
-    None
 }
 
 /// The refusal of a first bundle that discloses no genesis.
@@ -1786,22 +1735,10 @@ pub(super) fn no_disclosed_genesis() -> EngineError {
 /// The key that signed a stored commit's bundle: [`commit_signer`] of the
 /// commit the bundle forms.
 pub(super) fn bundle_signer(bundle: &WireBundle) -> Result<String, EngineError> {
-    let decoded = decode_bundle(bundle)?;
-    let cozies: Vec<_> = decoded.cozies().collect();
-    Ok(cozies
-        .iter()
-        .rev()
-        .find(|c| is_commit_create_typ(&c.header().typ))
-        .or(cozies.last())
-        .map(|c| c.header().tmb.to_b64())
+    Ok(decode_bundle(bundle)?
+        .commit_signer()
+        .map(|tmb| tmb.to_b64())
         .unwrap_or_default())
-}
-
-/// Whether `typ` is the protocol's `commit/create` (authority-qualified
-/// suffix, SPEC 7.3), never a substring match: an application typ that
-/// merely contains `/commit/create` is an ordinary coz.
-pub(super) fn is_commit_create_typ(typ: &str) -> bool {
-    cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::COMMIT_CREATE)
 }
 
 /// The storage key a principal's first bundle derives, a

@@ -136,21 +136,6 @@ fn storage_typ_routing_agrees_with_core_kind_table() {
     assert!(wrong.is_empty(), "storage disagrees with core: {wrong:#?}");
 }
 
-/// Unit: a pure predicate over typ spellings; no scenario reaches every
-/// boundary-broken spelling cheaply.
-///
-/// Claim (characterization, green): the storage `commit/create` predicate
-/// (which names a commit's signer for branch retention) uses the same `/`
-/// boundary as the core, so PGK's routing change must not loosen it. Turns
-/// red if it reverts to a substring or `ends_with` match.
-#[test]
-fn storage_typ_routing_commit_create_matches_core_boundary() {
-    for typ in typ_probe_set() {
-        let core = cyphr::parsed_coz::typ::has_suffix(&typ, cyphr::parsed_coz::typ::COMMIT_CREATE);
-        assert_eq!(super::super::is_commit_create_typ(&typ), core, "{typ}");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // holders are sets, not first-found
 // ---------------------------------------------------------------------------

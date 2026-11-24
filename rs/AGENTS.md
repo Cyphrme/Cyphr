@@ -162,10 +162,6 @@ level if and where possible."
   later write (`EngineError::DurabilityLost`, a `500` over HTTP) until the
   process restarts. Never move a signature or an answer ahead of it
   (`docs/specs/storage-engine.md` `[record-durable-first]`).
-- **Trust-boundary parsing is multiplied.** Coz header extraction /
-  czd computation are hand-rolled in ~4/10 places (engine, reindex,
-  import, CLI) with silent defaults. Don't add a fifth — the campaign
-  consolidates these into canonical `cyphr` primitives.
 
 ## Unknowns
 
