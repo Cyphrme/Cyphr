@@ -3,7 +3,7 @@
 // Alice's laptop is offline and commits while her phone commits via P1.
 // Must hold: case 1, the laptop push is refused as stale, the laptop trusts the
 // peer and redoes its commit, no fork; an action the laptop recorded but never
-// committed survives, as signed unless re-signed and named (SPEC 15.9), and
+// committed survives, as signed (or is dropped and named, never re-signed), and
 // reaches the peers;
 // case 2, the commits reach different partitioned peers (a real principal fork),
 // each branch extended twice: Error plus evidence at every peer, both extended
@@ -110,13 +110,12 @@ async fn s03_offline() {
         adopted.discarded
     );
     // SPEC 6.5: the laptop's key is active on the adopted chain at the
-    // action's own `now`, so adopting keeps the action as signed (a
-    // re-signed copy would be a duplicate under a new digest) and re-signs
-    // nothing.
+    // action's own `now`, so adopting keeps the action as signed; anything
+    // it could not keep would be dropped and named, never re-signed.
     assert!(
-        adopted.resigned.iter().all(|r| r.czd != pending),
+        adopted.dropped.iter().all(|czd| *czd != pending),
         "adopting keeps the uncommitted action as signed: {:?}",
-        adopted.resigned
+        adopted.dropped
     );
     let redone = h.ok(laptop.commit_recorded(&pr).await);
     assert_ne!(redone, phone_tip, "redoing adds the laptop's own commit");

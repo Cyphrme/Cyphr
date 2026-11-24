@@ -401,10 +401,9 @@ pub enum Commands {
     /// point and adopts the peer's. The store keeps no commit once it is
     /// written, so it is rebuilt beside the old one and swapped; the old
     /// store is kept as `<store>.pre-adopt-<unix seconds>` (`-<n>` appended
-    /// if that name is taken). Recorded data actions survive; one the
-    /// adopted history does not authorize at its own time is re-signed with
-    /// the current time (SPEC 15.9), so its czd changes, and the output names
-    /// each with its original `now`.
+    /// if that name is taken). Recorded data actions survive when the
+    /// adopted history accepts them as signed; any other is dropped and
+    /// listed under `dropped_actions`, never re-signed.
     Fetch {
         /// Principal Root (base64url)
         #[arg(long, allow_hyphen_values = true)]

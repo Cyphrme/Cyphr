@@ -483,8 +483,9 @@ fn data_push_sends_actions_ahead_of_their_ds_create() {
 /// Turns red if the adoption rebuilds the store from commits alone: the
 /// action is gone, `data commit` has no DR to include and fails; if it
 /// discards the shared prefix or more than the diverged commit; or if it
-/// re-signs an action the adopted history still authorizes at its own `now`
-/// (a duplicate under a new digest, SPEC 6.5).
+/// drops an action the adopted history still authorizes at its own `now`, or
+/// re-signs one (a duplicate under a new digest, SPEC 6.5); an action it
+/// cannot keep is named under `dropped_actions`.
 #[test]
 fn trust_remote_discards_only_diverged_commits_and_keeps_actions() {
     let server = Server::start();
@@ -519,10 +520,14 @@ fn trust_remote_discards_only_diverged_commits_and_keeps_actions() {
         diverged.expect("count"),
         "the shared prefix stays and the peer's commit replaces B's"
     );
-    let resigned = adopted["resigned_actions"].as_array().expect("resigned");
+    let dropped = adopted["dropped_actions"].as_array().expect("dropped");
     assert!(
-        resigned.is_empty(),
-        "an action B's key still authorizes is kept as signed: {adopted}"
+        dropped.is_empty(),
+        "an action B's key still authorizes is kept as signed, not dropped: {adopted}"
+    );
+    assert!(
+        adopted.get("resigned_actions").is_none(),
+        "nothing is re-signed: {adopted}"
     );
     let made = b.setup(&["data", "commit", &ident, &signer]);
     let pushed = b.push(&id, &server.url);

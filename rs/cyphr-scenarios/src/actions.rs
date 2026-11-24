@@ -336,23 +336,14 @@ pub struct RpConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Backup(pub String);
 
-/// A data action `fetch --trust-remote` re-signed at the current time, as it
-/// reported it (SPEC 15.9: never silently).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Resigned {
-    /// The action's czd before it was re-signed.
-    pub czd: String,
-    /// The `now` it carried before it was re-signed.
-    pub was_now: i64,
-}
-
 /// What trusting the remote left: the local tip, the local commits it
-/// discarded and the actions it re-signed.
+/// discarded and the czds of recorded actions it dropped because the adopted
+/// history does not accept them as signed. It never re-signs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Adopted {
     pub tip: Tip,
     pub discarded: Vec<String>,
-    pub resigned: Vec<Resigned>,
+    pub dropped: Vec<String>,
 }
 
 /// How a token reaches a relying party.
@@ -1020,19 +1011,12 @@ impl Client<'_> {
                 "--trust-remote",
             ])
             .await?;
-        let resigned = v["resigned_actions"]
+        let dropped = v["dropped_actions"]
             .as_array()
             .map(Vec::as_slice)
             .unwrap_or_default()
             .iter()
-            .map(|r| {
-                Ok(Resigned {
-                    czd: field(r, "czd")?,
-                    was_now: r["was_now"].as_i64().ok_or_else(|| {
-                        ActionError::Failed(format!("re-signed action without was_now: {r}"))
-                    })?,
-                })
-            })
+            .map(|r| field(r, "czd"))
             .collect::<ActionResult<Vec<_>>>()?;
         let discarded = v["discarded"]
             .as_array()
@@ -1044,7 +1028,7 @@ impl Client<'_> {
         Ok(Adopted {
             tip: self.local_tip(p, &peer).await?,
             discarded,
-            resigned,
+            dropped,
         })
     }
 

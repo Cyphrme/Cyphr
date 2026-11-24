@@ -545,7 +545,9 @@ impl Drop for Scratch {
 /// height would make the principal's chain unrecoverable on reindex. The
 /// adoption therefore builds a fresh store, copies every other principal
 /// into it unchanged, and swaps it in; the old store is kept as a backup.
-/// Data actions recorded locally and in no commit survive.
+/// Data actions recorded locally and in no commit survive when the adopted
+/// history accepts them as signed; any other is dropped and named, never
+/// re-signed.
 fn adopt_remote(
     cli: &Cli,
     identity: &str,
@@ -590,7 +592,7 @@ fn adopt_remote(
     }
     // Declared before the engine below so the engine closes its files first.
     let mut scratch = Scratch(Some(tmp.clone()));
-    let mut resigned: Vec<Value> = Vec::new();
+    let mut dropped: Vec<Value> = Vec::new();
     {
         let new = open_store(&tmp, false)?;
         block_on(async {
@@ -631,46 +633,24 @@ fn adopt_remote(
         })??;
 
         let principal = load_principal_from_engine(&new, &keystore, identity)?;
-        // Re-record the local actions the peer's history lacks, as signed:
-        // a re-signed action is a new digest, a duplicate of the original.
-        // Only one the adopted history does not authorize at its own `now`
-        // (SPEC 6.5) is re-signed with the current `now`, and named.
+        // Re-record the local actions the peer's history lacks, as signed.
+        // One the adopted history does not accept as signed is dropped and
+        // named; re-signing it is the user's explicit act, never done here.
         let held: std::collections::HashSet<Vec<u8>> = principal
             .actions()
             .map(|a| a.czd().as_bytes().to_vec())
             .collect();
-        let now = current_timestamp();
-        let missing: Vec<_> = local_actions
-            .iter()
-            .filter(|(czd, _)| !held.contains(czd))
-            .collect();
-        for (czd, blob) in &missing {
-            let submit = |blob: Vec<u8>| {
-                block_on(new.submit_commit(
-                    &principal_id,
-                    Some(genesis.clone()),
-                    &WireBundle::actions(vec![blob]),
-                ))
-            };
-            match submit(blob.clone())? {
-                Err(cyphr_storage::engine::EngineError::Protocol(e))
-                    if e.is_inactive_signer()
-                        && cyphr::replay::StoredCoz::from_wire(blob)
-                            .is_ok_and(|c| principal.held_key(&c.header().tmb)) =>
-                {
-                    let mut pay = serde_json::from_slice::<Value>(blob)?["pay"].clone();
-                    resigned.push(json!({
+        for (czd, blob) in local_actions.iter().filter(|(czd, _)| !held.contains(czd)) {
+            let one = WireBundle::actions(vec![blob.clone()]);
+            match block_on(new.submit_commit(&principal_id, Some(genesis.clone()), &one))? {
+                Ok(_) => {},
+                Err(cyphr_storage::engine::EngineError::Protocol(e)) => {
+                    dropped.push(json!({
                         "czd": Base64UrlUnpadded::encode_string(czd),
-                        "was_now": pay["now"].clone(),
+                        "reason": e.to_string(),
                     }));
-                    pay["now"] = now.into();
-                    let tmb = pay["tmb"].as_str().ok_or(Error::MissingField("pay.tmb"))?;
-                    let signed = super::data::sign(&keystore.signer(tmb)?, pay.clone())?;
-                    submit(serde_json::to_vec(&signed.wire())?)??;
                 },
-                result => {
-                    result?;
-                },
+                Err(e) => return Err(e.into()),
             }
         }
         new.blob_store()
@@ -707,7 +687,7 @@ fn adopt_remote(
     let fetched = theirs.len() - common;
     let out = json!({"identity": identity, "peer": peer_url, "fetched": fetched,
         "discarded": discarded, "backup": backup.display().to_string(),
-        "resigned_actions": resigned});
+        "dropped_actions": dropped});
     emit(cli, &out, || {
         println!("Fetched {fetched} commit(s) from {peer_url}");
         println!(
@@ -718,11 +698,12 @@ fn adopt_remote(
         for id in &discarded {
             println!("  {id}");
         }
-        if !resigned.is_empty() {
+        if !dropped.is_empty() {
             println!(
-                "Re-signed {} action(s); original times and czds: {}",
-                resigned.len(),
-                Value::Array(resigned.clone())
+                "Dropped {} recorded action(s) the adopted history does not accept as signed \
+                 (sign them again explicitly if wanted): {}",
+                dropped.len(),
+                Value::Array(dropped.clone())
             );
         }
     })
