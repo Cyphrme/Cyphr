@@ -136,11 +136,8 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
                     // Over the peer's tip: where the histories part decides
                     // what is sent. Local commits past the parting point
                     // are a fork against the peer, which is the user's
-                    // choice to make: refused unless `--assert-local`. A
-                    // lone commit beyond it is a stale view and moves the
-                    // peer to Error for nothing the sender can finish, so
-                    // it is refused even then; two or more extend a branch,
-                    // which is the answer to a fork, and are sent.
+                    // choice to make: refused unless `--assert-local`,
+                    // which sends them whatever their number.
                     let held = describe(&tip);
                     let theirs = peer.chain(&wire).await?.commits;
                     let same = |a: &WireBundle, b: &RawCommit| {
@@ -176,13 +173,6 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
                                  --assert-local` sends them as a fork",
                                 divergence_report(&local, &theirs, parts)
                             ),
-                        }
-                        .into());
-                    }
-                    if local.len() - parts < 2 {
-                        return Err(PeerError::Stale {
-                            peer: peer.url().to_owned(),
-                            detail: format!("{held} is not in the local history"),
                         }
                         .into());
                     }

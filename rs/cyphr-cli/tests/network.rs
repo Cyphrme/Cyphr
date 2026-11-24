@@ -544,37 +544,52 @@ fn trust_remote_discards_only_diverged_commits_and_keeps_actions() {
 
 /// Claim: `push --assert-local` sends local commits that differ from the
 /// peer's as a fork, and without the flag the same push is refused with
-/// nothing sent. End-to-end: yes (two devices, one real server).
-/// Turns red on: a push that sends the fork with no flag, or one that
-/// refuses it with the flag.
+/// nothing sent. A single diverged commit is sent too, and the answer is the
+/// peer's: it refuses a lone fork root with 409, which the CLI reports as
+/// `stale` (the CLI sets no minimum of its own). End-to-end: yes (two
+/// devices, one real server).
+/// Turns red on: a push that sends the fork with no flag, or one that refuses
+/// two diverged commits with the flag. The lone-commit case does not tell the
+/// CLI's refusal from the peer's: both read `stale`.
 #[test]
 fn assert_local_pushes_the_fork() {
-    let server = Server::start();
-    let a = User::new();
-    let id = a.new_identity();
-    accepted(&a.push(&id, &server.url), "base push");
-    let b = a.clone_identity(&id);
-    b.add_key(&id);
-    accepted(&b.push(&id, &server.url), "B's commit");
+    for diverged in [2, 1] {
+        let server = Server::start();
+        let a = User::new();
+        let id = a.new_identity();
+        accepted(&a.push(&id, &server.url), "base push");
+        let b = a.clone_identity(&id);
+        b.add_key(&id);
+        accepted(&b.push(&id, &server.url), "B's commit");
 
-    // A holds two commits over the base, a branch against B's.
-    a.add_key(&id);
-    a.add_key(&id);
-    let refused = a.push(&id, &server.url);
-    assert!(!refused.ok, "a fork needs the explicit choice");
-    let sent = a.run(&[
-        "push",
-        &format!("--identity={id}"),
-        &format!("--peer={}", server.url),
-        "--assert-local",
-    ]);
-    assert!(sent.ok, "the asserted fork is sent: {}", sent.stderr);
-    assert_ne!(
-        sent.json()["pushed"],
-        0,
-        "commits went out: {}",
-        sent.stdout
-    );
+        // A holds `diverged` commits over the base, a branch against B's.
+        for _ in 0..diverged {
+            a.add_key(&id);
+        }
+        let refused = a.push(&id, &server.url);
+        assert!(!refused.ok, "a fork needs the explicit choice");
+        let sent = a.run(&[
+            "push",
+            &format!("--identity={id}"),
+            &format!("--peer={}", server.url),
+            "--assert-local",
+        ]);
+        if diverged == 1 {
+            assert!(
+                !sent.ok,
+                "the peer refuses a lone fork root: {}",
+                sent.stdout
+            );
+            assert!(
+                sent.stderr.contains(r#""kind":"stale""#),
+                "the peer's 409 is reported as stale: {}",
+                sent.stderr
+            );
+            continue;
+        }
+        assert!(sent.ok, "the asserted fork is sent: {}", sent.stderr);
+        assert_eq!(sent.json()["pushed"], diverged, "{}", sent.stdout);
+    }
 }
 
 /// Claim: a held data action whose signer a peer later reports naked-revoked
