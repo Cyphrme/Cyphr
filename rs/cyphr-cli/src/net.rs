@@ -86,8 +86,8 @@ pub enum PeerError {
     /// The divergence is not verified: the peer's chain is not replayed.
     #[error(
         "peer {peer} history diverges from the local history at commit {height}: {report}; \
-         nothing was changed. `fetch --trust-remote` discards the local commits after the \
-         parting point and adopts the peer's"
+         nothing was changed. `fetch --trust-remote` discards the local commits after the parting \
+         point and adopts the peer's"
     )]
     Diverged {
         /// The peer's base URL.

@@ -861,14 +861,7 @@ impl Client<'_> {
         for peer in self.known(p) {
             let url = self.url(&peer).await;
             match self
-                .cyphr(&[
-                    "push",
-                    "--identity",
-                    &p.0,
-                    "--peer",
-                    &url,
-                    "--assert-local",
-                ])
+                .cyphr(&["push", "--identity", &p.0, "--peer", &url, "--assert-local"])
                 .await
             {
                 Ok(_) => accepted = true,

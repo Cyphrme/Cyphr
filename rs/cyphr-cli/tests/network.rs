@@ -78,7 +78,12 @@ fn push_stale_is_refused_then_trusting_the_remote_is_accepted() {
     assert_eq!(a.commit_count(&id), 3, "nothing was discarded");
 
     // A trusts the peer, redoes its commit, and lands.
-    let r = a.run(&["fetch", &format!("--identity={id}"), &peer, "--trust-remote"]);
+    let r = a.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &peer,
+        "--trust-remote",
+    ]);
     assert!(r.ok, "trusting the remote must succeed: {}", r.stderr);
     a.add_key(&id);
     accepted(&a.push(&id, &server.url), "push after adopting the remote");
@@ -559,7 +564,12 @@ fn assert_local_pushes_the_fork() {
         "--assert-local",
     ]);
     assert!(sent.ok, "the asserted fork is sent: {}", sent.stderr);
-    assert_ne!(sent.json()["pushed"], 0, "commits went out: {}", sent.stdout);
+    assert_ne!(
+        sent.json()["pushed"],
+        0,
+        "commits went out: {}",
+        sent.stdout
+    );
 }
 
 /// Claim: a held data action whose signer a peer later reports naked-revoked

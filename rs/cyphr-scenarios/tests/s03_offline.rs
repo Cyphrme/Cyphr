@@ -120,9 +120,7 @@ async fn s03_offline() {
     );
     let redone = h.ok(laptop.commit_recorded(&pr).await);
     assert_ne!(redone, phone_tip, "redoing adds the laptop's own commit");
-    let merged = h
-        .ok(laptop.push(&pr, &both).await)
-        .accepted("redone push");
+    let merged = h.ok(laptop.push(&pr, &both).await).accepted("redone push");
     for peer in both {
         let v = h
             .settled_view(peer, &pr)

@@ -161,8 +161,8 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
                         return Err(PeerError::Stale {
                             peer: peer.url().to_owned(),
                             detail: format!(
-                                "the local commits are behind {held}, which they do not \
-                                 contain; run `fetch`, then repeat the operation"
+                                "the local commits are behind {held}, which they do not contain; \
+                                 run `fetch`, then repeat the operation"
                             ),
                         }
                         .into());
@@ -171,9 +171,9 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
                         return Err(PeerError::Stale {
                             peer: peer.url().to_owned(),
                             detail: format!(
-                                "{held} is not in the local history: {}; `fetch \
-                                 --trust-remote` discards the local commits after the parting \
-                                 point, `push --assert-local` sends them as a fork",
+                                "{held} is not in the local history: {}; `fetch --trust-remote` \
+                                 discards the local commits after the parting point, `push \
+                                 --assert-local` sends them as a fork",
                                 divergence_report(&local, &theirs, parts)
                             ),
                         }
