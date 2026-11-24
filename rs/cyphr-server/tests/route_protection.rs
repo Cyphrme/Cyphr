@@ -417,7 +417,7 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
 // ========================================================================
 
 /// `GET /tip` succeeds with zero `Authorization` header -- SPEC's own
-/// design for witness registration (`GET /tip?pr=...`), not an oversight.
+/// design for witness registration (`GET /tip?pg=...`), not an oversight.
 #[tokio::test]
 async fn tip_succeeds_with_no_bearer_token() {
     let fixture = load_golden("mutations", "key_add_changes_state");
@@ -428,7 +428,7 @@ async fn tip_succeeds_with_no_bearer_token() {
     let app = build_router(state);
 
     let req = Request::builder()
-        .uri(format!("/tip?pr={principal_id}"))
+        .uri(format!("/tip?pg={principal_id}"))
         .body(Body::empty())
         .unwrap();
     assert!(
@@ -453,7 +453,7 @@ async fn patch_succeeds_with_no_bearer_token() {
     let app = build_router(state);
 
     let req = Request::builder()
-        .uri(format!("/patch?pr={principal_id}"))
+        .uri(format!("/patch?pg={principal_id}"))
         .body(Body::empty())
         .unwrap();
     assert!(

@@ -256,7 +256,7 @@ issued it, using only HTTP responses and local replay:
    `cyphr::Principal::explicit(vec![genesis_key])` and call `pr_tagged()`.
    If the result does not equal the pinned `pg`, refuse loudly -- the
    published genesis key does not back the pinned identity.
-3. **Fetch the server's own chain via `GET /patch?pr=<pg>`.** The server
+3. **Fetch the server's own chain via `GET /patch?pg=<pg>`.** The server
    is an ordinary principal in its own store
    (`docs/specs/server-identity.md`'s TOFU story, step 4), served
    through the same public surface every other principal's chain is.

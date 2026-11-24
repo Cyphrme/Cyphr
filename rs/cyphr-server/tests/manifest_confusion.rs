@@ -226,7 +226,7 @@ impl World {
             .unwrap()
             .unwrap();
         assert_eq!(after, self.before, "victim tip must be untouched");
-        let (s, tip) = get_json(self.app.clone(), &format!("/tip?pr={}", self.victim)).await;
+        let (s, tip) = get_json(self.app.clone(), &format!("/tip?pg={}", self.victim)).await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(
             common::envelope_payload(&tip)["commit_count"].as_u64(),

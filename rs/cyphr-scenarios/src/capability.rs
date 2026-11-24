@@ -119,7 +119,7 @@ impl Capability {
             // answers 404; a probe with a `pr` would read a stored-branch
             // lookup's own 404 for an unknown principal as an absent route.
             Self::BranchStore => Probe::Route("/branches"),
-            Self::Evidence => Probe::Route("/evidence?pr=probe"),
+            Self::Evidence => Probe::Route("/evidence?pg=probe"),
             // Gossip is a timer inside the server calling the client's pull
             // step, with no route of its own. Its operator surface is the
             // flag that names the peers; the scenarios that need it

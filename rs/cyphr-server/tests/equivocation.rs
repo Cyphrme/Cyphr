@@ -234,7 +234,7 @@ async fn same_key_pair_proves_equivocation() {
     assert_eq!(push_status, StatusCode::CREATED);
 
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     assert_eq!(
         tip_envelope["statement"]["kind"],
@@ -295,7 +295,7 @@ async fn cross_key_pair_proves_equivocation() {
     assert_eq!(push_status, StatusCode::CREATED);
 
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     let real: coz::CozJson = serde_json::from_value(tip_envelope["statement"]["coz"].clone())
         .expect("real tip cozy deserializes");

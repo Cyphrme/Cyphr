@@ -55,8 +55,8 @@ done
 
 # An unknown principal id: well-formed base64url of 32 bytes, never created.
 unknown=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-status=$(curl -s -o "$tmp/body" -w '%{http_code}' "http://$addr/tip?pr=$unknown")
-echo "GET /tip?pr=$unknown -> $status"
+status=$(curl -s -o "$tmp/body" -w '%{http_code}' "http://$addr/tip?pg=$unknown")
+echo "GET /tip?pg=$unknown -> $status"
 cat "$tmp/body"; echo
 
 [[ $status == 404 ]] || { echo "expected 404, got $status" >&2; exit 1; }

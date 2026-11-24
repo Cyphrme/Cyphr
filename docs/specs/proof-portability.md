@@ -96,7 +96,7 @@ tip-attested AR).
 ## `[portability-r-endpoint-deferred]` Ruling: no new HTTP endpoint ships here
 
 A server-side proof-serving read handler (e.g. `GET
-/proof/key-inclusion?pr=<pg>&tmb=<b64ut>&alg=<name>`, returning an
+/proof/key-inclusion?pg=<pg>&tmb=<b64ut>&alg=<name>`, returning an
 unsigned envelope carrying the 4 hops) was considered and is
 **deferred**, not shipped, for three reasons:
 
@@ -127,7 +127,7 @@ unsigned envelope carrying the 4 hops) was considered and is
    hops_, not whether the verification itself is portable.
 
 **Follow-up shape**, for whoever picks this up: `GET
-/proof/key-inclusion?pr=<pg>&tmb=<b64ut>&alg=<name>` inside
+/proof/key-inclusion?pg=<pg>&tmb=<b64ut>&alg=<name>` inside
 `routes.rs`, returning `Envelope::unsigned` (no attestation claim is
 needed -- the hops are self-verifying against a tip report the caller
 fetches separately) carrying `{hops: [LeafProof; 4], tmb, alg}`. It

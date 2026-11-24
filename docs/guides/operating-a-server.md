@@ -973,7 +973,7 @@ RUST_LOG=cyphr_server=info,tower_http=debug cyphr-server serve …
   "span": {
     "method": "GET",
     "request_id": "f2a6264a-2209-4fc1-a461-c3bc96b91a77",
-    "uri": "/tip?pr=nobody",
+    "uri": "/tip?pg=nobody",
     "name": "request"
   }
 }

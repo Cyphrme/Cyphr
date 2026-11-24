@@ -200,7 +200,7 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);
-    let tip_uri = format!("/tip?pr={id}");
+    let tip_uri = format!("/tip?pg={id}");
 
     let (s, b) = post_json(app.clone(), "/push", body(&id, &genesis)).await;
     assert_eq!(s, StatusCode::CREATED, "genesis push: {b:?}");

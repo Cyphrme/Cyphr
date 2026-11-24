@@ -201,8 +201,8 @@ async fn metrics_carry_no_identifier_and_bounded_labels() {
         StatusCode::CREATED
     );
     for uri in [
-        format!("/tip?pr={id}"),
-        format!("/patch?pr={id}"),
+        format!("/tip?pg={id}"),
+        format!("/patch?pg={id}"),
         format!("/e/{marker}"),
     ] {
         let _ = get(&app, &uri).await;

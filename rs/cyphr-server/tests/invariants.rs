@@ -70,7 +70,7 @@ async fn two_instances_are_independent() {
     );
 
     // inst0 now has the principal
-    let (tip_status0, tip_resp0) = inst0.get(&format!("/tip?pr={principal_id}")).await;
+    let (tip_status0, tip_resp0) = inst0.get(&format!("/tip?pg={principal_id}")).await;
     assert_eq!(
         tip_status0,
         StatusCode::OK,
@@ -78,7 +78,7 @@ async fn two_instances_are_independent() {
     );
 
     // inst1 must NOT have the principal
-    let (tip_status1, tip_resp1) = inst1.get(&format!("/tip?pr={principal_id}")).await;
+    let (tip_status1, tip_resp1) = inst1.get(&format!("/tip?pg={principal_id}")).await;
     assert_eq!(
         tip_status1,
         StatusCode::NOT_FOUND,
@@ -124,7 +124,7 @@ async fn refusals_are_never_signed() {
         // (instance, uri, method, body, expected_status)
         (
             attestor,
-            "/tip?pr=non-existent-principal-xyz",
+            "/tip?pg=non-existent-principal-xyz",
             "GET",
             None,
             StatusCode::NOT_FOUND,

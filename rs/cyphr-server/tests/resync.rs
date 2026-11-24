@@ -1,4 +1,4 @@
-//! `POST /resync` and `GET /resync?pr=` (frame section 12.3, SPEC 15.8 item
+//! `POST /resync` and `GET /resync?pg=` (frame section 12.3, SPEC 15.8 item
 //! 2): a proof of possession over one branch's tip selects it at a fork
 //! both of whose branches are extended, which no commit can. The chosen
 //! tip admits writes, the abandoned branch stays served as evidence, and
@@ -226,12 +226,12 @@ async fn a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch() {
         StatusCode::CREATED,
         "a write on the chosen head"
     );
-    let (_, branches) = get_json(app.clone(), &format!("/branches?pr={}", enc(&f.id))).await;
+    let (_, branches) = get_json(app.clone(), &format!("/branches?pg={}", enc(&f.id))).await;
     assert!(
         branches.to_string().contains(&commit_id(&f.r_states[1])),
         "the abandoned branch is evidence: {branches:?}"
     );
-    let (status, held) = get_json(app.clone(), &format!("/resync?pr={}", enc(&f.id))).await;
+    let (status, held) = get_json(app.clone(), &format!("/resync?pg={}", enc(&f.id))).await;
     assert_eq!(status, StatusCode::OK, "{held:?}");
     assert_eq!(
         held.to_string()

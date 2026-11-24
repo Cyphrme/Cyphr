@@ -157,7 +157,7 @@ async fn client_follows_the_server_chain_across_a_key_rotation() {
     held.follow(&RouterConnector::new(app.clone()))
         .await
         .expect("follow the server chain");
-    let (status, tip) = get_json(app.clone(), &format!("/tip?pr={pr}")).await;
+    let (status, tip) = get_json(app.clone(), &format!("/tip?pg={pr}")).await;
     assert_eq!(status, StatusCode::OK, "{tip:?}");
     let report = held
         .verify_tip(&tip, &pr)
@@ -174,7 +174,7 @@ async fn client_follows_the_server_chain_across_a_key_rotation() {
         .expect("rotate the signing key");
     let app = build_router(Arc::new(state));
 
-    let (status, tip) = get_json(app.clone(), &format!("/tip?pr={pr}")).await;
+    let (status, tip) = get_json(app.clone(), &format!("/tip?pg={pr}")).await;
     assert_eq!(status, StatusCode::OK, "{tip:?}");
     assert!(
         matches!(
@@ -220,7 +220,7 @@ async fn statement_signed_by_the_retired_key_is_refused() {
     let mut held = PeerChain::pin(&pg, genesis_key).await;
     let carrier = RouterConnector::new(app.clone());
 
-    let (_, tip) = get_json(app.clone(), &format!("/tip?pr={pr}")).await;
+    let (_, tip) = get_json(app.clone(), &format!("/tip?pg={pr}")).await;
     assert_eq!(
         tip["statement"]["kind"],
         serde_json::json!("signed"),
@@ -287,7 +287,7 @@ async fn retired_key_is_accepted_until_the_caller_follows_again() {
         .expect("rotate the signing key");
     // The stale-backend seam: attestations keep signing with the old key.
     let app = build_router(Arc::new(state.with_receipt_signer(retired)));
-    let (status, tip) = get_json(app.clone(), &format!("/tip?pr={pr}")).await;
+    let (status, tip) = get_json(app.clone(), &format!("/tip?pg={pr}")).await;
     assert_eq!(status, StatusCode::OK, "{tip:?}");
 
     assert!(

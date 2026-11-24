@@ -348,7 +348,7 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     // -- before: snapshot /tip, /e/{commit_id}, and a login attempt --
 
     let (tip_status_before, tip_before) =
-        common::get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        common::get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status_before, StatusCode::OK, "{tip_before:?}");
     let tip_payload_before = common::envelope_payload(&tip_before).clone();
     let commit_id = tip_payload_before["commit_id"]
@@ -421,7 +421,7 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     // -- after: re-issue the same three requests and compare --
 
     let (tip_status_after, tip_after) =
-        common::get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        common::get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status_after, StatusCode::OK, "{tip_after:?}");
     let mut tip_payload_after = common::envelope_payload(&tip_after).clone();
     let mut tip_payload_before_cmp = tip_payload_before.clone();

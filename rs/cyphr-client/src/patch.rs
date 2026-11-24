@@ -52,7 +52,7 @@ pub struct PatchRequest<'a> {
 }
 
 impl PatchRequest<'_> {
-    /// The request target (`/patch?pr=...[&from=...]`) carried to the
+    /// The request target (`/patch?pg=...[&from=...]`) carried to the
     /// peer. Both values are percent-encoded so a value containing
     /// `&`/`=`/`#` cannot inject extra query parameters into the outbound
     /// request; the encoding must not depend on any other guard.
@@ -60,8 +60,8 @@ impl PatchRequest<'_> {
     pub fn target(&self) -> String {
         let pr = percent_encode_query_value(self.principal_id);
         match self.anchor {
-            Some(anchor) => format!("/patch?pr={pr}&from={}", percent_encode_query_value(anchor)),
-            None => format!("/patch?pr={pr}"),
+            Some(anchor) => format!("/patch?pg={pr}&from={}", percent_encode_query_value(anchor)),
+            None => format!("/patch?pg={pr}"),
         }
     }
 }

@@ -131,12 +131,12 @@ async fn fresh_client_replays_a_chain_holding_a_ds_create() {
     assert_eq!(s, StatusCode::CREATED, "ds/create push: {b:?}");
 
     // A fresh client reads the patch and replays it.
-    let (_, tip) = get_json(app.clone(), &format!("/tip?pr={id}")).await;
+    let (_, tip) = get_json(app.clone(), &format!("/tip?pg={id}")).await;
     let published = envelope_payload(&tip)["pr"]
         .as_str()
         .expect("pr")
         .to_owned();
-    let (s, patch) = get_json(app.clone(), &format!("/patch?pr={id}")).await;
+    let (s, patch) = get_json(app.clone(), &format!("/patch?pg={id}")).await;
     assert_eq!(s, StatusCode::OK, "{patch:?}");
     let payload = envelope_payload(&patch);
     let mut lines = Vec::new();
@@ -210,7 +210,7 @@ async fn action_only_push_before_genesis_is_refused() {
         message.contains("genesis"),
         "the refusal names the missing genesis: {b:?}"
     );
-    let (s, _) = get_json(app, &format!("/patch?pr={id}")).await;
+    let (s, _) = get_json(app, &format!("/patch?pg={id}")).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "nothing was recorded");
 }
 
@@ -270,7 +270,7 @@ async fn action_only_push_of_recorded_actions_stores_nothing() {
     let (s, b) = post_json(app.clone(), "/push", push_body(&id, &[blob])).await;
     assert!(s.is_success(), "the repeated action-only push: {s} {b:?}");
 
-    let (s, patch) = get_json(app, &format!("/patch?pr={id}")).await;
+    let (s, patch) = get_json(app, &format!("/patch?pg={id}")).await;
     assert_eq!(s, StatusCode::OK, "{patch:?}");
     let held = envelope_payload(&patch)["actions"]
         .as_array()

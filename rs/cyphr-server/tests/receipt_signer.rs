@@ -113,7 +113,7 @@ async fn failing_signer_leaves_a_committed_push_answered_201_unsigned() {
     );
 
     // Control on durability: the commit really landed.
-    let (status, tip) = get_json(app, &format!("/tip?pr={pr}")).await;
+    let (status, tip) = get_json(app, &format!("/tip?pg={pr}")).await;
     assert_eq!(status, StatusCode::OK, "tip after commit: {tip:?}");
     assert_eq!(tip["payload"]["commit_count"], serde_json::json!(1));
 }
@@ -136,7 +136,7 @@ async fn failing_signer_leaves_a_tip_answered_200_unsigned() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{push:?}");
 
-    let (status, tip) = get_json(app, &format!("/tip?pr={pr}")).await;
+    let (status, tip) = get_json(app, &format!("/tip?pg={pr}")).await;
     assert_eq!(
         status,
         StatusCode::OK,

@@ -53,7 +53,7 @@ pub fn request(
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".into(), Value::String(signer.alg().to_string()));
     pay_map.insert("now".into(), Value::Number(current_timestamp().into()));
-    pay_map.insert("pr".into(), Value::String(identity.to_owned()));
+    pay_map.insert("pg".into(), Value::String(identity.to_owned()));
     pay_map.insert("tmb".into(), Value::String(tmb.clone()));
     pay_map.insert("typ".into(), Value::String(pairing_typ(&cli.authority)));
     pay_map.sort_keys();
@@ -130,10 +130,10 @@ fn verify_request(
             pairing_typ(authority)
         )));
     }
-    if text("pr")? != identity {
+    if text("pg")? != identity {
         return Err(refuse(format!(
             "it is for principal `{}`, not `{identity}`",
-            text("pr")?
+            text("pg")?
         )));
     }
     let tmb = text("tmb")?;

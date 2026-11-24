@@ -112,7 +112,7 @@ async fn thin_client_end_to_end() {
                 h,
                 peer,
                 "/proof",
-                &[("pr", id), ("size", &size), ("claim", &claim)],
+                &[("pg", id), ("size", &size), ("claim", &claim)],
             )
             .await
         }
@@ -120,7 +120,7 @@ async fn thin_client_end_to_end() {
     let tip_root = |pr: String| {
         let h = &h;
         async move {
-            let resp = get(h, peer, "/tip", &[("pr", &pr)]).await;
+            let resp = get(h, peer, "/tip", &[("pg", &pr)]).await;
             let p = payload(resp, "/tip").await;
             serde_json::from_value::<Root>(p["root"].clone())
                 .unwrap_or_else(|e| panic!("/tip has no root: {e}"))

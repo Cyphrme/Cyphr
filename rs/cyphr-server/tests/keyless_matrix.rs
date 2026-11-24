@@ -147,7 +147,7 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
 
     // --- tip ---
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(
         tip_status,
         StatusCode::OK,
@@ -174,7 +174,7 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
 
     // --- patch ---
     let (patch_status, patch_envelope) =
-        get_json(app.clone(), &format!("/patch?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/patch?pg={principal_id}")).await;
     assert_eq!(
         patch_status,
         StatusCode::OK,

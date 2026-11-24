@@ -123,7 +123,7 @@ async fn evidence(h: &Harness, peer: &str, p: &Principal) -> usize {
     let body: serde_json::Value = h
         .http
         .get(format!("http://{addr}/evidence"))
-        .query(&[("pr", p.0.as_str())])
+        .query(&[("pg", p.0.as_str())])
         .send()
         .await
         .expect("evidence request")
@@ -139,7 +139,7 @@ async fn heads(h: &Harness, peer: &str, p: &Principal) -> usize {
     let body: serde_json::Value = h
         .http
         .get(format!("http://{addr}/branches"))
-        .query(&[("pr", p.0.as_str())])
+        .query(&[("pg", p.0.as_str())])
         .send()
         .await
         .expect("branches request")

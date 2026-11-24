@@ -445,7 +445,7 @@ async fn token_after_rotation_is_signed_by_the_new_key() {
 // ========================================================================
 
 /// Claim: a keyed server signs its own tip. A client that pins the server's
-/// PG (from `GET /server`) reads `/tip?pr=<PG>` in either spelling and gets
+/// PG (from `GET /server`) reads `/tip?pg=<PG>` in either spelling and gets
 /// a signed 200. Red if the keyed server 500s or answers unsigned on its
 /// own PG (the keyless genesis blob defeats root re-derivation). Lying impls
 /// it catches: an unsigned 200 fallback, or fixing only one spelling.
@@ -463,7 +463,7 @@ async fn own_tip_keyed_server_signs_its_own_pg_tip() {
     let app = cyphr_server::build_router(state);
 
     for spelling in [pg.as_str(), bare.as_str()] {
-        let (status, env) = common::get_json(app.clone(), &format!("/tip?pr={spelling}")).await;
+        let (status, env) = common::get_json(app.clone(), &format!("/tip?pg={spelling}")).await;
         assert_eq!(status, axum::http::StatusCode::OK, "{spelling}: {env:?}");
         assert_eq!(env["statement"]["kind"], "signed", "{spelling}: {env:?}");
         assert_eq!(
@@ -497,7 +497,7 @@ async fn rebooted_server_signs_its_own_pg_tip() {
     state.principal = Some(Arc::new(sp));
     let app = cyphr_server::build_router(Arc::new(state));
 
-    let (status, env) = common::get_json(app, &format!("/tip?pr={pg}")).await;
+    let (status, env) = common::get_json(app, &format!("/tip?pg={pg}")).await;
     assert_eq!(status, axum::http::StatusCode::OK, "{env:?}");
     assert_eq!(env["statement"]["kind"], "signed", "{env:?}");
 }

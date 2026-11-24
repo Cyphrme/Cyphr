@@ -177,7 +177,7 @@ impl Peer {
     /// commit it is later sent, so this is only used to choose what to send.
     pub async fn tip(&self, principal: &str) -> Result<Option<TipAnswer>, PeerError> {
         match self
-            .send(&Request::get(format!("/tip?pr={principal}")))
+            .send(&Request::get(format!("/tip?pg={principal}")))
             .await
         {
             Ok(body) => {

@@ -520,7 +520,7 @@ impl Harness {
                 // unpadded SHA-256 PG, which is never one a peer holds.
                 let bogus = format!("{i:0>43}");
                 let url = if i % 2 == 0 {
-                    format!("{base}/evidence?pr={bogus}")
+                    format!("{base}/evidence?pg={bogus}")
                 } else {
                     format!("{base}/revoked?tmbs={bogus}")
                 };
@@ -1184,7 +1184,7 @@ impl Client<'_> {
             .h
             .http
             .get(url)
-            .query(&[("pr", pg.as_str())])
+            .query(&[("pg", pg.as_str())])
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
@@ -1214,7 +1214,7 @@ impl Client<'_> {
     ) -> ActionResult<serde_json::Value> {
         let mut req = self.h.http.get(format!("{}{path}", self.url(peer).await));
         if let Some(pr) = pr {
-            req = req.query(&[("pr", pr)]);
+            req = req.query(&[("pg", pr)]);
         }
         let resp = req
             .send()

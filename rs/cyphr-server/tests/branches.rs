@@ -1,4 +1,4 @@
-//! `GET /branches?pr=<id>` lists every retained branch of a principal (G1).
+//! `GET /branches?pg=<id>` lists every retained branch of a principal (G1).
 //!
 //! A commit that forks a stored principal is still refused as its tip
 //! (409), but is retained as a verified non-tip branch; the route reports
@@ -107,7 +107,7 @@ fn enc(id: &str) -> String {
 }
 
 async fn tip_payload(app: axum::Router, id: &str) -> serde_json::Value {
-    let (status, body) = get_json(app, &format!("/tip?pr={}", enc(id))).await;
+    let (status, body) = get_json(app, &format!("/tip?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let mut payload = envelope_payload(&body).clone();
     // `now` is the response's own clock, not principal state.
@@ -175,7 +175,7 @@ async fn forked() -> Forked {
 }
 
 async fn branches(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value) {
-    let (status, body) = get_json(app, &format!("/branches?pr={}", enc(id))).await;
+    let (status, body) = get_json(app, &format!("/branches?pg={}", enc(id))).await;
     let payload = if status == StatusCode::OK {
         envelope_payload(&body).clone()
     } else {
@@ -431,7 +431,7 @@ async fn rival_with_data() {
         .count();
     assert_eq!(at_fork, 2, "both branches are listed: {payload:?}");
 
-    let (status, body) = get_json(app, &format!("/evidence?pr={}", enc(&f.id))).await;
+    let (status, body) = get_json(app, &format!("/evidence?pg={}", enc(&f.id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let items = envelope_payload(&body)["items"].as_array().expect("items");
     assert_eq!(items.len(), 1, "the fork is proven: {body:?}");
@@ -507,7 +507,7 @@ async fn heads(app: &axum::Router, id: &str) -> Vec<(u64, bool, String)> {
 }
 
 async fn evidence_count(app: &axum::Router, id: &str) -> usize {
-    let (status, body) = get_json(app.clone(), &format!("/evidence?pr={}", enc(id))).await;
+    let (status, body) = get_json(app.clone(), &format!("/evidence?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let payload = envelope_payload(&body);
     payload["items"].as_array().expect("items").len()
@@ -1874,7 +1874,7 @@ async fn owner_delete_promotes_over_revoked_thief_chain() {
     );
     let (status, tip) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        get_json(app.clone(), &format!("/tip?pr={}", enc(&t.id))),
+        get_json(app.clone(), &format!("/tip?pg={}", enc(&t.id))),
     )
     .await
     .expect("/tip answers in time after the promotion");
@@ -2003,7 +2003,7 @@ async fn owner_delete_promotes_over_thief_data_chain() {
     assert_eq!(status, StatusCode::CREATED, "the delete promotes: {body:?}");
     let (status, tip) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        get_json(app.clone(), &format!("/tip?pr={}", enc(&id))),
+        get_json(app.clone(), &format!("/tip?pg={}", enc(&id))),
     )
     .await
     .expect("/tip answers in time after the promotion");
@@ -2070,7 +2070,7 @@ async fn fresh_client_replays_after_thief_data_promotion() {
         .as_str()
         .expect("pr")
         .to_owned();
-    let (status, served) = get_json(app.clone(), &format!("/patch?pr={}", enc(&id))).await;
+    let (status, served) = get_json(app.clone(), &format!("/patch?pg={}", enc(&id))).await;
     assert_eq!(status, StatusCode::OK, "{served:?}");
     let bytes = serde_json::to_vec(&served).expect("body");
     let patch = cyphr_client::verify_patch_body(&bytes, &id, None).expect("well-formed patch");
@@ -2354,7 +2354,7 @@ fn tied_heads(t: &Theft) -> Vec<(serde_json::Value, u64)> {
 
 /// `GET /tip` as the served envelope body, minus the response's own clock.
 async fn tip_body(app: &axum::Router, id: &str) -> serde_json::Value {
-    let (status, mut body) = get_json(app.clone(), &format!("/tip?pr={}", enc(id))).await;
+    let (status, mut body) = get_json(app.clone(), &format!("/tip?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     body["payload"]
         .as_object_mut()
@@ -2364,7 +2364,7 @@ async fn tip_body(app: &axum::Router, id: &str) -> serde_json::Value {
 }
 
 async fn patch_body(app: &axum::Router, id: &str) -> serde_json::Value {
-    let (status, body) = get_json(app.clone(), &format!("/patch?pr={}", enc(id))).await;
+    let (status, body) = get_json(app.clone(), &format!("/patch?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     body
 }
@@ -2541,7 +2541,7 @@ async fn signed_statement_in_error_claims_only_held_since() {
     assert_eq!(push(&app, &t.d, t.n + 1, &t.id).await, StatusCode::CREATED);
     assert_eq!(push(&app, &t.c, t.n + 1, &t.id).await, StatusCode::CONFLICT);
 
-    let (status, body) = get_json(app.clone(), &format!("/tip?pr={}", enc(&t.id))).await;
+    let (status, body) = get_json(app.clone(), &format!("/tip?pg={}", enc(&t.id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     assert_eq!(body["statement"]["kind"], "signed", "{body:?}");
     let pay = &body["statement"]["coz"]["pay"];
@@ -2575,7 +2575,7 @@ async fn signed_statement_in_error_claims_only_held_since() {
 
     drop(app);
     let (app, _state) = reopen(&dir.path().join("data")).await;
-    let (_, again) = get_json(app, &format!("/tip?pr={}", enc(&t.id))).await;
+    let (_, again) = get_json(app, &format!("/tip?pg={}", enc(&t.id))).await;
     let again_since: Vec<_> = again["payload"]["heads"]
         .as_array()
         .expect("heads")
@@ -2915,7 +2915,7 @@ async fn caught_up_patch_is_signed_whatever_the_anchor_spelling() {
         let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &id)).await;
         assert_eq!(status, StatusCode::CREATED, "commit {i}: {body:?}");
     }
-    let (status, tip_body) = get_json(app.clone(), &format!("/tip?pr={}", enc(&id))).await;
+    let (status, tip_body) = get_json(app.clone(), &format!("/tip?pg={}", enc(&id))).await;
     assert_eq!(status, StatusCode::OK, "{tip_body:?}");
     let tip = tip_body["payload"].clone();
     let mh = p.pr().as_multihash();
@@ -2934,7 +2934,7 @@ async fn caught_up_patch_is_signed_whatever_the_anchor_spelling() {
     for anchor in [pr_384, commit_id] {
         let (status, body) = get_json(
             app.clone(),
-            &format!("/patch?pr={}&from={}", enc(&id), enc(&anchor)),
+            &format!("/patch?pg={}&from={}", enc(&id), enc(&anchor)),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{anchor}: {body:?}");

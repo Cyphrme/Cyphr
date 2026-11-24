@@ -304,7 +304,7 @@ async fn build_fixture() -> PortabilityFixture {
 
     // ---- fetch the signed tip report attesting the foreign principal ----
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     assert_eq!(
         tip_envelope["statement"]["kind"],
@@ -348,7 +348,7 @@ async fn build_fixture() -> PortabilityFixture {
     );
 
     let (patch_status, patch_envelope) =
-        get_json(app.clone(), &format!("/patch?pr={pinned_server_pg}")).await;
+        get_json(app.clone(), &format!("/patch?pg={pinned_server_pg}")).await;
     assert_eq!(patch_status, StatusCode::OK, "{patch_envelope:?}");
     let entries = patch_envelope["payload"]["entries"]
         .as_array()
