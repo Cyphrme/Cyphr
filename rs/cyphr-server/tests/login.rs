@@ -406,7 +406,7 @@ async fn login_timestamp_flow_issues_valid_token() {
         .unwrap()
         .verify_token(token, now_secs())
         .expect("issued token must verify as a genuine bearer token");
-    assert_eq!(claims.pr, pid, "token must bind the logged-in principal");
+    assert_eq!(claims.pg, pid, "token must bind the logged-in principal");
 }
 
 /// Challenge flow: fetch a challenge, sign it, receive a valid token.
@@ -877,7 +877,7 @@ async fn token_subject_is_one_whatever_spelling_logged_in() {
             .unwrap()
             .verify_token(token, now_secs())
             .expect("issued token verifies");
-        subjects.push(claims.pr);
+        subjects.push(claims.pg);
     }
     assert_eq!(
         subjects[0], subjects[1],

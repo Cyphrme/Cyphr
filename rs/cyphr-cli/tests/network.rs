@@ -248,7 +248,7 @@ fn multi_key_genesis_is_published_with_every_key_created() {
         .expect("tmb")
         .to_owned();
     let init = a.setup(&["init", &format!("--keys={k0},{k1}"), "--genesis-commit"]);
-    let id = init["pr"].as_str().expect("identity").to_owned();
+    let id = init["pg"].as_str().expect("identity").to_owned();
     accepted(&a.push(&id, &server.url), "multi-key genesis push");
 
     let reader = User::new();
@@ -292,7 +292,7 @@ fn paired_device_of_multi_key_principal_trusts_the_remote() {
         .expect("tmb")
         .to_owned();
     let init = a.setup(&["init", &format!("--keys={k0},{k1}"), "--genesis-commit"]);
-    let id = init["pr"].as_str().expect("identity").to_owned();
+    let id = init["pg"].as_str().expect("identity").to_owned();
     accepted(&a.push(&id, &server.url), "publish");
 
     // The phone enrolls its own key; the identity is not a phone key.

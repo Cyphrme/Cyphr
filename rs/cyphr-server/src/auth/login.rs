@@ -151,7 +151,7 @@ pub struct ParsedLogin {
     /// The client's asserted timestamp.
     pub now: i64,
     /// The claimed principal (storage id).
-    pub pr: String,
+    pub pg: String,
     /// The challenge nonce, present iff this is the challenge-response
     /// flow.
     pub challenge: Option<String>,
@@ -195,7 +195,7 @@ pub fn parse_login(
     let tmb = pay.tmb.clone().ok_or(LoginError::MissingField("tmb"))?;
     let alg = pay.alg.clone().ok_or(LoginError::MissingField("alg"))?;
     let now = pay.now.ok_or(LoginError::MissingField("now"))?;
-    let pr = pay
+    let pg = pay
         .extra
         .get(field::PR)
         .and_then(serde_json::Value::as_str)
@@ -221,7 +221,7 @@ pub fn parse_login(
         tmb,
         alg,
         now,
-        pr,
+        pg,
         challenge,
         channel,
         pay_bytes,
@@ -233,7 +233,7 @@ pub fn parse_login(
 /// belongs to and is active in that principal, its signature verifies,
 /// and the principal is Active.
 ///
-/// `principal` is the one named by `login.pr`, already loaded by the
+/// `principal` is the one named by `login.pg`, already loaded by the
 /// caller. The key is looked up in *this* principal only -- never a
 /// global `tmb` index -- which is what closes the key-sharing ambiguity.
 pub fn authorize_login<S: eml::Storage>(
@@ -479,14 +479,14 @@ pub async fn login(
     // entry the write path uses.
     let principal = state
         .engine
-        .at_tip(&parsed.pr)
+        .at_tip(&parsed.pg)
         .await
         .map_err(map_load_error)?
         .ok_or_else(|| AppError::unauthorized("login: unknown principal"))?;
     authorize_login(&parsed, &principal)?;
     let canonical_id = state
         .engine
-        .canonical_principal_id(&parsed.pr)
+        .canonical_principal_id(&parsed.pg)
         .await
         .map_err(map_load_error)?;
 
@@ -565,7 +565,7 @@ pub async fn login(
 #[derive(Debug, Serialize)]
 pub struct SessionResponse {
     /// The session's principal.
-    pub pr: String,
+    pub pg: String,
     /// The key that opened the session, which it stands or falls with.
     pub key: String,
     /// `noise-handshake-hash` for a session bound to the Noise channel that
@@ -608,7 +608,7 @@ pub async fn session(
         "key"
     };
     Ok(Json(Envelope::unsigned(SessionResponse {
-        pr: claims.pr,
+        pg: claims.pg,
         key,
         binding,
         exp: claims.exp,

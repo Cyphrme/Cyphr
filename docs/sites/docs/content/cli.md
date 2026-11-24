@@ -202,7 +202,7 @@ A complete session creating an identity, adding a key, and verifying:
 # Create an identity
 cyphr init
 # Created identity
-#   pr: U5XUZots-WmQ...
+#   pg: U5XUZots-WmQ...
 #   keys:
 #     U5XUZots-WmQ... (ES256) [-]
 

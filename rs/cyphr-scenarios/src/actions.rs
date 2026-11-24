@@ -678,7 +678,7 @@ impl Client<'_> {
         let v = self
             .cyphr(&["init", "--algo", "Ed25519", "--genesis-commit"])
             .await?;
-        let p = Principal(field(&v, "pr")?);
+        let p = Principal(field(&v, "pg")?);
         let key = v["keys"][0]
             .as_str()
             .ok_or_else(|| ActionError::Failed(format!("init named no key: {v}")))?
@@ -704,7 +704,7 @@ impl Client<'_> {
         }
         let keys = tmbs.join(",");
         let v = self.cyphr(&["init", "--keys", &keys]).await?;
-        let p = Principal(field(&v, "pr")?);
+        let p = Principal(field(&v, "pg")?);
         let genesis = cli::public_half(cli::key_entry(&self.dev.keystore, &tmbs[0])?);
         self.h.record_genesis(&p, genesis);
         self.state().signer.insert(p.0.clone(), tmbs[0].clone());

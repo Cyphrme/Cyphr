@@ -119,7 +119,7 @@ pub async fn check_session_key(
         other => SessionError::Storage(other),
     };
     let principal = engine
-        .at_tip(&claims.pr)
+        .at_tip(&claims.pg)
         .await
         .map_err(load_error)?
         .ok_or(SessionError::UnknownPrincipal)?;
@@ -157,7 +157,7 @@ pub async fn check_session_key(
 /// `/push`'s admission knob (ARCHITECT RULING R7): a bearer token is
 /// never required -- the pushed commit bundle's own signatures are the
 /// real authorization -- but if one IS presented it must verify, its
-/// `pr` claim must name the same principal as `target_principal` (compared
+/// `pg` claim must name the same principal as `target_principal` (compared
 /// in canonical form, so either id spelling matches), and the key that
 /// logged in must still be active in that principal (#162).
 ///
@@ -194,7 +194,7 @@ pub async fn check_push_admission(
         .canonical_principal_id(target_principal)
         .await
         .map_err(AppError::engine)?;
-    if claims.pr != bare_digest(&canonical) {
+    if claims.pg != bare_digest(&canonical) {
         return Err(AppError::unauthorized(
             "bearer token does not authorize this principal",
         ));

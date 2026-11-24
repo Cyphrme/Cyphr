@@ -390,7 +390,7 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
         .expect("token issued before deletion must verify");
     // The token's subject is the principal's bare canonical digest.
     assert_eq!(
-        claims_before.pr,
+        claims_before.pg,
         principal_id
             .split_once(':')
             .map_or(principal_id, |(_, digest)| digest)
@@ -462,7 +462,7 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
         .verify_token(&token_after, now_secs())
         .expect("token issued after the index rebuild must verify");
     assert_eq!(
-        claims_after.pr, claims_before.pr,
+        claims_after.pg, claims_before.pg,
         "login must authenticate the same principal before and after the index rebuild"
     );
 }
