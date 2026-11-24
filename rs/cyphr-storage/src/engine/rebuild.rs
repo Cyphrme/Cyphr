@@ -705,7 +705,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 }
             }
         }
-        *self.actions.lock().unwrap_or_else(|p| p.into_inner()) = actions;
+        self.actions.replace(actions);
 
         let branches = self
             .classify_branches(branch_manifests, &held, &mut quarantined)

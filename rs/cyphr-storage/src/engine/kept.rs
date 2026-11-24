@@ -8,7 +8,8 @@
 
 use std::collections::HashMap;
 
-use super::{EngineError, WriteLock};
+use super::EngineError;
+use super::ingest::WriteLock;
 /// A small insertion-ordered cache that never holds more than `capacity`
 /// entries: when full, the oldest insertion is evicted.
 ///

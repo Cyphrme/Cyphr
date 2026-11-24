@@ -1379,12 +1379,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
         for at in positions {
             let there = self.chain(principal_id, Some(at), Some(at)).await?;
-            let frames = self.frames.lock().unwrap_or_else(|p| p.into_inner());
             if there.iter().any(|c| {
-                c.blob_hashes == hashes
-                    && frames
-                        .get(&(principal_id.to_string(), c.commit_id.clone()))
-                        .is_some_and(|f| f.shape == shape)
+                c.blob_hashes == hashes && self.frames.has_shape(principal_id, &c.commit_id, &shape)
             }) {
                 return Ok(true);
             }
