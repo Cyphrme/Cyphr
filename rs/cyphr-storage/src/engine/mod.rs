@@ -41,7 +41,9 @@ use cyphr::replay::WireBundle;
 use cyphr::state::{StateDigest, TaggedDigest};
 use death::{Death, DeathSet, Revoked, dead_key_in, verify_revoke};
 pub use error::EngineError;
-pub use ingest::{CommittedTip, IngestResult};
+pub use ingest::{
+    BundleAnswer, CommittedTip, IngestResult, PulledAnswers, PulledOffer, ResyncOffer,
+};
 use ingest::{
     Durability, PrincipalLocks, StagedBuild, authenticated_signers, bundle_signer,
     canonical_bundle, disclosed_genesis, no_disclosed_genesis, record_key,

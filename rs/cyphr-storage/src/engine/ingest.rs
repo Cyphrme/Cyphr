@@ -220,6 +220,57 @@ pub(super) fn canonical_bundle(bundle: &WireBundle) -> Result<WireBundle, Engine
     Ok(canonical)
 }
 
+/// A peer's resync proofs for one principal and the chain they were served
+/// beside: what [`StorageEngine::ingest_pulled`] offers the fork rule
+/// (SPEC 15.8 item 2).
+#[derive(Debug, Clone, Copy)]
+pub struct ResyncOffer<'a> {
+    /// The `{pay, sig}` proofs of possession.
+    pub pops: &'a [serde_json::Value],
+    /// The peer's chain, from which the line up to each asserted tip is
+    /// taken, starting at the first commit this engine does not hold.
+    pub chain: &'a [WireBundle],
+}
+
+/// What one pull handed over for one principal, in the order the engine
+/// applies it ([`StorageEngine::ingest_pulled`]).
+#[derive(Debug, Clone, Copy)]
+pub struct PulledOffer<'a> {
+    /// The genesis the principal's first commit is read against, when the
+    /// caller holds one (a verifier that anchored on a key); `None` reads
+    /// it from storage or the bundle.
+    pub genesis: Option<&'a crate::Genesis>,
+    /// The commits the pull verified past this engine's tip, in order.
+    pub commits: &'a [WireBundle],
+    /// Commits of other branches the peers served: refused as a tip, kept
+    /// as evidence of the fork (I2) when they verify.
+    pub branches: &'a [WireBundle],
+    /// Resync proofs, each with the chain it was served beside.
+    pub resyncs: &'a [ResyncOffer<'a>],
+}
+
+/// The engine's answer to one bundle of a [`PulledOffer`].
+#[derive(Debug)]
+pub struct BundleAnswer {
+    /// Whether the answer is to the bundle offered together with the one
+    /// after it: a branch commit the caps refused alone may be a line root
+    /// whose extension changes the verdict (rule X).
+    pub paired: bool,
+    /// What the engine did with it.
+    pub result: Result<IngestResult, EngineError>,
+}
+
+/// The engine's answers to a [`PulledOffer`], one per bundle and proof, in
+/// the order offered. A refusal is an answer (a commit already held, a fork
+/// kept as evidence); [`EngineError::is_store_fault`] names the ones that
+/// are not.
+#[derive(Debug, Default)]
+pub struct PulledAnswers {
+    pub commits: Vec<BundleAnswer>,
+    pub branches: Vec<BundleAnswer>,
+    pub resyncs: Vec<Result<crate::engine::ResyncReceipt, EngineError>>,
+}
+
 /// Per-principal serialization points for [`StorageEngine::submit_commit`].
 ///
 /// Keyed-mutex map: each `principal_id` gets its own
@@ -295,6 +346,70 @@ impl Durability {
 }
 
 impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
+    /// Apply what a pull handed over for `principal_id`: the verified
+    /// commits, then each branch commit, then the resync proofs. This is
+    /// the one place a pulled bundle meets the engine, whoever pulled it.
+    ///
+    /// A commit is offered alone ([`Self::submit_commit`]). A branch commit
+    /// a cap refuses alone ([`EngineError::BranchLimit`],
+    /// [`EngineError::Errored`]) is offered again with the branch commit
+    /// after it ([`Self::submit_pair`]); where none follows, the cap's answer
+    /// stands. Each proof is offered with the line of its peer's chain from
+    /// the first commit not held ([`Self::held_prefix`]).
+    ///
+    /// Revokes are not applied here: a caller records the verified revokes
+    /// it holds first, where it keeps its own death store ([`Self::record_revoke`]), so
+    /// admission refuses what a dead key signed after its death.
+    ///
+    /// Nothing here fails the call: each bundle's answer is returned for the
+    /// caller to log or to treat as a fault.
+    pub async fn ingest_pulled(
+        &self,
+        principal_id: &str,
+        offer: &PulledOffer<'_>,
+    ) -> PulledAnswers {
+        let genesis = || offer.genesis.cloned();
+        let mut answers = PulledAnswers::default();
+        for bundle in offer.commits {
+            answers.commits.push(BundleAnswer {
+                paired: false,
+                result: self.submit_commit(principal_id, genesis(), bundle).await,
+            });
+        }
+        for (i, bundle) in offer.branches.iter().enumerate() {
+            let alone = self.submit_commit(principal_id, genesis(), bundle).await;
+            let answer = match (alone, offer.branches.get(i + 1)) {
+                (
+                    Err(EngineError::BranchLimit { .. } | EngineError::Errored { .. }),
+                    Some(next),
+                ) => BundleAnswer {
+                    paired: true,
+                    result: self
+                        .submit_pair(principal_id, genesis(), bundle, next)
+                        .await,
+                },
+                (result, _) => BundleAnswer {
+                    paired: false,
+                    result,
+                },
+            };
+            answers.branches.push(answer);
+        }
+        for resync in offer.resyncs {
+            let start = self
+                .held_prefix(principal_id, resync.chain)
+                .await
+                .unwrap_or(resync.chain.len());
+            for pop in resync.pops {
+                answers.resyncs.push(
+                    self.submit_resync(principal_id, pop, &resync.chain[start..])
+                        .await,
+                );
+            }
+        }
+        answers
+    }
+
     /// Fetch (or create) this `principal_id`'s serialization point.
     ///
     /// Never blocks on a write: only ever holds the map's own lock for the

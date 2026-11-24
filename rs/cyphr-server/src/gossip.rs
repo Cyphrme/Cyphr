@@ -56,6 +56,7 @@ use cyphr_client::{
     BindingPolicy, ChainSource, Connector, HttpConnector, PatchEntry, PatchRequest, PullPeer,
     Record, branch_bundles, fetch_patch, fetch_resyncs, peer_heads, pull, verified_revokes,
 };
+use cyphr_storage::engine::{PulledOffer, ResyncOffer};
 use cyphr_storage::index::Indexer as _;
 use tracing::{debug, error, info, warn};
 
@@ -322,14 +323,6 @@ async fn round_principal(
     // this same round are refused.
     record_revokes(state, &report.revoked).await;
 
-    for bundle in record.bundles_since(mark) {
-        match state.engine.submit_commit(principal_id, None, bundle).await {
-            Ok(_) => info!(principal = %principal_id, "gossip: stored a verified commit"),
-            // The principal may have advanced here since the round began
-            // (a client's push): the engine refuses what it already holds.
-            Err(err) => refused(principal_id, &err, "gossip: commit not stored"),
-        }
-    }
     for fork in &report.forks {
         warn!(principal = %principal_id, height = fork.height, commits = ?fork.commits, "gossip: principal fork");
     }
@@ -337,34 +330,55 @@ async fn round_principal(
     // fork is evidence, never merged), and accepts a forked peer's later
     // commits only if they verify (SPEC 15.8).
     let offered = branch_bundles(&record, &report, &dialled).await;
-    for (i, bundle) in offered.iter().enumerate() {
-        match state.engine.submit_commit(principal_id, None, bundle).await {
-            Ok(_) => info!(principal = %principal_id, "gossip: a branch commit adopted"),
-            // A cap refused the entry alone, but it may be a line root whose
-            // extension makes the standing or the fork point: offer the two
-            // together (rule X).
-            Err(
-                err @ (cyphr_storage::engine::EngineError::BranchLimit { .. }
-                | cyphr_storage::engine::EngineError::Errored { .. }),
-            ) => {
-                let Some(next) = offered.get(i + 1) else {
-                    refused(principal_id, &err, "gossip: branch commit answered");
-                    continue;
-                };
-                match state
-                    .engine
-                    .submit_pair(principal_id, None, bundle, next)
-                    .await
-                {
-                    Ok(_) => info!(principal = %principal_id, "gossip: a branch pair adopted"),
-                    Err(err) => refused(principal_id, &err, "gossip: branch pair answered"),
-                }
-            },
-            Err(err) => refused(principal_id, &err, "gossip: branch commit answered"),
+    let mut served = Vec::new();
+    for (name, connector) in peers {
+        if let Some(offer) = peer_resync_offer(state, name, connector, principal_id).await {
+            served.push(offer);
         }
     }
-    for (name, connector) in peers {
-        offer_peer_resyncs(state, name, connector, principal_id).await;
+    let resyncs: Vec<ResyncOffer<'_>> = served
+        .iter()
+        .map(|(pops, chain)| ResyncOffer { pops, chain })
+        .collect();
+    let answers = state
+        .engine
+        .ingest_pulled(
+            principal_id,
+            &PulledOffer {
+                genesis: None,
+                commits: record.bundles_since(mark),
+                branches: &offered,
+                resyncs: &resyncs,
+            },
+        )
+        .await;
+    for answer in &answers.commits {
+        match &answer.result {
+            Ok(_) => info!(principal = %principal_id, "gossip: stored a verified commit"),
+            // The principal may have advanced here since the round began
+            // (a client's push): the engine refuses what it already holds.
+            Err(err) => refused(principal_id, err, "gossip: commit not stored"),
+        }
+    }
+    for answer in &answers.branches {
+        match (&answer.result, answer.paired) {
+            (Ok(_), false) => info!(principal = %principal_id, "gossip: a branch commit adopted"),
+            (Ok(_), true) => info!(principal = %principal_id, "gossip: a branch pair adopted"),
+            (Err(err), false) => refused(principal_id, err, "gossip: branch commit answered"),
+            (Err(err), true) => refused(principal_id, err, "gossip: branch pair answered"),
+        }
+    }
+    for answer in &answers.resyncs {
+        match answer {
+            Ok(receipt) if receipt.promoted => {
+                info!(principal = %principal_id, "a resync proof made its line the chain");
+            },
+            Ok(receipt) if receipt.stored => {
+                info!(principal = %principal_id, "a resync proof stored")
+            },
+            Ok(_) => {},
+            Err(err) => refused(principal_id, err, "resync proof answered"),
+        }
     }
     state.metrics.gossip_replayed(record.replayed());
     Ok(memo)
@@ -414,14 +428,20 @@ pub(crate) async fn offer_resyncs(
     pops: &[serde_json::Value],
     chain: &[cyphr::replay::WireBundle],
 ) {
-    let start = state
+    let answers = state
         .engine
-        .held_prefix(principal_id, chain)
-        .await
-        .unwrap_or(chain.len());
-    let line = &chain[start..];
-    for pop in pops {
-        match state.engine.submit_resync(principal_id, pop, line).await {
+        .ingest_pulled(
+            principal_id,
+            &PulledOffer {
+                genesis: None,
+                commits: &[],
+                branches: &[],
+                resyncs: &[ResyncOffer { pops, chain }],
+            },
+        )
+        .await;
+    for answer in &answers.resyncs {
+        match answer {
             Ok(receipt) if receipt.promoted => {
                 info!(principal = %principal_id, "a resync proof made its line the chain");
             },
@@ -429,23 +449,23 @@ pub(crate) async fn offer_resyncs(
                 info!(principal = %principal_id, "a resync proof stored")
             },
             Ok(_) => {},
-            Err(err) => refused(principal_id, &err, "resync proof answered"),
+            Err(err) => refused(principal_id, err, "resync proof answered"),
         }
     }
 }
 
 /// Fetch `connector`'s peer's resync proofs for `principal_id` and, when it
-/// holds any this server lacks, its chain, and offer them
-/// ([`offer_resyncs`]).
-async fn offer_peer_resyncs(
+/// holds any this server lacks, its chain: what the engine is offered
+/// ([`StorageEngine::ingest_pulled`](cyphr_storage::engine::StorageEngine::ingest_pulled)).
+async fn peer_resync_offer(
     state: &AppState,
     peer: &str,
     connector: &HttpConnector,
     principal_id: &str,
-) {
+) -> Option<(Vec<serde_json::Value>, Vec<cyphr::replay::WireBundle>)> {
     let pops = fresh_resyncs(state, peer, connector, principal_id).await;
     if pops.is_empty() {
-        return;
+        return None;
     }
     let request = PatchRequest {
         principal_id,
@@ -455,7 +475,7 @@ async fn offer_peer_resyncs(
         Ok(patch) => patch,
         Err(err) => {
             debug!(%peer, %err, "gossip: chain for a resync proof not fetched");
-            return;
+            return None;
         },
     };
     let chain: Vec<cyphr::replay::WireBundle> = patch
@@ -463,7 +483,7 @@ async fn offer_peer_resyncs(
         .iter()
         .map_while(|e| e.bundle.clone().ok())
         .collect();
-    offer_resyncs(state, principal_id, &pops, &chain).await;
+    Some((pops, chain))
 }
 
 /// Log the engine's answer to a commit gossip handed it. Most answers are
