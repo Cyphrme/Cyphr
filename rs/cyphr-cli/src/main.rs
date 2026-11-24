@@ -46,6 +46,7 @@ fn run(cli: Cli) -> cyphr_cli::Result<()> {
             keys,
             genesis_commit,
         } => commands::init::run(&cli, algo, key.as_deref(), keys.as_deref(), *genesis_commit),
+        Commands::Upgrade { identity } => commands::init::upgrade(&cli, identity),
         Commands::Key { command } => commands::key::run(&cli, command),
         Commands::Tx { command } => commands::tx::run(&cli, command),
         Commands::Data { command } => commands::data::run(&cli, command),

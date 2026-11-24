@@ -19,7 +19,15 @@ pub fn run(cli: &Cli, command: &KeyCommands) -> crate::Result<()> {
             identity,
             key,
             signer,
-        } => add(cli, identity, key.as_deref(), signer, &cli.authority),
+            upgrade,
+        } => add(
+            cli,
+            identity,
+            key.as_deref(),
+            signer,
+            &cli.authority,
+            *upgrade,
+        ),
         KeyCommands::Revoke {
             identity,
             key,
@@ -88,10 +96,15 @@ fn add(
     key_tmb: Option<&str>,
     signer_tmb: &str,
     authority: &str,
+    upgrade: bool,
 ) -> crate::Result<()> {
     let mut keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
     let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
+    // Refused before a key is generated or anything is signed.
+    if principal.pg().is_none() && !upgrade {
+        return Err(crate::Error::NoGenesisCommit { upgradable: true });
+    }
 
     // Get or generate the new key
     let (new_key_tmb, new_key) = match key_tmb {
@@ -107,14 +120,35 @@ fn add(
         },
     };
 
-    apply_key_create(
-        &mut principal,
-        &keystore,
-        &new_key_tmb,
-        &new_key,
-        signer_tmb,
-        authority,
-    )?;
+    // The genesis commit of a two-key principal names it by its PG, which no
+    // single key's thumbprint equals, so the identity moves with it.
+    let mut identity = identity.to_owned();
+    if principal.pg().is_none() {
+        // One genesis commit carries the new key.
+        super::init::commit_genesis(
+            &mut principal,
+            &keystore,
+            std::slice::from_ref(&new_key),
+            authority,
+        )?;
+        if let Some(pg) = principal.pg() {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            use cyphr::StateDigest;
+            identity = pg
+                .as_multihash()
+                .first_variant()
+                .map(Base64UrlUnpadded::encode_string)?;
+        }
+    } else {
+        apply_key_create(
+            &mut principal,
+            &keystore,
+            &new_key_tmb,
+            &new_key,
+            signer_tmb,
+            authority,
+        )?;
+    }
 
     // Store updated state
     save_principal_to_engine(&store, &keystore, &principal)?;
@@ -370,7 +404,7 @@ fn commit_key_tx(
         new_key,
         now,
     } = tx;
-    super::init::commit_genesis(principal, keystore, &[], authority)?;
+    super::init::require_genesis_commit(principal, false)?;
     let signer = keystore.signer(signer_tmb)?;
     let now = now.unwrap_or_else(current_timestamp);
 

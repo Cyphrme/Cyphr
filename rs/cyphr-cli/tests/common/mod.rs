@@ -173,11 +173,12 @@ impl User {
         self.new_identity_alg("ES256")
     }
 
-    /// A fresh identity with two commits: the genesis commit the CLI makes
-    /// before its first key add, then that key add.
+    /// A fresh identity with two commits: the genesis commit `upgrade` makes
+    /// for a Level 1 identity, then a key add.
     pub fn new_identity_alg(&self, algo: &str) -> String {
         let g = self.setup(&["key", "generate", "--algo", algo]);
         let tmb = g["tmb"].as_str().expect("tmb").to_owned();
+        self.setup(&["upgrade", &format!("--identity={tmb}")]);
         self.add_key(&tmb);
         tmb
     }

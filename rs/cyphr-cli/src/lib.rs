@@ -153,6 +153,21 @@ pub enum Error {
     #[error("verify needs at least one peer (--peer or `peers` in the choices file)")]
     NoPeers,
 
+    /// A command that needs a commit met a Level 1 identity (SPEC 5.1).
+    /// Moving it up is the user's act, never a side effect.
+    #[error(
+        "this identity has no genesis commit (Level 1); run `cyphr upgrade`{}",
+        if *.upgradable { ", or repeat with `--upgrade`" } else { "" }
+    )]
+    NoGenesisCommit {
+        /// Whether the command has an `--upgrade` flag to offer.
+        upgradable: bool,
+    },
+
+    /// `upgrade` found a genesis commit already made.
+    #[error("identity {0} already has a genesis commit; there is nothing to upgrade")]
+    AlreadyCommitted(String),
+
     /// The store directory is missing but a store swap left siblings next to
     /// it: the process likely died between the two renames of the swap.
     #[error(
@@ -296,11 +311,24 @@ pub enum Commands {
         /// key/create for itself and each further key, a principal/create
         /// (id = the principal's state) and the commit finalizing it (SPEC
         /// 5.1-5.3). Without it, a single-key init leaves a commitless
-        /// principal that `push` has nothing to send for; `--keys` with more
-        /// than one key always commits it, as a multi-key principal exists
-        /// only through its genesis commit.
+        /// principal that `push` has nothing to send for (`cyphr upgrade`
+        /// commits it later); `--keys` with more than one key always commits
+        /// it, as a multi-key principal exists only through its genesis
+        /// commit.
         #[arg(long)]
         genesis_commit: bool,
+    },
+
+    /// Create the genesis commit of a Level 1 identity (SPEC 5.1)
+    ///
+    /// A single-key `init` leaves a commitless identity. Commands that need a
+    /// commit (`key add`, `data action`, `data commit`, ...) refuse it until
+    /// the user moves it up, here or with their `--upgrade` flag. Refused on
+    /// an identity that already has a commit.
+    Upgrade {
+        /// Principal Root (base64url)
+        #[arg(long, allow_hyphen_values = true)]
+        identity: String,
     },
 
     /// Key management operations
@@ -598,6 +626,11 @@ pub enum KeyCommands {
         /// Thumbprint of signing key
         #[arg(long, allow_hyphen_values = true)]
         signer: String,
+
+        /// On a Level 1 identity (no genesis commit), create the genesis
+        /// commit with the new key in it, instead of refusing
+        #[arg(long)]
+        upgrade: bool,
     },
 
     /// Remove a key from an identity without marking it compromised (SPEC 6.2)
@@ -747,6 +780,11 @@ pub enum DataCommands {
         /// Print the signed action without recording it locally
         #[arg(long)]
         sign_only: bool,
+
+        /// On a Level 1 identity (no genesis commit), create the genesis
+        /// commit first, instead of refusing
+        #[arg(long)]
+        upgrade: bool,
     },
 
     /// Sign a `ds/create` over the local DT; its `id` becomes DR in PR
@@ -758,6 +796,11 @@ pub enum DataCommands {
         /// Thumbprint of the signing key
         #[arg(long, allow_hyphen_values = true)]
         signer: String,
+
+        /// On a Level 1 identity (no genesis commit), create the genesis
+        /// commit first, instead of refusing
+        #[arg(long)]
+        upgrade: bool,
     },
 
     /// Send a signed action (the output of `data action`) to a peer

@@ -30,6 +30,21 @@ cyphr init --algo ES256
 
 This generates a new ECDSA keypair, creates an implicit Level 1 Principal, and stores both the keypair and Principal state to your local storage directory.
 
+### Move a Level 1 Principal up
+
+A Level 1 Principal has no commit, so commands that need one (`key add`,
+`data action`, `data commit`) refuse it until you say so. Create its genesis
+commit explicitly:
+
+```bash
+cyphr upgrade --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc
+```
+
+or repeat the command with `--upgrade`, which creates the genesis commit as
+part of it (for `key add`, the new key goes into that one genesis commit, and
+the identity becomes the key set's Principal Genesis, which the output names).
+Nothing is signed without one of the two.
+
 ### View Principal keys
 
 ```bash
@@ -37,6 +52,8 @@ cyphr key list --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc
 ```
 
 ### Add a key to a Principal
+
+On a principal that already has its genesis commit (see above):
 
 ```bash
 cyphr key add --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc \

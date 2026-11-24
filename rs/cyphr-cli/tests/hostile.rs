@@ -351,11 +351,12 @@ impl User {
         r.json()
     }
 
-    /// A fresh identity with two commits: the genesis commit the CLI makes
-    /// before its first key add, then that key add.
+    /// A fresh identity with two commits: the genesis commit `upgrade` makes
+    /// for a Level 1 identity, then a key add.
     fn new_identity(&self) -> String {
         let g = self.setup(&["key", "generate", "--algo", "ES256"]);
         let tmb = g["tmb"].as_str().expect("tmb").to_owned();
+        self.setup(&["upgrade", &format!("--identity={tmb}")]);
         self.add_key(&tmb);
         tmb
     }
