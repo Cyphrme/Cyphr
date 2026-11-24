@@ -1,4 +1,4 @@
-//! Extension certificates: whether an offered head's commit log extends the
+//! ExtensionOffer certificates: whether an offered head's commit log extends the
 //! one held, from a certificate over the Principal Root (SPEC 4.4) and not
 //! from the commits themselves.
 //!
@@ -18,7 +18,7 @@ use serde_json::Value;
 /// An offered head's claim to extend a held log: the head, and the
 /// certificate that it does.
 #[derive(Debug)]
-pub struct Extension {
+pub struct ExtensionOffer {
     /// The offered log's root at its last commit: the peer's claim.
     pub head: Root,
     /// The certificate from the held log's size to the head's.
@@ -52,7 +52,7 @@ pub enum ExtensionFailure {
     Unconfirmed,
 }
 
-impl Extension {
+impl ExtensionOffer {
     /// A head and the certificate that it extends a held log.
     #[must_use]
     pub fn new(head: Root, certificate: Certificate) -> Self {
@@ -104,7 +104,7 @@ impl Extension {
 pub fn verify_extension_at<S: Storage>(
     held: &Principal<S>,
     from: u64,
-    offer: &Extension,
+    offer: &ExtensionOffer,
 ) -> Result<(), ExtensionFailure> {
     if from == 0 || from > held.commit_count() as u64 {
         return Err(ExtensionFailure::NothingHeld);
@@ -136,7 +136,7 @@ pub fn verify_extension_at<S: Storage>(
 /// As [`verify_extension_at`].
 pub fn verify_extension<S: Storage>(
     held: &Principal<S>,
-    offer: &Extension,
+    offer: &ExtensionOffer,
 ) -> Result<(), ExtensionFailure> {
     verify_extension_at(held, held.commit_count() as u64, offer)
 }
@@ -149,7 +149,7 @@ pub fn verify_extension<S: Storage>(
 /// [`ExtensionFailure::Unconfirmed`] if the root differs.
 pub fn confirm_extension<S: Storage>(
     held: &Principal<S>,
-    offer: &Extension,
+    offer: &ExtensionOffer,
 ) -> Result<(), ExtensionFailure> {
     if held.root_at(offer.head.size).as_ref() == Some(&offer.head) {
         Ok(())

@@ -26,7 +26,7 @@ use serde_json::Value;
 use crate::connector::{
     BindingError, BindingPolicy, ChannelBinding, ConnectError, Connector, Request,
 };
-use crate::report::{ForkPoint, HeldReport, TipReport};
+use crate::report::{HeldReport, ReportedForkPoint, TipReport};
 
 /// The response envelope wire version this client reads
 /// (`docs/specs/http-envelope.md`).
@@ -160,7 +160,7 @@ fn entries_fork_marker(body: &Value) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForkPatch {
     /// Where the branches part.
-    pub fork_point: ForkPoint,
+    pub fork_point: ReportedForkPoint,
     /// Each branch, from the fork point to its head.
     pub branches: Vec<BranchPatch>,
 }

@@ -58,7 +58,7 @@ use read::{
     HeldTips, NoTips, PinSource, Signed, StoredChain, action_bundle, bundle_czds, replay_first,
     replay_order, signed_of,
 };
-pub use read::{DerivedRoots, PatchActions, PatchEntry, PatchFork, PatchResponse};
+pub use read::{DerivedRoots, PatchActions, PatchFork, PatchResponse, StoredEntry};
 use rebuild::HealGate;
 pub use rebuild::{QuarantineReason, QuarantinedManifest, RebuildReport};
 use records::*;

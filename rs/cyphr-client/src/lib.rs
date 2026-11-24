@@ -21,9 +21,9 @@ mod revoke;
 mod sync;
 
 pub use embedded::{FollowReport, GossipTips, PeerPull};
-pub use exchange::{Bundle, BundleActions, BundleChain, BundleConnector, BundleError};
+pub use exchange::{BundleActions, BundleChain, BundleConnector, BundleError, ExchangeBundle};
 pub use extension::{
-    Extension, ExtensionFailure, confirm_extension, verify_extension, verify_extension_at,
+    ExtensionFailure, ExtensionOffer, confirm_extension, verify_extension, verify_extension_at,
 };
 pub use relying_party::{
     LOGIN_TYP_SUFFIX, Refusal, RelyingParty, RpConfig, Session, SessionBinding, Trust,
@@ -55,6 +55,6 @@ pub use patch::{
 };
 pub use peer::{HeldTip, PeerChain, PeerFailure, PeerLimits};
 pub use report::{
-    COMMIT_RECEIPT_TYP, ForkPoint, HELD_REPORT_TYP, HeldHead, HeldReport, HeldReportParseError,
-    TIP_REPORT_TYP, TipAnswer, TipReport, TipReportParseError, TipReportRoots,
+    COMMIT_RECEIPT_TYP, HELD_REPORT_TYP, HeldReport, HeldReportParseError, ReportedForkPoint,
+    ReportedHead, TIP_REPORT_TYP, TipAnswer, TipReport, TipReportParseError, TipReportRoots,
 };

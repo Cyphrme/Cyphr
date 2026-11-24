@@ -43,7 +43,7 @@ use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector, Request};
 use crate::evidence::{EvidenceFailure, names_pg, pg_names, verify_fork_items};
-use crate::extension::{Extension, ExtensionFailure, confirm_extension, verify_extension_at};
+use crate::extension::{ExtensionFailure, ExtensionOffer, confirm_extension, verify_extension_at};
 use crate::patch::{
     ActionBundle, PatchEntry, PatchFailure, PatchRequest, Step, fetch_patch,
     percent_encode_query_value, replay_order,
@@ -571,7 +571,7 @@ impl Record {
         &mut self,
         entries: &[PatchEntry],
         actions: &[ActionBundle],
-        claim: Option<&Extension>,
+        claim: Option<&ExtensionOffer>,
     ) -> Result<(), PeerFailure> {
         let Some(held) = &mut self.held else {
             self.held = Some(self.replay_full(entries, actions).await?);
@@ -712,7 +712,7 @@ impl Held {
         &mut self,
         entries: &[PatchEntry],
         actions: &[ActionBundle],
-        claim: Option<&Extension>,
+        claim: Option<&ExtensionOffer>,
         clock: Clock,
         tally: &AtomicU64,
     ) -> Result<(), PeerFailure> {
@@ -1391,7 +1391,7 @@ async fn reach<C: Connector>(
 /// What a peer's answer to a request for the proof that its tip extends
 /// the record's comes to.
 enum Offer {
-    Extends(Box<Extension>),
+    Extends(Box<ExtensionOffer>),
     /// The head the peer offered, which the held log cannot be shown to
     /// precede.
     Diverged(Root),
@@ -1422,7 +1422,7 @@ async fn offered_extension<C: Connector>(record: &Record, connector: &C) -> Offe
     // certificate is pulled as one that serves none: every commit is still
     // replayed, so the answer decides only what is fetched, never what is
     // believed.
-    let Ok(head) = Extension::head_from_payload(&payload["root"]) else {
+    let Ok(head) = ExtensionOffer::head_from_payload(&payload["root"]) else {
         return Offer::Unavailable;
     };
     if head.size <= held_size {
@@ -1436,10 +1436,10 @@ async fn offered_extension<C: Connector>(record: &Record, connector: &C) -> Offe
     let Ok(payload) = fetch_payload(connector, &target).await else {
         return Offer::Unavailable;
     };
-    let Ok(certificate) = Extension::certificate_from_payload(&payload) else {
+    let Ok(certificate) = ExtensionOffer::certificate_from_payload(&payload) else {
         return Offer::Unavailable;
     };
-    let offer = Extension::new(head, certificate);
+    let offer = ExtensionOffer::new(head, certificate);
     match verify_extension_at(&held.principal, held_size, &offer) {
         Ok(()) => Offer::Extends(Box::new(offer)),
         Err(ExtensionFailure::NotAnExtension | ExtensionFailure::NotLonger) => {
@@ -1488,8 +1488,8 @@ async fn locate_fork<C: Connector>(
             head.size
         );
         let payload = fetch_payload(connector, &target).await.ok()?;
-        let certificate = Extension::certificate_from_payload(&payload).ok()?;
-        let offer = Extension::new(head.clone(), certificate);
+        let certificate = ExtensionOffer::certificate_from_payload(&payload).ok()?;
+        let offer = ExtensionOffer::new(head.clone(), certificate);
         match verify_extension_at(&held.principal, k as u64, &offer) {
             Ok(()) => Some(true),
             Err(ExtensionFailure::NotAnExtension) => Some(false),

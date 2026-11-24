@@ -24,7 +24,7 @@ use cyphr::Key;
 use cyphr::principal::system_clock;
 use cyphr::replay::WireBundle;
 use cyphr_client::{
-    Anchor, BindingPolicy, Bundle, BundleError, Connector, HttpConnector, HttpOptions,
+    Anchor, BindingPolicy, BundleError, Connector, ExchangeBundle, HttpConnector, HttpOptions,
     PatchFailure, PatchRequest, PeerFailure, PeerStanding, PullPeer, PullReport, Record,
     branch_bundles, fetch_patch, fetch_resyncs, opener_of, pull,
 };
@@ -901,7 +901,7 @@ pub fn export(cli: &Cli, identity: &str, file: &std::path::Path) -> crate::Resul
         .into_iter()
         .flat_map(|h| h.revoked.iter().map(|r| r.envelope.clone()))
         .collect();
-    let bundle = Bundle::export(&record, &forks, revoked);
+    let bundle = ExchangeBundle::export(&record, &forks, revoked);
     std::fs::write(file, serde_json::to_vec_pretty(&bundle)?)?;
     let out = json!({"identity": identity, "file": file.display().to_string(),
         "chains": bundle.chains.len(), "revoked": bundle.revoked.len()});
@@ -922,7 +922,7 @@ pub fn import(
     file: &std::path::Path,
     anchor: Option<&str>,
 ) -> crate::Result<()> {
-    let bundle = Bundle::parse(&std::fs::read(file)?).map_err(|e| match e {
+    let bundle = ExchangeBundle::parse(&std::fs::read(file)?).map_err(|e| match e {
         BundleError::UnsupportedVersion { found, supported } => {
             Error::BundleVersion { found, supported }
         },

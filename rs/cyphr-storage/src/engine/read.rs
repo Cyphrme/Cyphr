@@ -13,7 +13,7 @@ use super::*;
 /// The bundle's cozies, in bundle order ([`WireBundle::cozies`]), are the
 /// blobs `commit.blob_hashes` names, in order.
 #[derive(Debug, Clone)]
-pub struct PatchEntry {
+pub struct StoredEntry {
     /// Commit metadata from the index.
     pub commit: CommitRef,
     /// The commit's bundle, grouped by transaction as it was accepted.
@@ -26,7 +26,7 @@ pub struct PatchResponse {
     /// Principal genesis identifier.
     pub principal_id: String,
     /// Ordered commit entries with their blob contents.
-    pub entries: Vec<PatchEntry>,
+    pub entries: Vec<StoredEntry>,
     /// The chain position the range starts at: the position just after the
     /// resync anchor, whichever algorithm spelled it; `None` for a full
     /// chain. An empty range with `from == tip.commit_count` is caught up.
@@ -468,7 +468,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut entries = Vec::with_capacity(chain.len());
         for commit_ref in chain {
             let bundle = self.commit_bundle(principal_id, &commit_ref).await?;
-            entries.push(PatchEntry {
+            entries.push(StoredEntry {
                 commit: commit_ref,
                 bundle,
             });
