@@ -78,6 +78,10 @@ pub enum WireError {
     /// A transaction of no coz (SPEC 4.1: one or more).
     #[error("a transaction holds no coz")]
     EmptyTransaction,
+    /// A key-introducing coz names a key the bundle does not carry in
+    /// `keys` (SPEC 4.6.2).
+    #[error("a key-introducing coz names a key the bundle does not carry")]
+    MissingKey,
 }
 
 /// One entry of a bundle's `keys` (SPEC 4.6.2, 5.2): the full public key a
@@ -554,21 +558,102 @@ impl Bundle {
     }
 
     /// Every coz in bundle order: the actions, then each transaction's.
-    pub fn cozies(&self) -> impl Iterator<Item = &StoredCoz> {
+    pub fn cozies(&self) -> impl DoubleEndedIterator<Item = &StoredCoz> {
         self.actions.iter().chain(self.txs.iter().flatten())
+    }
+
+    /// The signer of the commit the bundle forms: the closing
+    /// `commit/create`'s, else the last coz's ([`commit_signer`]); `None`
+    /// for a bundle of no coz.
+    #[must_use]
+    pub fn commit_signer(&self) -> Option<&coz::Thumbprint> {
+        commit_signer(
+            self.cozies()
+                .map(|c| (c.header.typ.as_str(), &c.header.tmb)),
+        )
+    }
+
+    /// Every key the bundle names, once each, in order of first mention:
+    /// each coz's signer (`tmb`) and, for a key-introducing coz, the key it
+    /// introduces (`id`). Read from the bundle's own bytes before any
+    /// signature is checked, so it says what a revoke could bear on, never
+    /// who authenticated.
+    #[must_use]
+    pub fn named_keys(&self) -> Vec<coz::Thumbprint> {
+        let mut keys: Vec<coz::Thumbprint> = Vec::new();
+        for coz in self.cozies() {
+            let introduced = coz
+                .introduces()
+                .and_then(|id| Base64UrlUnpadded::decode_vec(id).ok())
+                .map(coz::Thumbprint::from_bytes);
+            for named in [Some(coz.header.tmb.clone()), introduced]
+                .into_iter()
+                .flatten()
+            {
+                if !keys.contains(&named) {
+                    keys.push(named);
+                }
+            }
+        }
+        keys
+    }
+
+    /// The keys a genesis commit discloses, in wire order: each key a
+    /// `key/create` before the first `principal/create` introduces (SPEC
+    /// 5.1 steps 1-2, 5.3). `None` when the bundle has no
+    /// `principal/create`, so it is no genesis commit; an empty list when
+    /// no `key/create` precedes it.
+    ///
+    /// # Errors
+    ///
+    /// [`WireError::MissingKey`] when one of those `key/create` cozies names
+    /// a key the bundle does not carry.
+    pub fn genesis_keys(&self) -> Option<Result<Vec<&Key>, WireError>> {
+        let all: Vec<&StoredCoz> = self.txs.iter().flatten().collect();
+        let at = all
+            .iter()
+            .position(|c| typ::has_suffix(&c.header.typ, typ::PRINCIPAL_CREATE))?;
+        Some(
+            all[..at]
+                .iter()
+                .filter(|c| typ::has_suffix(&c.header.typ, typ::KEY_CREATE))
+                .map(|c| self.introduced_key(c).ok_or(WireError::MissingKey))
+                .collect(),
+        )
     }
 
     /// The keys of the bundle a key-introducing coz names: exactly those
     /// whose thumbprint some coz of `txs` names by `id`.
     pub fn introduced_keys(&self) -> impl Iterator<Item = &Key> {
-        self.txs.iter().flatten().filter_map(|c| self.key_for(c))
+        self.txs
+            .iter()
+            .flatten()
+            .filter_map(|c| self.introduced_key(c))
     }
 
     /// The key `coz` introduces: the entry of `keys` its `id` names.
-    fn key_for(&self, coz: &StoredCoz) -> Option<&Key> {
+    #[must_use]
+    pub fn introduced_key(&self, coz: &StoredCoz) -> Option<&Key> {
         let id = coz.introduces()?;
         self.keys.iter().find(|k| k.tmb().to_b64() == id)
     }
+}
+
+/// The signer of the commit whose cozies, in signed order, are `cozies`
+/// (each a `typ` and its signer): the closing `commit/create`'s, else the
+/// last coz's. The one rule, whether the cozies are a bundle's or a stored
+/// commit's.
+pub fn commit_signer<'a, T>(cozies: impl DoubleEndedIterator<Item = (&'a str, T)>) -> Option<T> {
+    let mut last = None;
+    for (coz_typ, signer) in cozies.rev() {
+        if typ::has_suffix(coz_typ, typ::COMMIT_CREATE) {
+            return Some(signer);
+        }
+        if last.is_none() {
+            last = Some(signer);
+        }
+    }
+    last
 }
 
 /// What one replayed bundle was: the digests of its cozies in bundle
@@ -758,7 +843,7 @@ async fn stage<'a, S: eml::Storage>(
                         &c.pay_json,
                         &c.sig,
                         c.czd.clone(),
-                        bundle.key_for(c).cloned(),
+                        bundle.introduced_key(c).cloned(),
                     )
                     .map_err(at(i + j))
             })
