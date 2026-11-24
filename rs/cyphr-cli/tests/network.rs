@@ -480,9 +480,9 @@ fn data_push_sends_actions_ahead_of_their_ds_create() {
 /// action stays in the device's DT, so a following `ds/create` includes it,
 /// the peer accepts it, and a fresh client verifies the result.
 /// End-to-end: yes (two devices of one principal, one real server).
-/// Turns red if the adoption rebuilds the store from commits alone: the
-/// action is gone, `data commit` has no DR to include and fails; if it
-/// discards the shared prefix or more than the diverged commit; or if it
+/// Turns red if the adoption rebuilds the store from commits alone: a held
+/// naked-revoke record is lost, the action is gone, `data commit` has no DR to include and fails;
+/// if it discards the shared prefix or more than the diverged commit; or if it
 /// drops an action the adopted history still authorizes at its own `now`, or
 /// re-signs one (a duplicate under a new digest, SPEC 6.5); an action it
 /// cannot keep is named under `dropped_actions`.
@@ -494,6 +494,35 @@ fn trust_remote_discards_only_diverged_commits_and_keeps_actions() {
     accepted(&a.push(&id, &server.url), "base push");
     let b = a.clone_identity(&id);
     let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+
+    // A key A adds is naked-revoked, and B's store records the revoke (the
+    // pull step does): a record outside any commit, which adopting must keep.
+    let k2 = a.setup(&["key", "add", &ident, &signer])["added_key"]
+        .as_str()
+        .expect("added key")
+        .to_owned();
+    accepted(&a.push(&id, &server.url), "A's key add");
+    a.setup(&[
+        "key",
+        "naked-revoke",
+        &format!("--key={k2}"),
+        &format!("--peer={}", server.url),
+    ]);
+    let v = b.run(&["verify", &ident, &format!("--peer={}", server.url)]);
+    assert!(v.ok, "B pulls A's commit and the revoke: {}", v.stderr);
+    let revoked_in = |u: &User| {
+        let engine = commands::common::open_store(&u.dir.path().join("data"), false)
+            .expect("open the store");
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                engine.rebuild_index_from_manifests().await.expect("heal");
+                engine.is_revoked(&k2)
+            })
+    };
+    assert!(revoked_in(&b), "B holds the revoke record before adopting");
 
     // B records an action and a commit it does not push; A moves the peer on.
     b.setup(&["data", "action", &ident, &signer, "--msg=mine"]);
@@ -515,6 +544,10 @@ fn trust_remote_discards_only_diverged_commits_and_keeps_actions() {
         "only B's own commit goes: {adopted}"
     );
     assert_eq!(adopted["fetched"], 1, "A's commit comes: {adopted}");
+    assert!(
+        revoked_in(&b),
+        "the naked-revoke record crosses the adoption unchanged"
+    );
     assert_eq!(
         b.commit_count(&id),
         diverged.expect("count"),
@@ -549,7 +582,9 @@ fn trust_remote_discards_only_diverged_commits_and_keeps_actions() {
 /// the commit among its heads, and reports the fork as pushed (`peer_in_error`,
 /// exit 0). End-to-end: yes (two devices, one real server).
 /// Turns red on: a push that sends the fork with no flag, or one that
-/// reports a kept fork as a refusal (`stale`, non-zero exit).
+/// reports a kept fork as a refusal (`stale`, non-zero exit). That the peer
+/// kept it is read from its tip; the unit test `a_fork_is_kept_only_when_...`
+/// covers a peer that refused and kept nothing.
 #[test]
 fn assert_local_pushes_the_fork() {
     for diverged in [2, 1] {
@@ -579,6 +614,14 @@ fn assert_local_pushes_the_fork() {
             sent.stderr
         );
         assert_eq!(sent.json()["pushed"], diverged, "{}", sent.stdout);
+        // A pair is taken as an extended branch ("accepted"); a lone commit is
+        // refused with 409 yet kept, which the tip shows (`peer_in_error`).
+        let status = if diverged == 1 {
+            "peer_in_error"
+        } else {
+            "accepted"
+        };
+        assert_eq!(sent.json()["status"], status, "{}", sent.stdout);
     }
 }
 

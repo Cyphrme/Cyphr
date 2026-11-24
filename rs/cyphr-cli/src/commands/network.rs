@@ -8,6 +8,7 @@ use base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
 use cyphr::state::TaggedDigest;
 use cyphr_client::TipAnswer;
+use cyphr_storage::blob::Blake3Hash;
 use cyphr_storage::engine::bare_digest;
 use serde_json::{Value, json};
 
@@ -45,6 +46,17 @@ fn held_position(tip: &TipAnswer, local: &[RawCommit]) -> Option<usize> {
         TipAnswer::Active { commit_id } => at(commit_id),
         TipAnswer::Error { heads, .. } => heads.iter().filter_map(|h| at(&h.commit_id)).max(),
     }
+}
+
+/// Whether the peer, after answering 409 to `local[i]`, holds it as a fork
+/// participant: it reports Error, with a head that is that commit or one
+/// above it. Anything else (an Active tip, an Error without this head, no
+/// tip) is the peer refusing it.
+fn fork_kept(tip: Option<&TipAnswer>, local: &[RawCommit], i: usize) -> bool {
+    tip.is_some_and(|tip| {
+        matches!(tip, TipAnswer::Error { .. })
+            && held_position(tip, local).is_some_and(|held| held >= i)
+    })
 }
 
 /// The peer's answer in words, for a refusal.
@@ -215,12 +227,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
                 // with this commit among its heads, the fork was taken and the
                 // push is done; otherwise the peer did not take it.
                 Err(PeerError::Stale { .. }) if forking.is_some() => {
-                    let kept = peer
-                        .tip(&wire)
-                        .await?
-                        .and_then(|tip| held_position(&tip, &local))
-                        .is_some_and(|held| held >= i);
-                    if kept {
+                    if fork_kept(peer.tip(&wire).await?.as_ref(), &local, i) {
                         in_error = true;
                         continue;
                     }
@@ -538,6 +545,93 @@ impl Drop for Scratch {
     }
 }
 
+/// The head of a commit or branch manifest: the part `copy_records` reads.
+#[derive(serde::Deserialize)]
+struct ManifestHead {
+    commit: CommitHead,
+}
+
+#[derive(serde::Deserialize)]
+struct CommitHead {
+    principal_id: String,
+    sequence: u64,
+    blob_hashes: Vec<Blake3Hash>,
+}
+
+/// The head of an action manifest.
+#[derive(serde::Deserialize)]
+struct ActionHead {
+    principal_id: String,
+    blob_hashes: Vec<Blake3Hash>,
+}
+
+/// Copy the blob store `old` into `new` unchanged, except what the adoption
+/// discards: `principal_id`'s commit manifests from position `common` on,
+/// and its action manifests (those are re-recorded, or dropped and named,
+/// by the caller). A coz blob goes with the manifest that alone referenced
+/// it. Everything else is record (I1) and crosses as it is, for every
+/// principal: the other principals' chains, retained rival branches, naked
+/// revoke records and resync records.
+async fn copy_records(
+    old: &super::common::CliStorageEngine,
+    new: &super::common::CliStorageEngine,
+    principal_id: &str,
+    common: usize,
+) -> crate::Result<()> {
+    use std::collections::HashSet;
+
+    use cyphr_storage::blob::BlobStore;
+    use cyphr_storage::engine::{
+        ACTION_MANIFEST_PREFIX, BRANCH_MANIFEST_PREFIX, COMMIT_MANIFEST_PREFIX,
+    };
+
+    let mine = |id: &str| bare_digest(id) == bare_digest(principal_id);
+    let mut gone: HashSet<Blake3Hash> = HashSet::new();
+    let mut released: HashSet<Blake3Hash> = HashSet::new();
+    let mut kept: HashSet<Blake3Hash> = HashSet::new();
+    for hash in old.blob_store().iter().await? {
+        let hash = hash?;
+        let Some(data) = old.blob_store().get(&hash).await? else {
+            return Err(Error::MissingBlob(hash));
+        };
+        if let Some(json) = data.strip_prefix(COMMIT_MANIFEST_PREFIX) {
+            let head: ManifestHead = serde_json::from_slice(json)?;
+            if mine(&head.commit.principal_id) && head.commit.sequence >= common as u64 {
+                gone.insert(hash);
+                released.extend(head.commit.blob_hashes);
+            } else {
+                kept.extend(head.commit.blob_hashes);
+            }
+        } else if let Some(json) = data.strip_prefix(BRANCH_MANIFEST_PREFIX) {
+            let head: ManifestHead = serde_json::from_slice(json)?;
+            kept.extend(head.commit.blob_hashes);
+        } else if let Some(json) = data.strip_prefix(ACTION_MANIFEST_PREFIX) {
+            let head: ActionHead = serde_json::from_slice(json)?;
+            if mine(&head.principal_id) {
+                gone.insert(hash);
+                released.extend(head.blob_hashes);
+            } else {
+                kept.extend(head.blob_hashes);
+            }
+        }
+    }
+    for hash in old.blob_store().iter().await? {
+        let hash = hash?;
+        if gone.contains(&hash) || (released.contains(&hash) && !kept.contains(&hash)) {
+            continue;
+        }
+        let Some(data) = old.blob_store().get(&hash).await? else {
+            return Err(Error::MissingBlob(hash));
+        };
+        if new.blob_store().put(&data).await? != hash {
+            return Err(Error::InvalidArgument(format!(
+                "blob {hash} changed its address while being copied"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Adopt the peer's history over local commits that diverge from it, on the
 /// user's explicit choice to trust the peer (`fetch --trust-remote`).
 ///
@@ -545,8 +639,9 @@ impl Drop for Scratch {
 /// kept. The store is append-only (I1), so a diverged local commit cannot be
 /// removed in place, and leaving it beside the peer's commit at the same
 /// height would make the principal's chain unrecoverable on reindex. The
-/// adoption therefore builds a fresh store, copies every other principal
-/// into it unchanged, and swaps it in; the old store is kept as a backup.
+/// adoption therefore builds a fresh store, copies every record the old one
+/// holds except the diverged commits into it unchanged, and swaps it in; the
+/// old store is kept as a backup.
 /// Data actions recorded locally and in no commit survive when the adopted
 /// history accepts them as signed; any other is dropped and named, never
 /// re-signed.
@@ -563,8 +658,7 @@ fn adopt_remote(
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let path = store_path(cli)?.to_owned();
     // A multi-key principal's identity is its PG, not a keystore key, so
-    // its genesis comes from the stored history (as for the other
-    // principals copied below).
+    // its genesis comes from the stored history.
     let genesis = match local_genesis(&keystore, identity)? {
         Some(g) => g,
         None => block_on(old.resolve_genesis(&principal_id, &[]))??,
@@ -598,37 +692,16 @@ fn adopt_remote(
     {
         let new = open_store(&tmp, false)?;
         block_on(async {
-            use cyphr_storage::index::Indexer;
-            for summary in old.indexer().list_principals().await? {
-                if summary.principal_id == principal_id {
-                    continue;
-                }
-                let bare = bare_digest(&summary.principal_id);
-                let g = match local_genesis(&keystore, bare)? {
-                    Some(g) => g,
-                    None => old.resolve_genesis(&summary.principal_id, &[]).await?,
-                };
-                let commits: Vec<WireBundle> = raw_chain(&old, &summary.principal_id)
-                    .await?
-                    .into_iter()
-                    .map(|c| c.bundle)
-                    .collect();
-                let actions: Vec<Vec<Vec<u8>>> = old
-                    .get_patch(&summary.principal_id, None, None)
-                    .await?
-                    .actions
-                    .into_iter()
-                    .map(|a| a.blobs)
-                    .collect();
-                submit_history(&new, &summary.principal_id, Some(g), &commits, &actions, 0).await?;
-            }
+            copy_records(&old, &new, &principal_id, common).await?;
+            // The shared prefix is already in `new`; the peer's commits and
+            // actions follow it.
             submit_history(
                 &new,
                 &principal_id,
                 Some(genesis.clone()),
                 &theirs,
                 &their_actions,
-                0,
+                common,
             )
             .await?;
             Ok::<_, Error>(())
@@ -770,5 +843,32 @@ mod tests {
         assert_eq!(held_position(&error(&[2, 9, 4]), &chain), Some(3));
         assert_eq!(held_position(&error(&[8, 9]), &chain), None);
         assert!(describe(&error(&[8, 9])).contains("Error"));
+    }
+
+    /// Backs `push --assert-local` reporting a lone fork as pushed only when
+    /// the peer reports Error with that commit among its heads. Red if the
+    /// answer is forced true: an Active tip, an Error that holds only other
+    /// heads, and no answer at all each mean the peer kept nothing.
+    #[test]
+    fn a_fork_is_kept_only_when_the_peer_is_in_error_with_its_head() {
+        let chain = local(&[1, 2, 3]);
+        assert!(fork_kept(Some(&error(&[3])), &chain, 2));
+        assert!(fork_kept(Some(&error(&[9, 3])), &chain, 2));
+        assert!(!fork_kept(Some(&error(&[9])), &chain, 2), "another head");
+        assert!(
+            !fork_kept(Some(&error(&[2])), &chain, 2),
+            "below the commit"
+        );
+        assert!(
+            !fork_kept(
+                Some(&TipAnswer::Active {
+                    commit_id: digest(3)
+                }),
+                &chain,
+                2
+            ),
+            "an Active peer kept no fork"
+        );
+        assert!(!fork_kept(None, &chain, 2));
     }
 }
