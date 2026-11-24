@@ -92,6 +92,10 @@ pub struct AppState {
     /// auth state beyond short expiry).
     pub challenges: auth::login::ChallengeStore,
 
+    /// The permissions a login is granted, supplied by the integrating
+    /// service ([`AppState::with_login_policy`]). Defaults to granting none.
+    pub login_policy: Arc<dyn auth::policy::LoginPolicy>,
+
     /// Durable, server-local naked-revoke observations (SPEC §6.4). Its
     /// own store, distinct from the rebuildable index: a naked revoke
     /// mutates no chain and must survive a reindex, so it cannot live in
@@ -154,12 +158,20 @@ impl AppState {
             receipt_signer: None,
             principal: None,
             challenges: auth::login::ChallengeStore::new(),
+            login_policy: Arc::new(auth::policy::NoPermissions),
             observations,
             http_client,
             metrics: metrics::Metrics::default(),
             health,
             sync_locks,
         })
+    }
+
+    /// Grant logins the permissions `policy` decides, instead of none.
+    #[must_use]
+    pub fn with_login_policy(mut self, policy: Arc<dyn auth::policy::LoginPolicy>) -> Self {
+        self.login_policy = policy;
+        self
     }
 
     /// Route every receipt and tip attestation through

@@ -13,6 +13,7 @@
 
 pub mod login;
 pub mod middleware;
+pub mod policy;
 pub mod principal;
 pub mod token;
 

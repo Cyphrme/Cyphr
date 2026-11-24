@@ -204,7 +204,7 @@ lacks: re-sending one it already holds is an error.
 
 Use the genesis thumbprint as the principal id, as above. Any other id is
 refused with a `400` before anything is stored; see
-[Map `pr` to an account](#5-map-pr-to-an-account).
+[Map `pg` to an account](#5-map-pg-to-an-account).
 
 One CLI limit to know before you lean on it: `key revoke` refuses unless
 `--key` equals `--signer`, so it can only ever self-revoke.
@@ -394,7 +394,7 @@ curl -s -X POST http://127.0.0.1:3999/auth/login \
 {
   "v": 1,
   "payload": {
-    "token": "{\"pay\":{\"alg\":\"Ed25519\",\"now\":1795229621,\"tmb\":\"lsraVr9sNuOt...\",\"typ\":\"cyphr-server/auth/token\",\"pr\":\"YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8\",\"exp\":1795230521,\"perms\":[\"read\",\"write\"],\"ltmb\":\"YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8\"},\"sig\":\"wUozXQ3zuraugitgYAu9U5yG7xSMVeoBsyVbtIMyPsICITFYoAeR_xuU1XO39MYXxAY4h2pJijZejcxpfCVuBw\"}"
+    "token": "{\"pay\":{\"alg\":\"Ed25519\",\"now\":1795229621,\"tmb\":\"lsraVr9sNuOt...\",\"typ\":\"cyphr.me/user/login/bearer/create\",\"pg\":\"YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8\",\"exp\":1795230521,\"perms\":[\"read\",\"write\"],\"ltmb\":\"YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8\"},\"sig\":\"wUozXQ3zuraugitgYAu9U5yG7xSMVeoBsyVbtIMyPsICITFYoAeR_xuU1XO39MYXxAY4h2pJijZejcxpfCVuBw\"}"
   },
   "statement": {
     "kind": "unsigned"
@@ -431,12 +431,12 @@ function verifyToken(token, serverPubB64, now) {
   if (!crypto.verify(null, cad, key, Buffer.from(sig, "base64url"))) {
     throw new Error("token signature is invalid");
   }
-  if (pay.typ !== "cyphr-server/auth/token") {
+  if (pay.typ !== "cyphr.me/user/login/bearer/create") {
     throw new Error(`not a bearer token: typ=${pay.typ}`);
   }
   if (pay.exp <= now) throw new Error("token has expired");
 
-  return { pr: pay.pr, perms: pay.perms, exp: pay.exp };
+  return { pg: pay.pg, perms: pay.perms, exp: pay.exp };
 }
 ```
 
@@ -458,12 +458,12 @@ once it is not:
 That protects the server's routes, not your app. If you need to cut a
 session short, cut yours.
 
-### 5. Map `pr` to an account
+### 5. Map `pg` to an account
 
 ```js
 const claims = verifyToken(token, serverPub, Math.floor(Date.now() / 1000));
-let account = await db.accountByPrincipal(claims.pr);
-if (!account) account = await db.createAccount({ principal: claims.pr });
+let account = await db.accountByPrincipal(claims.pg);
+if (!account) account = await db.createAccount({ principal: claims.pg });
 await session.start(account);
 ```
 
@@ -732,7 +732,8 @@ them here:
   `key/delete`'s job, not revoke's, and the CLI has no `delete` subcommand
   (`cyphr key` has generate, add, revoke, and list).
 - **`POST /revoke` cannot kill a genesis key**, as above.
-- **No permissions.** Every token carries `["read","write"]`.
+- **No permissions by default.** A server grants a login the permissions its
+  service's policy returns, and none if the service supplies none.
 - **No token revocation.** Expiry only, 15 minutes.
 - **No recovery transactions on the server.** Recovery agents, freeze, and
   thaw are specified; the server does not implement them.

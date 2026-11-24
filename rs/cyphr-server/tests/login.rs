@@ -122,6 +122,11 @@ const AUDIENCE: &str = "cyphr.me";
 /// An `AppState` configured for login: a fresh Ed25519 signing identity and
 /// an audience, over a temporary database.
 fn login_state() -> Arc<AppState> {
+    Arc::new(login_app_state())
+}
+
+/// [`login_state`] before it is shared, for a test that configures it.
+fn login_app_state() -> AppState {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let key_path = temp_dir.path().join("signing-key.json");
     let kp = coz::Alg::Ed25519.generate_keypair();
@@ -139,7 +144,7 @@ fn login_state() -> Arc<AppState> {
         ..Default::default()
     };
     std::mem::forget(temp_dir);
-    Arc::new(AppState::new(config).expect("open login AppState"))
+    AppState::new(config).expect("open login AppState")
 }
 
 /// Current wall-clock Unix seconds, for signing timestamp-flow logins the
@@ -446,6 +451,85 @@ async fn login_challenge_flow_issues_valid_token() {
         payload["token"].as_str().is_some(),
         "a token must be issued"
     );
+}
+
+// ========================================================================
+// Permissions: a service's policy and a route that requires one
+// ========================================================================
+
+/// The test service: it grants `notes:write` to one key only.
+struct NotesPolicy {
+    writer: coz::Thumbprint,
+}
+
+impl cyphr_server::auth::policy::LoginPolicy for NotesPolicy {
+    fn perms(&self, _pg: &str, login_key: &coz::Thumbprint) -> Vec<String> {
+        if *login_key == self.writer {
+            vec!["notes:write".to_string()]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// The service's one protected route.
+async fn save_note(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<&'static str, cyphr_server::error::AppError> {
+    cyphr_server::auth::middleware::require(&state, &headers, None, "notes:write").await?;
+    Ok("saved")
+}
+
+/// An integrating service supplies its own permissions and protects its
+/// own route with them: no token is refused, a token whose login the
+/// policy did not grant the permission is forbidden, and a token it did is
+/// served. The permission names are the service's alone.
+#[tokio::test]
+async fn a_service_policy_grants_and_its_route_requires_a_permission() {
+    let pool = load_pool();
+    let writer = pool.get("golden").unwrap().compute_tmb().unwrap();
+    let state = Arc::new(login_app_state().with_login_policy(Arc::new(NotesPolicy { writer })));
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let app = build_router(state.clone()).merge(
+        axum::Router::new()
+            .route("/notes", axum::routing::post(save_note))
+            .with_state(state.clone()),
+    );
+
+    let token_for = |signer: &'static str| {
+        let app = app.clone();
+        let body = login_body(&pool, signer, AUDIENCE, Some(&pid), None, now_secs());
+        async move {
+            let (status, json) = post_json(app, "/auth/login", body).await;
+            assert_eq!(status, StatusCode::OK, "login must succeed: {json:?}");
+            envelope_payload(&json)["token"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let save = |token: Option<String>| {
+        let app = app.clone();
+        async move {
+            let mut req = Request::builder().method("POST").uri("/notes");
+            if let Some(t) = token {
+                req = req.header("authorization", format!("Bearer {t}"));
+            }
+            app.oneshot(req.body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+
+    assert_eq!(save(None).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        save(Some(token_for("key_a").await)).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(save(Some(token_for("golden").await)).await, StatusCode::OK);
 }
 
 // ========================================================================

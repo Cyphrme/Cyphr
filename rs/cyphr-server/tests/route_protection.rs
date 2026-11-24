@@ -761,7 +761,7 @@ async fn bearer_refuses_server_signed_non_token() {
     pay.tmb = Some(pool.get("golden").unwrap().compute_tmb().unwrap());
     pay.typ = Some("cyphr-server/auth/not-a-token".to_string());
     pay.extra
-        .insert("pr".to_string(), serde_json::Value::String(pid.clone()));
+        .insert("pg".to_string(), serde_json::Value::String(pid.clone()));
     pay.extra
         .insert("exp".to_string(), serde_json::Value::from(real_now() + 300));
     pay.extra
@@ -814,7 +814,7 @@ async fn token_key_absent_or_missing_is_refused_at_push() {
         pay.tmb = identity.alg().compute_thumbprint(identity.pub_key());
         pay.typ = Some(cyphr_server::auth::token::BEARER_TOKEN_TYP.to_string());
         pay.extra
-            .insert("pr".to_string(), serde_json::Value::String(pid.clone()));
+            .insert("pg".to_string(), serde_json::Value::String(pid.clone()));
         pay.extra
             .insert("exp".to_string(), serde_json::Value::from(real_now() + 300));
         pay.extra

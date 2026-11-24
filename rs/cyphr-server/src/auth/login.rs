@@ -371,14 +371,6 @@ impl From<LoginError> for AppError {
     }
 }
 
-/// Permissions a successful login grants. There is no permissions model
-/// in v1 (route-level enforcement is a later concern), so a login
-/// authorizes the principal for the baseline read/write surface; a real
-/// policy will refine this.
-fn default_login_perms() -> Vec<String> {
-    vec!["read".to_string(), "write".to_string()]
-}
-
 /// The explicit, honest rejection a keyless server (no configured signing
 /// identity) gives both login and challenge -- the SAME condition, the
 /// SAME error, never `AppError::internal`. A keyless server cannot
@@ -544,11 +536,12 @@ pub async fn login(
     // the client typed: a relying party keys accounts on this, and two
     // spellings of one identity must not yield two accounts.
     let subject = bare_digest(&canonical_id).to_string();
+    let perms = state.login_policy.perms(&subject, &parsed.tmb);
     let token = identity
         .issue_login_token(
             subject,
             &parsed.tmb,
-            default_login_perms(),
+            perms,
             now,
             state.config.session_ttl_secs.clamp(1, MAX_SESSION_TTL_SECS),
             // Bound to the channel the login committed to; over HTTP (a
@@ -589,15 +582,13 @@ pub async fn session(
     peer: Option<axum::Extension<crate::transport::AuthenticatedPeer>>,
     body: String,
 ) -> Result<Json<Envelope<SessionResponse>>, AppError> {
-    let (identity, _) = login_capability(&state)?;
-    let claims = identity
-        .verify_token(body.trim(), server_now())
-        .map_err(|e| AppError::unauthorized(format!("bearer token rejected: {e}")))?;
-    super::middleware::check_channel(
-        &claims,
+    login_capability(&state)?;
+    let claims = super::middleware::authenticate(
+        &state,
+        body.trim(),
         peer.as_ref().map(|p| p.0.handshake_hash.as_slice()),
-    )?;
-    super::middleware::check_session_key(&state.engine, &state.observations, &claims).await?;
+    )
+    .await?;
     let key = claims
         .login_tmb
         .clone()

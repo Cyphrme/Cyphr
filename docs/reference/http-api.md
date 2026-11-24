@@ -841,7 +841,7 @@ Exchange a signed login for a bearer token. Body: a coz, JSON `{pay, sig}`
 Timestamp flow: `now` must be within 60 seconds of server time.
 
 **200:** payload `{"token": "<signed coz>"}`, `unsigned`. The token carries
-`["read","write"]`, names the principal and the login key, and expires after
+the permissions the service's login policy returns (none by default), names the principal (`pg`) and the login key, and expires after
 `session_ttl_secs` (clamped to 1 through 3600 seconds). Over Noise it is
 bound to that session's handshake hash; over HTTP it is bound to the key.
 

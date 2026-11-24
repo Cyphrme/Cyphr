@@ -60,11 +60,11 @@ pub const DEFAULT_TTL_SECS: i64 = 15 * 60;
 /// A bearer token is just a Coz message the server signed; without a
 /// fixed, checked `typ` any *other* message the server key ever signs
 /// (a future signed notice, a different protocol message) whose payload
-/// happens to carry `pr`/`exp`/`perms`/`tmb` would verify as a bearer
+/// happens to carry `pg`/`exp`/`perms`/`tmb` would verify as a bearer
 /// token. Stamping issuance and checking verification against this one
 /// constant makes the two symmetric, so a token's kind is bound into
 /// the signature, not merely assumed by the reader.
-pub const BEARER_TOKEN_TYP: &str = "cyphr-server/auth/token";
+pub const BEARER_TOKEN_TYP: &str = "cyphr.me/user/login/bearer/create";
 
 /// The signed claim naming the thumbprint (b64ut) of the principal key
 /// that logged in. The server signs it, so a holder cannot rebind a
@@ -195,7 +195,7 @@ impl ServerIdentity {
         pay.now = Some(now);
         pay.tmb = Some(tmb);
         pay.typ = Some(BEARER_TOKEN_TYP.to_string());
-        pay.extra.insert("pr".to_string(), Value::String(pg));
+        pay.extra.insert("pg".to_string(), Value::String(pg));
         pay.extra
             .insert("exp".to_string(), Value::from(now + ttl_secs));
         pay.extra.insert("perms".to_string(), Value::from(perms));
@@ -269,9 +269,9 @@ fn claims_from_pay(pay: &coz::Pay) -> Result<Claims, TokenError> {
 
     let pg = pay
         .extra
-        .get("pr")
+        .get("pg")
         .and_then(Value::as_str)
-        .ok_or(TokenError::MissingClaim("pr"))?
+        .ok_or(TokenError::MissingClaim("pg"))?
         .to_string();
 
     let exp = pay
@@ -441,10 +441,10 @@ mod tests {
         const GOLDEN: &str = concat!(
             r#"{"pay":{"alg":"Ed25519","now":1700000000,"#,
             r#""tmb":"aaMiqIXTeW8wfSkKY_ME3BDBAfz5t-qPLabapQ1TQfNzUFPOEp4_4KTGYRUHVbe18MOVsXusLb0qAWmmoV3Yvw","#,
-            r#""typ":"cyphr-server/auth/token","pr":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA","#,
+            r#""typ":"cyphr.me/user/login/bearer/create","pg":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA","#,
             r#""exp":1700000900,"perms":["read","write"],"#,
             r#""ltmb":"OzD0J6wdMqmN0aWu42RcWFRp1DzYJeQW8KYvXdrsLOrNV8Pva_ZpjrNtvsdqWsFL_zpZUDutAiTu4W5OdIL44A"},"#,
-            r#""sig":"rdOfTv9Wm11gKJ9YT6tbj1wNs1cB8aF_yQKPjahwc3iEccPcsZF8wjJf9cJb04LHkAqhZ8BD3kYuWJi5HjaVAQ"}"#,
+            r#""sig":"1SLPRqsv9liBekrZmtRYHGylWGLXhw3QOlWaeCya-agbJ0Dmkk4WhvfGjUkkysea5LdTYHPDP9C4Iqz2pd7SBg"}"#,
         );
 
         assert_eq!(token, GOLDEN);

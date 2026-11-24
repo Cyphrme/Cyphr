@@ -68,7 +68,7 @@ against the enveloped payload's own fields.
 - `cyphr-server/receipt/tip` -- a tip report (`/tip`).
 
 Each is a dedicated constant, distinct from the bearer token's
-`cyphr-server/auth/token`, so no signature the server key produces can
+`cyphr.me/user/login/bearer/create`, so no signature the server key produces can
 be replayed across purposes -- the same replay-across-purposes closure
 bearer tokens already apply.
 
