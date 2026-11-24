@@ -230,7 +230,7 @@ impl Model {
                 if pm.devices != 2 {
                     return Err(format!("`{op}`: needs two devices"));
                 }
-                // Both commits end up in the chain: the second is rebased.
+                // Both commits end up in the chain: the second is redone.
                 pm.height += 2;
             },
             Op::Partition { a, b } => {

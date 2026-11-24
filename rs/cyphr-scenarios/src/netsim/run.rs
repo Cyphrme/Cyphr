@@ -6,8 +6,8 @@
 //! before it. Each
 //! honest op is `refresh if another device wrote, act, push to the home
 //! peer`; an op the servers refuse for any reason but Stale is an N2
-//! failure, and a Stale refusal is answered by the rebase the protocol
-//! prescribes.
+//! failure, and a Stale refusal is answered by trusting the peer's history
+//! (`fetch --trust-remote`) and redoing the op on its tip.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -115,18 +115,39 @@ pub(crate) fn act<T>(r: ActionResult<T>, what: &str) -> Result<T, Failure> {
     })
 }
 
-/// Push to the home peer; a Stale refusal is answered by rebase and a second
-/// push, which is the only retry N2 allows.
+/// What an honest op did to its device's local store, so a Stale refusal
+/// can be answered by redoing it on the peer's tip.
+enum Redo<'a> {
+    /// Nothing local to redo: the recorded actions survive adopting the
+    /// peer's history, and they are all the op left.
+    Kept,
+    /// Commit the recorded actions again.
+    Commit,
+    /// Add a fresh backup key again.
+    AddKey,
+    /// Replace the signing key again, from the key held before.
+    Rotate(String),
+    /// Delete this key again.
+    RemoveKey(&'a KeyRef),
+    /// An op with no redo: its Stale refusal is a failure.
+    None,
+}
+
+/// Push to the home peer; a Stale refusal is answered by trusting the peer's
+/// history, redoing the op on its tip and a second push, which is the only
+/// retry N2 allows. Returns the key the redo made, if it made one.
 async fn push_honest(
     ps: &mut PState<'_>,
     d: usize,
     stale: &AtomicUsize,
     what: &str,
-) -> Result<(), Failure> {
+    redo: Redo<'_>,
+) -> Result<Option<KeyRef>, Failure> {
     let c = &ps.clients[d];
     let home = [ps.home.as_str()];
     let mut outcome = act(c.push(&ps.pr, &home).await, what)?;
-    let mut rebased = false;
+    let mut adopted = false;
+    let mut made = None;
     loop {
         match outcome {
             PushOutcome::Accepted(tip) => {
@@ -134,19 +155,33 @@ async fn push_honest(
                 ps.pusher = d;
                 ps.fresh = vec![false; ps.clients.len()];
                 ps.fresh[d] = true;
-                return Ok(());
+                return Ok(made);
             },
-            PushOutcome::Refused(r) if r.kind == RefusalKind::Stale && !rebased => {
-                rebased = true;
+            PushOutcome::Refused(r)
+                if r.kind == RefusalKind::Stale && !adopted && !matches!(redo, Redo::None) =>
+            {
+                adopted = true;
                 stale.fetch_add(1, Ordering::Relaxed);
-                act(c.rebase(&ps.pr).await, what)?;
+                act(c.trust_remote(&ps.pr).await, what)?;
+                match &redo {
+                    Redo::Kept | Redo::None => {},
+                    Redo::Commit => {
+                        act(c.commit_recorded(&ps.pr).await, what)?;
+                    },
+                    Redo::AddKey => made = Some(act(c.add_backup_key(&ps.pr).await, what)?),
+                    Redo::Rotate(held) => {
+                        c.use_signer(&ps.pr, held);
+                        made = Some(act(c.rotate_key(&ps.pr).await, what)?);
+                    },
+                    Redo::RemoveKey(key) => act(c.remove_key(&ps.pr, key).await, what)?,
+                }
                 outcome = act(c.push(&ps.pr, &home).await, what)?;
             },
             PushOutcome::Refused(r) => {
                 return Err(fail(
                     "N2",
                     format!(
-                        "{what}: push refused {:?} (after a rebase: {rebased}): {}",
+                        "{what}: push refused {:?} (after trusting the remote: {adopted}): {}",
                         r.kind, r.detail
                     ),
                 ));
@@ -227,18 +262,23 @@ async fn exec_op<'h>(
         Op::Commit { d, .. } => {
             refresh(ps, *d, &what).await?;
             act(ps.clients[*d].commit_data(&ps.pr, &msg("c")).await, &what)?;
-            push_honest(ps, *d, stale, &what).await
+            push_honest(ps, *d, stale, &what, Redo::Commit).await?;
+            Ok(())
         },
         Op::Record { d, .. } => {
             refresh(ps, *d, &what).await?;
             act(ps.clients[*d].record_data(&ps.pr, &msg("r")).await, &what)?;
-            push_honest(ps, *d, stale, &what).await
+            push_honest(ps, *d, stale, &what, Redo::Kept).await?;
+            Ok(())
         },
         Op::AddKey { d, .. } => {
             refresh(ps, *d, &what).await?;
             let key = act(ps.clients[*d].add_backup_key(&ps.pr).await, &what)?;
+            let key = push_honest(ps, *d, stale, &what, Redo::AddKey)
+                .await?
+                .unwrap_or(key);
             ps.backups.push_back((key, *d));
-            push_honest(ps, *d, stale, &what).await
+            Ok(())
         },
         Op::Pair { d, .. } => {
             refresh(ps, *d, &what).await?;
@@ -246,7 +286,7 @@ async fn exec_op<'h>(
             let other = h.client(&format!("c{p}d{}", ps.spawned));
             ps.spawned += 1;
             let key = act(ps.clients[*d].pair_device(&ps.pr, &other).await, &what)?;
-            push_honest(ps, *d, stale, &what).await?;
+            push_honest(ps, *d, stale, &what, Redo::None).await?;
             ps.clients.push(other);
             ps.dev_keys.push(Some(key));
             // The new device imported the chain the pusher just pushed.
@@ -255,9 +295,13 @@ async fn exec_op<'h>(
         },
         Op::Replace { d, .. } => {
             refresh(ps, *d, &what).await?;
+            let held = act(ps.clients[*d].signer(&ps.pr), &what)?;
             let key = act(ps.clients[*d].rotate_key(&ps.pr).await, &what)?;
+            let key = push_honest(ps, *d, stale, &what, Redo::Rotate(held))
+                .await?
+                .unwrap_or(key);
             ps.dev_keys[*d] = Some(key);
-            push_honest(ps, *d, stale, &what).await
+            Ok(())
         },
         Op::DelKey { d, .. } => {
             refresh(ps, *d, &what).await?;
@@ -266,7 +310,8 @@ async fn exec_op<'h>(
                 .pop_front()
                 .ok_or_else(|| fail("DRIVER", format!("{what}: no backup key to delete")))?;
             act(ps.clients[*d].remove_key(&ps.pr, &key).await, &what)?;
-            push_honest(ps, *d, stale, &what).await
+            push_honest(ps, *d, stale, &what, Redo::RemoveKey(&key)).await?;
+            Ok(())
         },
         Op::NakedRevoke { d, .. } => {
             refresh(ps, *d, &what).await?;
@@ -285,7 +330,7 @@ async fn exec_op<'h>(
             // by gossip (N5 reads every holder at the barrier).
             act(c.naked_revoke(&ps.pr, &key).await, &what)?;
             act(c.remove_key(&ps.pr, &key).await, &what)?;
-            push_honest(ps, *d, stale, &what).await?;
+            push_honest(ps, *d, stale, &what, Redo::RemoveKey(&key)).await?;
             ps.revoked.push(key.clone());
             let c = &ps.clients[*d];
             check::n5_refused(h, ps, c, &key, &ps.home, &what).await?;
@@ -303,10 +348,11 @@ async fn exec_op<'h>(
             refresh(ps, 0, &what).await?;
             refresh(ps, 1, &what).await?;
             act(ps.clients[0].commit_data(&ps.pr, &msg("a")).await, &what)?;
-            push_honest(ps, 0, stale, &what).await?;
+            push_honest(ps, 0, stale, &what, Redo::Commit).await?;
             // Device 1 commits from the tip it held before device 0 wrote.
             act(ps.clients[1].commit_data(&ps.pr, &msg("b")).await, &what)?;
-            push_honest(ps, 1, stale, &what).await
+            push_honest(ps, 1, stale, &what, Redo::Commit).await?;
+            Ok(())
         },
         other => Err(fail("DRIVER", format!("`{other}` is not a principal op"))),
     }

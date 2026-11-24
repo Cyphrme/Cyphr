@@ -137,6 +137,10 @@ level if and where possible."
   without identity claims, and attestations are bound per-request. Grounding:
   `rs/cyphr-server/tests/invariants.rs` (`no_standing_honesty_claim`).
 - **I8 — Storage pressure and pruning refusal.** storage pressure is relieved by refusing admission, never by pruning retained history; a design that needs pruning is a SPEC §16.2 escalation, not a server change.
+- **I9 — The CLI never signs unprompted.** It signs only when the user ran
+  a command whose purpose is to sign. Fetching, pushing and adopting a
+  peer's history never sign or re-sign anything; what cannot be kept as
+  signed is dropped and reported, and the user signs it again explicitly.
 
 ## Known traps (updated 2026-07-08; fix, don't inherit)
 

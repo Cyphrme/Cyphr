@@ -153,29 +153,40 @@ pub enum Error {
     #[error("verify needs at least one peer (--peer or `peers` in the choices file)")]
     NoPeers,
 
-    /// Rebase cannot replay a local commit's transaction onto the peer's tip.
-    #[error("rebase cannot replay a `{0}` transaction")]
-    RebaseUnsupported(String),
-
-    /// The store directory is missing but a rebase left siblings next to it:
-    /// the process likely died between the two renames of the swap.
+    /// A command that needs a commit met a Level 1 identity (SPEC 5.1).
+    /// Moving it up is the user's act, never a side effect.
     #[error(
-        "store {} is missing but a rebase left {}; the previous store is the `.pre-rebase-*` entry \
-         (the rebuilt one is `.rebase`): move the right one back to {} and retry",
+        "this identity has no genesis commit (Level 1); run `cyphr upgrade`{}",
+        if *.upgradable { ", or repeat with `--upgrade`" } else { "" }
+    )]
+    NoGenesisCommit {
+        /// Whether the command has an `--upgrade` flag to offer.
+        upgradable: bool,
+    },
+
+    /// `upgrade` found a genesis commit already made.
+    #[error("identity {0} already has a genesis commit; there is nothing to upgrade")]
+    AlreadyCommitted(String),
+
+    /// The store directory is missing but a store swap left siblings next to
+    /// it: the process likely died between the two renames of the swap.
+    #[error(
+        "store {} is missing but a swap left {}; the previous store is the `.pre-adopt-*` entry \
+         (the rebuilt one is `.adopt`): move the right one back to {} and retry",
         store.display(),
         found.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "),
         store.display()
     )]
-    InterruptedRebase {
+    InterruptedSwap {
         /// The missing store directory.
         store: PathBuf,
         /// The leftovers found beside it.
         found: Vec<PathBuf>,
     },
 
-    /// Rebase found its scratch store directory already present.
-    #[error("rebase workspace {} already exists; remove it and retry", .0.display())]
-    RebaseWorkspace(PathBuf),
+    /// A store swap found its scratch store directory already present.
+    #[error("swap workspace {} already exists; remove it and retry", .0.display())]
+    SwapWorkspace(PathBuf),
 
     /// Load error (importing/replaying commits).
     #[error("{0}")]
@@ -300,11 +311,24 @@ pub enum Commands {
         /// key/create for itself and each further key, a principal/create
         /// (id = the principal's state) and the commit finalizing it (SPEC
         /// 5.1-5.3). Without it, a single-key init leaves a commitless
-        /// principal that `push` has nothing to send for; `--keys` with more
-        /// than one key always commits it, as a multi-key principal exists
-        /// only through its genesis commit.
+        /// principal that `push` has nothing to send for (`cyphr upgrade`
+        /// commits it later); `--keys` with more than one key always commits
+        /// it, as a multi-key principal exists only through its genesis
+        /// commit.
         #[arg(long)]
         genesis_commit: bool,
+    },
+
+    /// Create the genesis commit of a Level 1 identity (SPEC 5.1)
+    ///
+    /// A single-key `init` leaves a commitless identity. Commands that need a
+    /// commit (`key add`, `data action`, `data commit`, ...) refuse it until
+    /// the user moves it up, here or with their `--upgrade` flag. Refused on
+    /// an identity that already has a commit.
+    Upgrade {
+        /// Principal Root (base64url)
+        #[arg(long, allow_hyphen_values = true)]
+        identity: String,
     },
 
     /// Key management operations
@@ -354,6 +378,11 @@ pub enum Commands {
     },
 
     /// Send the commits a peer lacks; refuses a peer holding a newer tip
+    ///
+    /// A peer whose history differs from the local one is refused, with the
+    /// parting point and the commits each side holds after it. The user
+    /// chooses: `cyphr fetch --trust-remote` adopts the peer's, or
+    /// `--assert-local` pushes the local commits as a fork.
     Push {
         /// Principal Root (base64url)
         #[arg(long, allow_hyphen_values = true)]
@@ -362,6 +391,11 @@ pub enum Commands {
         /// Peer base URL (e.g., http://127.0.0.1:8080)
         #[arg(long)]
         peer: String,
+
+        /// Assert the local history is correct: send the local commits past
+        /// the parting point as a fork the peer's fork rules then apply to
+        #[arg(long)]
+        assert_local: bool,
     },
 
     /// Resolve a fork by a proof of possession of the local tip
@@ -387,29 +421,17 @@ pub enum Commands {
         signer: Option<String>,
     },
 
-    /// Replay unpushed local commits onto a peer's tip
-    ///
-    /// The store keeps no commit once it is written, so the replay builds a
-    /// fresh store beside the old one and swaps them; the old store is kept
-    /// as `<store>.pre-rebase-<unix seconds>` (`-<n>` appended if that name
-    /// is taken).
-    ///
-    /// A local data action the peer lacks is re-signed with the current time
-    /// (an action older than the peer's latest message is refused, SPEC
-    /// 15.9), so its czd changes; the output names each with its original
-    /// `now`. An application that needs the original time keeps it as a
-    /// field of the action's own pay (SPEC 4.8.2).
-    Rebase {
-        /// Principal Root (base64url)
-        #[arg(long, allow_hyphen_values = true)]
-        identity: String,
-
-        /// Peer base URL
-        #[arg(long)]
-        peer: String,
-    },
-
     /// Pull and verify a peer's commits into the local store
+    ///
+    /// Local commits that differ from the peer's are refused, with the
+    /// parting point and what each side holds after it; nothing changes.
+    /// `--trust-remote` discards only the local commits after the parting
+    /// point and adopts the peer's. The store keeps no commit once it is
+    /// written, so it is rebuilt beside the old one and swapped; the old
+    /// store is kept as `<store>.pre-adopt-<unix seconds>` (`-<n>` appended
+    /// if that name is taken). Recorded data actions survive when the
+    /// adopted history accepts them as signed; any other is dropped and
+    /// listed under `dropped_actions`, never re-signed.
     Fetch {
         /// Principal Root (base64url)
         #[arg(long, allow_hyphen_values = true)]
@@ -418,6 +440,11 @@ pub enum Commands {
         /// Peer base URL
         #[arg(long)]
         peer: String,
+
+        /// On divergence, trust the peer: discard the local commits after
+        /// the parting point
+        #[arg(long)]
+        trust_remote: bool,
     },
 
     /// Report a principal's standing from the local view and its peers
@@ -599,6 +626,11 @@ pub enum KeyCommands {
         /// Thumbprint of signing key
         #[arg(long, allow_hyphen_values = true)]
         signer: String,
+
+        /// On a Level 1 identity (no genesis commit), create its genesis
+        /// commit first (as `cyphr upgrade` does), instead of refusing
+        #[arg(long)]
+        upgrade: bool,
     },
 
     /// Remove a key from an identity without marking it compromised (SPEC 6.2)
@@ -748,6 +780,11 @@ pub enum DataCommands {
         /// Print the signed action without recording it locally
         #[arg(long)]
         sign_only: bool,
+
+        /// On a Level 1 identity (no genesis commit), create the genesis
+        /// commit first, instead of refusing
+        #[arg(long)]
+        upgrade: bool,
     },
 
     /// Sign a `ds/create` over the local DT; its `id` becomes DR in PR
@@ -759,6 +796,11 @@ pub enum DataCommands {
         /// Thumbprint of the signing key
         #[arg(long, allow_hyphen_values = true)]
         signer: String,
+
+        /// On a Level 1 identity (no genesis commit), create the genesis
+        /// commit first, instead of refusing
+        #[arg(long)]
+        upgrade: bool,
     },
 
     /// Send a signed action (the output of `data action`) to a peer

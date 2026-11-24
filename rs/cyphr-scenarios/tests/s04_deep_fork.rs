@@ -530,7 +530,10 @@ async fn the_owner_answers_a_thiefs_tip_through_the_cli() {
     for n in 0..2 {
         h.ok(laptop.commit_data(&pr, &format!("owner answer {n}")).await);
     }
-    h.ok(laptop.push(&pr, &servers).await);
+    // Deliberately a fork against the peers holding the thief's branch, so
+    // the user's explicit choice (`--assert-local`).
+    h.ok(laptop.push_fork(&pr, &servers).await)
+        .accepted("the owner's answer");
 
     h.eventually(
         "every server to read Error at one fork point",

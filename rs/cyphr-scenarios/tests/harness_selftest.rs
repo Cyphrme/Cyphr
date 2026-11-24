@@ -135,12 +135,6 @@ async fn harness_each_probe_kind_can_report_present() {
             "{kind} control reported absent"
         );
     }
-    assert!(
-        !Probe::Pending("none")
-            .eval(&h, cap)
-            .await
-            .expect("probe runs")
-    );
 }
 
 // Claim: a partition cuts a connection that is already open, not only new

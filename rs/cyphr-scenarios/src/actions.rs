@@ -38,7 +38,7 @@ pub enum ActionError {
 /// is for humans only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefusalKind {
-    /// The sender's view is behind the peer's tip; rebase and retry.
+    /// The sender's view is behind the peer's tip or differs from it.
     Stale,
     /// The signer lacks authority for the action.
     Unauthorized,
@@ -257,6 +257,9 @@ pub struct Verdict {
     pub observed_at: std::time::Instant,
 }
 
+/// What a push came to. A refusal is a result a scenario must look at, so
+/// an outcome that is dropped unread is a compile error under `-D warnings`.
+#[must_use = "a push may have been refused; read it with `accepted` or `refused`"]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PushOutcome {
     Accepted(Tip),
@@ -336,21 +339,14 @@ pub struct RpConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Backup(pub String);
 
-/// A data action a rebase re-signed at the current time, as the rebase
-/// reported it (SPEC 15.9: never silently).
+/// What trusting the remote left: the local tip, the local commits it
+/// discarded and the czds of recorded actions it dropped because the adopted
+/// history does not accept them as signed. It never re-signs.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Resigned {
-    /// The action's czd before it was re-signed.
-    pub czd: String,
-    /// The `now` it carried before it was re-signed.
-    pub was_now: i64,
-}
-
-/// What a rebase left: the local tip and the actions it re-signed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Rebased {
+pub struct Adopted {
     pub tip: Tip,
-    pub resigned: Vec<Resigned>,
+    pub discarded: Vec<String>,
+    pub dropped: Vec<String>,
 }
 
 /// How a token reaches a relying party.
@@ -598,7 +594,7 @@ impl Client<'_> {
         self.state.lock().expect("device state")
     }
 
-    fn signer(&self, p: &Principal) -> ActionResult<String> {
+    pub(crate) fn signer(&self, p: &Principal) -> ActionResult<String> {
         self.state()
             .signer
             .get(&p.0)
@@ -859,7 +855,7 @@ impl Client<'_> {
         for peer in self.known(p) {
             let url = self.url(&peer).await;
             match self
-                .cyphr(&["push", "--identity", &p.0, "--peer", &url])
+                .cyphr(&["push", "--identity", &p.0, "--peer", &url, "--assert-local"])
                 .await
             {
                 Ok(_) => accepted = true,
@@ -920,6 +916,23 @@ impl Client<'_> {
         field(&v, "commit_id").map(Tip)
     }
 
+    /// Commit the data actions recorded so far in one `ds/create` (`cyphr
+    /// data commit`, no new action): what a device redoes after trusting the
+    /// remote, since its recorded actions survived and only the commit went.
+    pub async fn commit_recorded(&self, p: &Principal) -> ActionResult<Tip> {
+        let (id, signer) = (format!("--identity={}", p.0), self.signer(p)?);
+        let v = self
+            .cyphr(&["data", "commit", &id, &format!("--signer={signer}")])
+            .await?;
+        field(&v, "commit_id").map(Tip)
+    }
+
+    /// Sign `p` with `tmb` from now on: the key a device held before an
+    /// operation that replaced it was discarded with its commit.
+    pub(crate) fn use_signer(&self, p: &Principal, tmb: &str) {
+        self.state().signer.insert(p.0.clone(), tmb.to_owned());
+    }
+
     /// Record a signed data action locally without committing it
     /// (`cyphr data action`, no `data commit`); returns its czd.
     pub async fn record_data(&self, p: &Principal, msg: &str) -> ActionResult<String> {
@@ -963,15 +976,33 @@ impl Client<'_> {
     }
 
     /// `cyphr push` to each peer in turn; the first refusal is the outcome.
+    /// A local history that differs from a peer's is refused (`Stale`):
+    /// sending it as a fork is [`Client::push_fork`].
     pub async fn push(&self, p: &Principal, to: &[&str]) -> ActionResult<PushOutcome> {
+        self.push_with(p, to, false).await
+    }
+
+    /// `cyphr push --assert-local`: the user's explicit choice to send the
+    /// local branch as a fork where it differs from a peer's history.
+    pub async fn push_fork(&self, p: &Principal, to: &[&str]) -> ActionResult<PushOutcome> {
+        self.push_with(p, to, true).await
+    }
+
+    async fn push_with(
+        &self,
+        p: &Principal,
+        to: &[&str],
+        assert_local: bool,
+    ) -> ActionResult<PushOutcome> {
         self.know(p, to);
         let mut tip = None;
         for peer in to {
             let url = self.url(peer).await;
-            match self
-                .cyphr(&["push", "--identity", &p.0, "--peer", &url])
-                .await
-            {
+            let mut args = vec!["push", "--identity", &p.0, "--peer", &url];
+            if assert_local {
+                args.push("--assert-local");
+            }
+            match self.cyphr(&args).await {
                 Ok(v) => tip = Some(field(&v, "tip")?),
                 Err(ActionError::Refused(r)) => return Ok(PushOutcome::Refused(r)),
                 Err(e) => return Err(e),
@@ -981,32 +1012,44 @@ impl Client<'_> {
             .ok_or_else(|| ActionError::Failed("push to no peer".into()))
     }
 
-    /// Re-apply local commits on the peers' newer tip after a stale refusal
-    /// (`cyphr rebase` onto the first peer this device knows for `p`).
-    pub async fn rebase(&self, p: &Principal) -> ActionResult<Rebased> {
+    /// Trust the peer over local commits that diverge from it, after a
+    /// stale refusal (`cyphr fetch --trust-remote` from the first peer this
+    /// device knows for `p`): the local commits after the parting point are
+    /// discarded and recorded data actions survive. The caller redoes what
+    /// it meant to do on the adopted tip.
+    pub async fn trust_remote(&self, p: &Principal) -> ActionResult<Adopted> {
         let peer = self.known(p).into_iter().next().ok_or_else(|| {
             ActionError::Failed(format!("`{}` knows no peer for {}", self.name, p.0))
         })?;
         let url = self.url(&peer).await;
         let v = self
-            .cyphr(&["rebase", "--identity", &p.0, "--peer", &url])
+            .cyphr(&[
+                "fetch",
+                "--identity",
+                &p.0,
+                "--peer",
+                &url,
+                "--trust-remote",
+            ])
             .await?;
-        let resigned = v["resigned_actions"]
+        let dropped = v["dropped_actions"]
             .as_array()
-            .ok_or_else(|| ActionError::Failed(format!("rebase named no resigned_actions: {v}")))?
+            .map(Vec::as_slice)
+            .unwrap_or_default()
             .iter()
-            .map(|r| {
-                Ok(Resigned {
-                    czd: field(r, "czd")?,
-                    was_now: r["was_now"].as_i64().ok_or_else(|| {
-                        ActionError::Failed(format!("re-signed action without was_now: {r}"))
-                    })?,
-                })
-            })
+            .map(|r| field(r, "czd"))
             .collect::<ActionResult<Vec<_>>>()?;
-        Ok(Rebased {
+        let discarded = v["discarded"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|d| d.as_str().map(str::to_owned))
+            .collect();
+        Ok(Adopted {
             tip: self.local_tip(p, &peer).await?,
-            resigned,
+            discarded,
+            dropped,
         })
     }
 

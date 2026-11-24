@@ -145,7 +145,7 @@ signed the response. Errors come back in the same envelope with
 You need a user to sign in as, and in production your client creates one. To
 get one now, use the `cyphr` CLI. `cyphr push --identity="$PR"
 --peer=http://127.0.0.1:3999` sends a principal's commits to a server
-(`cyphr --help` lists `push`, `fetch`, `rebase`, `verify` and `watch`). This
+(`cyphr --help` lists `push`, `fetch`, `verify` and `watch`). This
 guide builds the push by hand with `curl` instead, so that you see the raw
 request and the signed response your app will meet.
 

@@ -29,6 +29,50 @@ pub(crate) fn commit_genesis<S: cyphr::eml::Storage>(
     Ok(())
 }
 
+/// Refuse a Level 1 identity (no genesis commit, SPEC 5.1) before anything is
+/// signed: moving it up is the user's explicit act (`upgrade`, or a
+/// command's `--upgrade`), never a side effect of another command.
+pub(crate) fn require_genesis_commit<S: cyphr::eml::Storage>(
+    principal: &Principal<S>,
+    upgradable: bool,
+) -> crate::Result<()> {
+    if principal.pg().is_some() {
+        Ok(())
+    } else {
+        Err(Error::NoGenesisCommit { upgradable })
+    }
+}
+
+/// Run `cyphr upgrade`: the genesis commit of a Level 1 identity.
+pub fn upgrade(cli: &Cli, identity: &str) -> crate::Result<()> {
+    let keystore = super::common::open_backend(cli)?;
+    let store = parse_store(cli)?;
+    let mut principal = super::common::load_principal_from_engine(&store, &keystore, identity)?;
+    if principal.pg().is_some() {
+        return Err(Error::AlreadyCommitted(identity.to_owned()));
+    }
+    commit_genesis(&mut principal, &keystore, &[], &cli.authority)?;
+    save_principal_to_engine(&store, &keystore, &principal)?;
+    let commit_id = cyphr_storage::export_commits(&principal)?
+        .into_iter()
+        .rfind(|l| !l.commit_id.is_empty())
+        .map(|l| l.commit_id)
+        .ok_or_else(|| Error::EmptyHistory(identity.to_owned()))?;
+    match cli.output {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "identity": identity, "commit_id": commit_id,
+            }))?
+        ),
+        OutputFormat::Table => {
+            println!("Upgraded identity {identity} with a genesis commit");
+            println!("  commit: {commit_id}");
+        },
+    }
+    Ok(())
+}
+
 /// Run the init command.
 pub fn run(
     cli: &Cli,

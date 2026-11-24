@@ -43,7 +43,8 @@ async fn s08_forgery() {
         .peer_actions("p1", &pr)
         .await
         .expect("P1 holds the principal");
-    h.ok(alice.submit(&act, "p1").await);
+    h.ok(alice.submit(&act, "p1").await)
+        .accepted("the legitimate action");
     let applied = h
         .settled_view("p1", &pr)
         .await

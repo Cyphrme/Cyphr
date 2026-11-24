@@ -178,7 +178,7 @@ pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
     open_store(path, cli.total_check)
 }
 
-/// Refuse to open a store that is missing while a rebase left siblings
+/// Refuse to open a store that is missing while a store swap left siblings
 /// behind: opening would silently create an empty store beside the real
 /// history. A store that was never created (no siblings) opens normally.
 fn refuse_interrupted_swap(path: &std::path::Path) -> crate::Result<()> {
@@ -200,8 +200,8 @@ fn refuse_interrupted_swap(path: &std::path::Path) -> crate::Result<()> {
             e.file_name().to_str().is_some_and(|n| {
                 n.strip_prefix(name).is_some_and(|rest| {
                     rest == super::network::SWAP_MARKER
-                        || rest == ".rebase"
-                        || rest.starts_with(".pre-rebase-")
+                        || rest == super::network::SCRATCH_SUFFIX
+                        || rest.starts_with(super::network::BACKUP_PREFIX)
                 })
             })
         })
@@ -211,7 +211,7 @@ fn refuse_interrupted_swap(path: &std::path::Path) -> crate::Result<()> {
         return Ok(());
     }
     found.sort();
-    Err(Error::InterruptedRebase {
+    Err(Error::InterruptedSwap {
         store: path.to_owned(),
         found,
     })

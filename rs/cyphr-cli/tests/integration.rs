@@ -87,6 +87,7 @@ fn test_ed25519_level2_export_import_roundtrip() {
     let tmb = genesis["tmb"].as_str().unwrap();
     let identity_arg = format!("--identity={tmb}");
     let signer_arg = format!("--signer={tmb}");
+    cli.run_ok(&["upgrade", &identity_arg]);
     let _ = cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     let export_path = cli.temp_dir.path().join("export.jsonl");
@@ -132,6 +133,7 @@ fn test_export_import_roundtrip() {
     // Use --arg=value format to handle thumbprints starting with -
     let identity_arg = format!("--identity={genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
+    cli.run_ok(&["upgrade", &identity_arg]);
     let _ = cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     // 2. Export to file
@@ -200,6 +202,7 @@ fn test_key_list_accepts_thumbprint_starting_with_dash() {
 
     let identity_arg = format!("--identity={tmb}");
     let signer_arg = format!("--signer={tmb}");
+    cli.run_ok(&["upgrade", &identity_arg]);
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     let list = cli.run_json(&["key", "list", &identity_arg]);
@@ -238,6 +241,7 @@ fn test_exported_commits_carry_real_auth_root_and_state_root() {
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
     let identity_arg = format!("--identity={genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
+    cli.run_ok(&["upgrade", &identity_arg]);
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     let export_path = cli.temp_dir.path().join("export.jsonl");
@@ -299,6 +303,7 @@ fn test_inspect_after_transactions() {
     // Use --arg=value format to handle thumbprints starting with -
     let identity_arg = format!("--identity={genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
+    cli.run_ok(&["upgrade", &identity_arg]);
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     // Inspect after coz
@@ -472,7 +477,8 @@ fn test_full_workflow() {
     let inspect = cli.run_json(&["inspect", &identity_arg]);
     assert_eq!(inspect["commit_count"], 0);
 
-    // 5. Add a key
+    // 5. Upgrade (the genesis commit), then add a key
+    cli.run_ok(&["upgrade", &identity_arg]);
     let add_result = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
     let second_key = add_result["added_key"].as_str().unwrap();
     let key_arg = format!("--key={second_key}");
@@ -532,6 +538,7 @@ fn test_tx_verify_after_transactions() {
     let signer_arg = format!("--signer={genesis_tmb}");
 
     // Add a key (the CLI commits the genesis commit first, then the add)
+    cli.run_ok(&["upgrade", &identity_arg]);
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     // Verify coz chain - THIS IS THE CRITICAL TEST
@@ -561,6 +568,7 @@ fn test_tx_verify_reports_storage_errors_instead_of_false_success() {
     let signer_arg = format!("--signer={genesis_tmb}");
 
     // Create a real commit so this identity is NOT legitimately empty.
+    cli.run_ok(&["upgrade", &identity_arg]);
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
     let verify_before = cli.run_json(&["tx", "verify", &identity_arg]);
     assert_eq!(verify_before["status"], "OK");
@@ -606,6 +614,7 @@ fn test_key_replace_in_the_second_of_an_action_is_not_refused() {
     let tmb = genesis["tmb"].as_str().unwrap();
     let identity_arg = format!("--identity={tmb}");
     let signer_arg = format!("--signer={tmb}");
+    cli.run_ok(&["upgrade", &identity_arg]);
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     // Both commands sign with one fixed `now`, so they share a second
