@@ -1,11 +1,14 @@
 //! A revoked key is stopped from the moment this node received the revoke
 //! (SPEC 6.4: "a self-signed declaration that a key is compromised and
 //! should never be trusted again"; the spec author on #203: "A revoked
-//! stops the key at the time the revoke was received ... Retrospection
-//! isn't supported"). Whatever `now` the holder dates a message, if it
-//! arrives after the receipt it is refused, on every branch, whether the
-//! revoke came naked or inside a commit. What was held before stays held
-//! (SPEC 14.12: "Cyphr does not use reversion").
+//! stops the key at the time the revoke was received", "honor it from the
+//! witness's own receipt time"). A message the key signs is judged by its
+//! own `now` against that receipt, on every branch, whether the revoke
+//! came naked or inside a commit. What the key signed before the cutoff
+//! stands, whenever it reaches the node (SPEC 14.12: "Cyphr does not use
+//! reversion"). Backdating is the documented limit, answered by witness
+//! timestamps (#203: "Back dating should be obvious to a durable network
+//! of witnesses").
 //!
 //! The attacks are the review's reproductions: a key its owner revoked
 //! forks below the revoke and takes the principal over by a resync proof.
@@ -16,6 +19,17 @@ use cyphr_storage::engine::EngineError;
 
 mod common;
 use common::*;
+
+/// The wall clock, which is what a node stamps a revoke's receipt with.
+fn wall() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs(),
+    )
+    .expect("secs")
+}
 
 fn pop_over(signer: &Kp, id: &str, now: i64) -> serde_json::Value {
     let pay = serde_json::to_vec(&serde_json::json!({
@@ -95,6 +109,20 @@ fn action_blob(k: &Kp, now: i64) -> Vec<u8> {
     .expect("blob")
 }
 
+async fn offer_action(
+    rig: &Rig,
+    e: &Engine,
+    k: &Kp,
+    now: i64,
+) -> Result<cyphr_storage::engine::IngestResult, EngineError> {
+    e.submit_commit(
+        &rig.id,
+        Some(rig.genesis.clone()),
+        &WireBundle::actions(vec![action_blob(k, now)]),
+    )
+    .await
+}
+
 /// c0 genesis(G), c1 G creates K, c2 K revokes itself (closed by G), c3 G
 /// creates L, all received now. K is dead from the receipt of c2.
 async fn setup() -> (Rig, Engine, cyphr::Principal) {
@@ -127,14 +155,14 @@ fn is_dead_key(r: &Result<(), EngineError>) -> bool {
 }
 
 /// SPEC 6.4 (a revoked key is never trusted again), the review's HACKER-1
-/// with an in-chain revoke: a date after every held commit does not make a
-/// proof of the revoked key count.
+/// with an in-chain revoke: dated after the node received the revoke, the
+/// revoked key's proof does not count, and the chain is not displaced.
 #[tokio::test]
 async fn an_in_chain_revoked_key_cannot_resync_a_takeover() {
     let (rig, e, _legit) = setup().await;
     let before = e.get_tip(&rig.id).await.expect("tip").expect("held");
 
-    let r = takeover(&rig, &e, NOW + 1_000).await;
+    let r = takeover(&rig, &e, wall() + 10).await;
 
     assert!(is_dead_key(&r), "the dead key's proof is refused: {r:?}");
     let after = e.get_tip(&rig.id).await.expect("tip").expect("held");
@@ -144,31 +172,12 @@ async fn an_in_chain_revoked_key_cannot_resync_a_takeover() {
     );
 }
 
-/// The same with the date of the wall clock at arrival, after the revoke's
-/// receipt: no backdating is needed for the receipt to cut the key off.
+/// A naked revoke cuts the key off at the node's receipt: dated at or after
+/// it the key's proof is refused. Dated below it the proof passes the gate:
+/// backdating is the documented limit (`known-limits.md`), answered by
+/// witness timestamps, not prevented here.
 #[tokio::test]
-async fn an_in_chain_revoked_key_is_refused_at_wall_clock_time() {
-    let (rig, e, _legit) = setup().await;
-    let before = e.get_tip(&rig.id).await.expect("tip").expect("held");
-    let wall = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_secs(),
-    )
-    .expect("secs");
-
-    let r = takeover(&rig, &e, wall).await;
-
-    assert!(is_dead_key(&r), "refused: {r:?}");
-    let after = e.get_tip(&rig.id).await.expect("tip").expect("held");
-    assert_eq!(after.commit_id, before.commit_id);
-}
-
-/// A naked revoke cuts the key off at receipt whatever `now` the holder
-/// signs: a date below the recorded receipt does not get past the gate.
-#[tokio::test]
-async fn a_naked_revoked_key_is_refused_whatever_its_now() {
+async fn a_naked_revoked_key_is_cut_off_at_the_receipt() {
     let rig = Rig::new(2).await;
     let e = rig.fed(1).await;
     let k = &rig.keys[0];
@@ -176,25 +185,22 @@ async fn a_naked_revoked_key_is_refused_whatever_its_now() {
     e.record_revoke(&naked_revoke(k, wrt), wrt)
         .await
         .expect("naked revoke recorded");
-    let before = e.get_tip(&rig.id).await.expect("tip").expect("held");
 
-    // After the receipt, and backdated below it (above c1's `now`).
-    for now in [NOW + 1_000, NOW + 5] {
-        let r = takeover(&rig, &e, now).await;
-        assert!(is_dead_key(&r), "now {now}: {r:?}");
-    }
-    let after = e.get_tip(&rig.id).await.expect("tip").expect("held");
-    assert_eq!(after.commit_id, before.commit_id);
+    let r = takeover(&rig, &e, NOW + 1_000).await;
+    assert!(is_dead_key(&r), "dated after the receipt: {r:?}");
+
+    let r = takeover(&rig, &e, NOW + 5).await;
+    assert!(r.is_ok(), "the documented limit: backdated below it: {r:?}");
 }
 
-/// A dead key's commit offered as a rival branch is refused too: the
-/// revoke is the node's, not one branch's.
+/// A dead key's commit offered as a rival branch, dated after the receipt,
+/// is refused too: the revoke is the node's, not one branch's.
 #[tokio::test]
 async fn an_in_chain_revoked_key_cannot_extend_another_branch() {
     let (rig, e, _legit) = setup().await;
     let k = &rig.keys[0];
     let mut evil = rig.states[1].fork().await.expect("fork");
-    create_key(&mut evil, k, &fresh_kp(), NOW + 1_000).await;
+    create_key(&mut evil, k, &fresh_kp(), wall() + 10).await;
 
     let r = rig.submit(&e, &last(&evil)).await;
 
@@ -202,26 +208,48 @@ async fn an_in_chain_revoked_key_cannot_extend_another_branch() {
     assert!(!rig.verdict(&e).await.0, "no fork was kept");
 }
 
-/// A data action of a self-revoked key that arrives after the revoke is
-/// refused, whatever its `now` (the spec author: "it does make sense to
-/// reject any new data actions from revoked keys").
+/// A data action of a self-revoked key follows the same cutoff (the spec
+/// author: "it does make sense to reject any new data actions from revoked
+/// keys"): dated after the receipt it is refused, dated before it, when K
+/// was still active, it stands.
 #[tokio::test]
-async fn a_data_action_of_an_in_chain_revoked_key_is_refused_after_the_revoke() {
+async fn a_data_action_of_an_in_chain_revoked_key_follows_the_cutoff() {
     let (rig, e, _legit) = setup().await;
     let k = &rig.keys[0];
-
-    // Dated before the revoke, when K was still active.
-    let r = e
-        .submit_commit(
-            &rig.id,
-            Some(rig.genesis.clone()),
-            &WireBundle::actions(vec![action_blob(k, NOW + 5)]),
-        )
-        .await;
-
+    let after = offer_action(&rig, &e, k, wall() + 10).await;
     assert!(
-        matches!(r, Err(EngineError::Protocol(cyphr::Error::KeyRevoked))),
-        "refused: {r:?}"
+        matches!(after, Err(EngineError::Protocol(cyphr::Error::KeyRevoked))),
+        "dated after the receipt: {after:?}"
+    );
+    let before = offer_action(&rig, &e, k, NOW + 5).await;
+    assert!(before.is_ok(), "dated before it: {before:?}");
+}
+
+/// What a node learns about a key's revoke before the key's earlier
+/// commits, it still applies those commits: the cutoff is the receipt, and
+/// what the key signed before it is history whenever it arrives (SPEC
+/// 14.12). Arrival-time gating would refuse this.
+#[tokio::test]
+async fn a_node_that_learns_the_revoke_first_still_applies_the_keys_earlier_commits() {
+    let rig = Rig::new(2).await;
+    let e = rig.fed(1).await;
+    let k = &rig.keys[0];
+    e.record_revoke(&naked_revoke(k, wall()), wall())
+        .await
+        .expect("the revoke arrives first");
+    let mut earlier = rig.states[1].fork().await.expect("fork");
+    create_key(&mut earlier, k, &fresh_kp(), NOW + 5).await;
+
+    let r = rig.submit(&e, &last(&earlier)).await;
+
+    assert!(r.is_ok(), "dated before the receipt, it is history: {r:?}");
+    assert_eq!(
+        e.get_tip(&rig.id)
+            .await
+            .expect("tip")
+            .expect("held")
+            .commit_count,
+        3
     );
 }
 
@@ -247,7 +275,7 @@ async fn a_rebuild_keeps_what_was_held_and_keeps_the_key_dead() {
     let patch = e.get_patch(&rig.id, None, None).await.expect("patch");
     assert_eq!(patch.actions.len(), 1, "the held action is still held");
     assert_eq!(patch.entries.len(), 3, "every commit is still held");
-    let again = WireBundle::actions(vec![action_blob(k, NOW + 6)]);
+    let again = WireBundle::actions(vec![action_blob(k, wall() + 10)]);
     let r = e
         .submit_commit(&rig.id, Some(rig.genesis.clone()), &again)
         .await;
