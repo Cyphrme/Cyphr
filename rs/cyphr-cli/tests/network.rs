@@ -1,4 +1,4 @@
-//! Network commands of the CLI (`push`, `rebase`, `fetch`, `verify`) and its
+//! Network commands of the CLI (`push`, `fetch`, `verify`) and its
 //! typed refusals, end to end against real `cyphr-server` processes.
 //!
 //! Contract these tests pin (the implementation is free to add to it):
@@ -6,10 +6,10 @@
 //! - `cyphr push --identity <pr> --peer <url>`: exit 0 if the peer accepted. A refusal is a
 //!   non-zero exit and, under `--output json`, one JSON object on stderr whose `error.kind` names
 //!   the typed cause (`"stale"` for a peer holding a newer tip).
-//! - `cyphr rebase --identity <pr> --peer <url>`: replays local, unpushed commits onto the peer's
-//!   tip, so a following `push` is accepted.
-//! - `cyphr fetch --identity <pr> --peer <url>`: pulls and verifies the peer's commits into the
-//!   local store.
+//! - `cyphr fetch --identity <pr> --peer <url> [--trust-remote]`: pulls and verifies the peer's
+//!   commits into the local store. A local history that differs from the peer's is refused with
+//!   nothing changed; `--trust-remote` discards only the local commits after the parting point.
+//! - `cyphr push --assert-local`: sends local commits that differ from the peer's as a fork.
 //! - `cyphr verify --identity <pr> [--peer <url>]... [--anchor <pr>] [--choices <file>]`: prints
 //!   (JSON) `tip`, `view_age_secs`, `added`, `peers_queried` (never 0), `freshness_secs`,
 //!   `anchor.{value,source}` with source one of `pinned`, `trusted-genesis`, `hint`, and a
@@ -34,18 +34,17 @@ use tempfile::TempDir;
 
 // ------------------------------------------------------------------- push
 
-/// Claim: a push to a peer that already holds a newer tip is refused as
-/// stale with a typed error, the peer's history is not overwritten, and after
-/// a rebase onto the peer's tip the same user's push is accepted.
-/// End-to-end: yes (two devices, one real server).
-/// Turns red on: a CLI that overwrites or forks a newer peer tip (the stale
-/// push exits 0), a refusal that is only text (`error.kind` absent or not
-/// `stale`), or a rebase that does not produce an acceptable push.
-/// Red on base: the first `push` is an unknown subcommand, so the first
-/// assertion (`push` accepted) fails at runtime; the stale/rebase assertions
-/// are reached once `push` exists.
+/// Claim: a push to a peer that already holds a different tip is refused as
+/// stale with a typed error and the peer's history is not overwritten; a
+/// fetch with no flag refuses the divergence and changes nothing; after
+/// `fetch --trust-remote` and a redone commit the same user's push is
+/// accepted. End-to-end: yes (two devices, one real server).
+/// Turns red on: a CLI that overwrites or forks a different peer tip (the
+/// stale push exits 0), a refusal that is only text (`error.kind` absent or
+/// not `stale`), a fetch that changes the store without the flag, or an
+/// adoption that does not produce an acceptable push.
 #[test]
-fn push_stale_is_refused_then_rebased_is_accepted() {
+fn push_stale_is_refused_then_trusting_the_remote_is_accepted() {
     let server = Server::start();
     let a = User::new();
     let id = a.new_identity();
@@ -67,30 +66,30 @@ fn push_stale_is_refused_then_rebased_is_accepted() {
         "refusal must be the typed `stale` kind: {err}"
     );
 
-    // The refused push left the peer's history alone: A rebases and lands.
-    let r = a.run(&[
-        "rebase",
-        &format!("--identity={id}"),
-        &format!("--peer={}", server.url),
-    ]);
+    // Fetch without a flag refuses the divergence and changes nothing.
+    let peer = format!("--peer={}", server.url);
+    let refused = a.run(&["fetch", &format!("--identity={id}"), &peer]);
+    assert!(!refused.ok, "a diverged fetch must be refused");
     assert!(
-        r.ok,
-        "rebase onto the peer's tip must succeed: {}",
-        r.stderr
+        refused.stderr.contains("--trust-remote"),
+        "the refusal names the choice: {}",
+        refused.stderr
     );
-    accepted(&a.push(&id, &server.url), "push after rebase");
+    assert_eq!(a.commit_count(&id), 3, "nothing was discarded");
+
+    // A trusts the peer, redoes its commit, and lands.
+    let r = a.run(&["fetch", &format!("--identity={id}"), &peer, "--trust-remote"]);
+    assert!(r.ok, "trusting the remote must succeed: {}", r.stderr);
+    a.add_key(&id);
+    accepted(&a.push(&id, &server.url), "push after adopting the remote");
 
     // B sees both devices' commits: nothing was overwritten.
-    let f = b.run(&[
-        "fetch",
-        &format!("--identity={id}"),
-        &format!("--peer={}", server.url),
-    ]);
+    let f = b.run(&["fetch", &format!("--identity={id}"), &peer]);
     assert!(f.ok, "fetch must succeed: {}", f.stderr);
     assert_eq!(
         b.commit_count(&id),
         4,
-        "genesis commit + setup add + B's + rebased A's"
+        "genesis commit + setup add + B's + A's redone"
     );
 }
 
@@ -268,15 +267,15 @@ fn multi_key_genesis_is_published_with_every_key_created() {
     );
 }
 
-/// Claim: a device paired into a multi-key principal can rebase. The
-/// identity is the principal genesis, not a thumbprint in the device's
-/// keystore, so rebase must read the genesis from the stored history.
+/// Claim: a device paired into a multi-key principal can trust the remote.
+/// The identity is the principal genesis, not a thumbprint in the device's
+/// keystore, so the adoption must read the genesis from the stored history.
 /// End-to-end: yes (two devices, one real server).
-/// Turns red on: a rebase that resolves genesis only from the keystore,
+/// Turns red on: an adoption that resolves genesis only from the keystore,
 /// failing with "cannot resolve genesis ... no stored commits or keystore
 /// key".
 #[test]
-fn paired_device_of_multi_key_principal_rebases() {
+fn paired_device_of_multi_key_principal_trusts_the_remote() {
     let server = Server::start();
     let a = User::new();
     let k0 = a.setup(&["key", "generate", "--algo", "ES256"])["tmb"]
@@ -332,16 +331,23 @@ fn paired_device_of_multi_key_principal_rebases() {
     ]);
     assert!(
         !phone.push(&id, &server.url).ok,
-        "the phone is stale before it rebases"
+        "the phone is stale before it adopts the remote"
     );
 
     let r = phone.run(&[
-        "rebase",
+        "fetch",
         &format!("--identity={id}"),
         &format!("--peer={}", server.url),
+        "--trust-remote",
     ]);
-    assert!(r.ok, "rebase of a multi-key principal: {}", r.stderr);
-    accepted(&phone.push(&id, &server.url), "push after rebase");
+    assert!(r.ok, "adoption by a multi-key principal: {}", r.stderr);
+    phone.setup(&[
+        "key",
+        "add",
+        &format!("--identity={id}"),
+        &format!("--signer={phone_tmb}"),
+    ]);
+    accepted(&phone.push(&id, &server.url), "push after adoption");
 }
 
 /// Claim: fetch brings a peer's verified commits into an empty local store.
@@ -463,17 +469,19 @@ fn data_push_sends_actions_ahead_of_their_ds_create() {
     );
 }
 
-/// Claim (SPEC 4.8.1, 4.8.2, I1): a rebase onto a peer's newer tip loses no
-/// data action recorded locally. The action stays in the rebased device's DT,
-/// so a following `ds/create` includes it, the peer accepts it, and a fresh
-/// client verifies the result.
+/// Claim (SPEC 4.8.1, 4.8.2, I1): `fetch --trust-remote` discards only the
+/// local commits after the parting point and loses no data action recorded
+/// locally. The shared prefix stays, the discarded commit is named, and the
+/// action stays in the device's DT, so a following `ds/create` includes it,
+/// the peer accepts it, and a fresh client verifies the result.
 /// End-to-end: yes (two devices of one principal, one real server).
-/// Turns red if rebase rebuilds the store from commits alone: the action is
-/// gone, `data commit` has no DR to include and fails; or if it re-signs an
-/// action the adopted history still authorizes at its own `now` (a
-/// duplicate under a new digest, SPEC 6.5).
+/// Turns red if the adoption rebuilds the store from commits alone: the
+/// action is gone, `data commit` has no DR to include and fails; if it
+/// discards the shared prefix or more than the diverged commit; or if it
+/// re-signs an action the adopted history still authorizes at its own `now`
+/// (a duplicate under a new digest, SPEC 6.5).
 #[test]
-fn data_rebase_keeps_local_actions() {
+fn trust_remote_discards_only_diverged_commits_and_keeps_actions() {
     let server = Server::start();
     let a = User::new();
     let id = a.new_identity();
@@ -484,19 +492,36 @@ fn data_rebase_keeps_local_actions() {
     // B records an action and a commit it does not push; A moves the peer on.
     b.setup(&["data", "action", &ident, &signer, "--msg=mine"]);
     b.add_key(&id);
+    let diverged = b.setup(&["inspect", &ident])["commit_count"].as_u64();
     a.add_key(&id);
     accepted(&a.push(&id, &server.url), "A's newer commit");
     assert!(!b.push(&id, &server.url).ok, "B is stale");
 
-    let rebased = b.setup(&["rebase", &ident, &format!("--peer={}", server.url)]);
-    let resigned = rebased["resigned_actions"].as_array().expect("resigned");
+    let adopted = b.setup(&[
+        "fetch",
+        &ident,
+        &format!("--peer={}", server.url),
+        "--trust-remote",
+    ]);
+    assert_eq!(
+        adopted["discarded"].as_array().map(Vec::len),
+        Some(1),
+        "only B's own commit goes: {adopted}"
+    );
+    assert_eq!(adopted["fetched"], 1, "A's commit comes: {adopted}");
+    assert_eq!(
+        b.commit_count(&id),
+        diverged.expect("count"),
+        "the shared prefix stays and the peer's commit replaces B's"
+    );
+    let resigned = adopted["resigned_actions"].as_array().expect("resigned");
     assert!(
         resigned.is_empty(),
-        "an action B's key still authorizes is kept as signed: {rebased}"
+        "an action B's key still authorizes is kept as signed: {adopted}"
     );
     let made = b.setup(&["data", "commit", &ident, &signer]);
     let pushed = b.push(&id, &server.url);
-    accepted(&pushed, "push of the rebased history with its ds/create");
+    accepted(&pushed, "push of the adopted history with its ds/create");
     assert_eq!(pushed.json()["tip"], made["commit_id"]);
 
     let reader = User::new();
@@ -507,56 +532,34 @@ fn data_rebase_keeps_local_actions() {
     assert_eq!(v["tip"], made["commit_id"]);
 }
 
-/// Claim (architect ruling, SPEC 4.8.2, 15.9): an offline device that
-/// committed a `ds/create` rejoins: rebase keeps its data actions as signed
-/// (its key still authorizes them at their own `now`, SPEC 6.5), signs a
-/// FRESH `ds/create` whose id is the Data Root of the rebased tree (never
-/// the old one, which the peer's history lacks), and reports it. Defect that turns it red: rebase
-/// refusing `ds/create` (`RebaseUnsupported`), repeating the old DR, or a rebased history the
-/// peer refuses. End-to-end: yes (real peer, two devices).
+/// Claim: `push --assert-local` sends local commits that differ from the
+/// peer's as a fork, and without the flag the same push is refused with
+/// nothing sent. End-to-end: yes (two devices, one real server).
+/// Turns red on: a push that sends the fork with no flag, or one that
+/// refuses it with the flag.
 #[test]
-fn rebase_replays_a_ds_create_with_a_fresh_data_root() {
+fn assert_local_pushes_the_fork() {
     let server = Server::start();
     let a = User::new();
     let id = a.new_identity();
     accepted(&a.push(&id, &server.url), "base push");
     let b = a.clone_identity(&id);
-    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+    b.add_key(&id);
+    accepted(&b.push(&id, &server.url), "B's commit");
 
-    b.setup(&["data", "action", &ident, &signer, "--msg=offline"]);
-    let old = b.setup(&["data", "commit", &ident, &signer]);
-    // The peer's side also holds data, so the rebased tree is the union.
-    a.setup(&["data", "action", &ident, &signer, "--msg=online"]);
-    a.setup(&["data", "commit", &ident, &signer]);
-    accepted(&a.push(&id, &server.url), "A moves the peer on");
-    assert!(!b.push(&id, &server.url).ok, "B is stale");
-
-    let rebased = b.setup(&["rebase", &ident, &format!("--peer={}", server.url)]);
-    assert_eq!(
-        rebased["resigned_actions"].as_array().map(Vec::len),
-        Some(0),
-        "the action is kept as signed: {rebased}"
-    );
-    let included = rebased["ds_create"].as_array().expect("ds_create reported");
-    assert_eq!(included.len(), 1, "one fresh ds/create: {rebased}");
-    assert_ne!(
-        included[0]["dr"], old["dr"],
-        "the DR is of the rebased tree (both devices' actions), not the old one: {rebased}"
-    );
-    let pushed = b.push(&id, &server.url);
-    accepted(
-        &pushed,
-        "push of the rebased history with its fresh ds/create",
-    );
-    let reader = User::new();
-    let peer = format!("--peer={}", server.url);
-    assert!(
-        reader.run(&["fetch", &ident, &peer]).ok,
-        "a reader replays the rebased chain"
-    );
-    let v = reader.setup(&["verify", &ident, &peer]);
-    assert_eq!(v["verdict"], "Active");
-    assert_eq!(v["tip"], pushed.json()["tip"]);
+    // A holds two commits over the base, a branch against B's.
+    a.add_key(&id);
+    a.add_key(&id);
+    let refused = a.push(&id, &server.url);
+    assert!(!refused.ok, "a fork needs the explicit choice");
+    let sent = a.run(&[
+        "push",
+        &format!("--identity={id}"),
+        &format!("--peer={}", server.url),
+        "--assert-local",
+    ]);
+    assert!(sent.ok, "the asserted fork is sent: {}", sent.stderr);
+    assert_ne!(sent.json()["pushed"], 0, "commits went out: {}", sent.stdout);
 }
 
 /// Claim: a held data action whose signer a peer later reports naked-revoked

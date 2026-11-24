@@ -12,7 +12,7 @@ pub mod inspect;
 pub mod io;
 /// Key management commands.
 pub mod key;
-/// Network commands: push, fetch, rebase.
+/// Network commands: push, fetch.
 pub mod network;
 /// Device pairing: request and accept.
 pub mod pair;

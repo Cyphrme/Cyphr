@@ -128,8 +128,6 @@ fn action(
 
 /// Commit one `ds/create` of `signer_tmb` onto `principal`, its id the
 /// Data Root of the Data Tree as the principal holds it now (SPEC 4.8.2).
-/// Shared by `data commit` and rebase replay, which must name the rebased
-/// tree's root and never an earlier one's.
 pub(crate) fn apply_ds_create(
     principal: &mut CliPrincipal,
     keystore: &impl KeyBackend,

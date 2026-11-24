@@ -1,4 +1,4 @@
-//! Network commands: `push`, `fetch` and `rebase`.
+//! Network commands: `push`, `fetch` and `resync`.
 //!
 //! Peers are untrusted: every commit a peer serves is re-verified by the
 //! local engine before it is stored, and `verify` reports what the local, never that the view is
@@ -62,6 +62,37 @@ fn describe(tip: &TipAnswer) -> String {
     }
 }
 
+/// The commit ids of `theirs`, in the algorithm the local ids use. A bundle
+/// that does not decode is named `?`, since this only describes a refusal.
+fn remote_ids(theirs: &[WireBundle], local: &[RawCommit]) -> Vec<String> {
+    let alg = local
+        .first()
+        .and_then(|c| c.commit_id.parse::<TaggedDigest>().ok())
+        .map(|id| id.alg());
+    theirs
+        .iter()
+        .map(|b| {
+            alg.and_then(|alg| b.decode().ok()?.commit_id(alg))
+                .map_or_else(|| "?".to_owned(), |c| c.to_string())
+        })
+        .collect()
+}
+
+/// Where the local history and the peer's part, and what each holds after
+/// it, for the warning a divergence is refused with.
+fn divergence_report(local: &[RawCommit], theirs: &[WireBundle], parts: usize) -> String {
+    let after = |ids: Vec<String>| ids[parts.min(ids.len())..].join(", ");
+    let parting = match parts {
+        0 => "before the first commit".to_owned(),
+        n => format!("after commit {n} ({})", local[n - 1].commit_id),
+    };
+    format!(
+        "the histories part {parting}; local commits after it: [{}]; peer commits after it: [{}]",
+        after(local.iter().map(|c| c.commit_id.clone()).collect()),
+        after(remote_ids(theirs, local)),
+    )
+}
+
 /// `cyphr push`: send the commits the peer lacks, each preceded by the data
 /// actions recorded before it (a `ds/create` includes exactly those, SPEC
 /// 4.8.2), then the actions recorded after the last commit.
@@ -73,7 +104,7 @@ fn describe(tip: &TipAnswer) -> String {
 /// replayed action is a no-op (SPEC 7.6) and the peer stores it once
 /// (content-addressed manifests). Batching them waits on the peer reporting
 /// what it holds, which would remove the resend and with it the question.
-pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
+pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> crate::Result<()> {
     let store = parse_store(cli)?;
     let keystore = super::common::open_backend(cli)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
@@ -103,9 +134,12 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 Some(i) => i + 1,
                 None => {
                     // Over the peer's tip: where the histories part decides
-                    // what is sent. A lone commit beyond it is a stale view
-                    // and moves the peer to Error for nothing the sender can
-                    // finish, so it is refused; two or more extend a branch,
+                    // what is sent. Local commits past the parting point
+                    // are a fork against the peer, which is the user's
+                    // choice to make: refused unless `--assert-local`. A
+                    // lone commit beyond it is a stale view and moves the
+                    // peer to Error for nothing the sender can finish, so
+                    // it is refused even then; two or more extend a branch,
                     // which is the answer to a fork, and are sent.
                     let held = describe(&tip);
                     let theirs = peer.chain(&wire).await?.commits;
@@ -123,6 +157,28 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                         .zip(&local)
                         .take_while(|(a, b)| same(a, b))
                         .count();
+                    if local.len() == parts {
+                        return Err(PeerError::Stale {
+                            peer: peer.url().to_owned(),
+                            detail: format!(
+                                "the local commits are behind {held}, which they do not \
+                                 contain; run `fetch`, then repeat the operation"
+                            ),
+                        }
+                        .into());
+                    }
+                    if !assert_local {
+                        return Err(PeerError::Stale {
+                            peer: peer.url().to_owned(),
+                            detail: format!(
+                                "{held} is not in the local history: {}; `fetch \
+                                 --trust-remote` discards the local commits after the parting \
+                                 point, `push --assert-local` sends them as a fork",
+                                divergence_report(&local, &theirs, parts)
+                            ),
+                        }
+                        .into());
+                    }
                     if local.len() - parts < 2 {
                         return Err(PeerError::Stale {
                             peer: peer.url().to_owned(),
@@ -164,8 +220,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                     parent = Some(&commit.bundle);
                 },
                 // A lone commit over a tip the peer holds, with nothing after
-                // it to offer it with: the peer did not take it, and the
-                // sender must rebase onto what the peer holds.
+                // it to offer it with: the peer did not take it.
                 Err(PeerError::Stale { .. }) if forking.is_some() => {
                     return Err(PeerError::Stale {
                         peer: peer.url().to_owned(),
@@ -334,7 +389,12 @@ pub fn resync(
 }
 
 /// `cyphr fetch`: verify and store the peer's commits the local store lacks.
-pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
+///
+/// Local commits that differ from the peer's at some position are a
+/// divergence, and which side to trust is the user's choice: without
+/// `trust_remote` it is refused and nothing changes; with it, only the local
+/// commits after the parting point are discarded.
+pub fn fetch(cli: &Cli, identity: &str, peer_url: &str, trust_remote: bool) -> crate::Result<()> {
     let store = parse_store(cli)?;
     let keystore = super::common::open_backend(cli)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
@@ -342,14 +402,11 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let genesis = local_genesis(&keystore, identity)?;
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
 
-    let fetched = block_on(async {
-        let PeerHistory {
-            commits: theirs,
-            actions,
-        } = peer.chain(&wire).await?;
+    let (history, local, diverged) = block_on(async {
+        let history = peer.chain(&wire).await?;
         let local = raw_chain(&store, &principal_id).await?;
         // A bundle that does not decode is a bad answer, not a rival branch.
-        for bundle in &theirs {
+        for bundle in &history.commits {
             if let Err(why) = bundle.decode() {
                 return Err(PeerError::Malformed {
                     peer: peer.url().to_owned(),
@@ -358,24 +415,33 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 .into());
             }
         }
-        if let Some(i) = first_divergence(&local, &theirs) {
+        let diverged = first_divergence(&local, &history.commits);
+        Ok::<_, Error>((history, local, diverged))
+    })??;
+    if let Some(height) = diverged {
+        if !trust_remote {
             return Err(PeerError::Diverged {
                 peer: peer.url().to_owned(),
-                height: i,
+                height,
+                report: divergence_report(&local, &history.commits, height),
             }
             .into());
         }
-        let applied = submit_history(
-            &store,
-            &principal_id,
-            genesis.clone(),
-            &theirs,
-            &actions,
-            local.len(),
-        )
-        .await?;
-        Ok::<_, Error>(applied)
-    })??;
+        return adopt_remote(cli, identity, peer_url, store, history, &local, height);
+    }
+
+    let PeerHistory {
+        commits: theirs,
+        actions,
+    } = history;
+    let fetched = block_on(submit_history(
+        &store,
+        &principal_id,
+        genesis,
+        &theirs,
+        &actions,
+        local.len(),
+    ))??;
 
     let out = json!({"identity": identity, "peer": peer_url, "fetched": fetched});
     emit(cli, &out, || {
@@ -430,8 +496,15 @@ fn first_divergence(a: &[RawCommit], b: &[WireBundle]) -> Option<usize> {
         .position(|(x, y)| !same_commit(&x.bundle, y))
 }
 
-/// Suffix of the file that records a rebase swap in progress.
-pub const SWAP_MARKER: &str = ".rebase-swap";
+/// Suffix of the file that records a store swap in progress.
+pub const SWAP_MARKER: &str = ".adopt-swap";
+
+/// Suffix of the scratch store a swap builds beside the real one.
+pub const SCRATCH_SUFFIX: &str = ".adopt";
+
+/// Prefix, after the store name, of the backup a swap leaves of the old
+/// store.
+pub const BACKUP_PREFIX: &str = ".pre-adopt-";
 
 /// `path` with `suffix` appended to its final component.
 fn sibling(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
@@ -449,8 +522,8 @@ fn sync_dir(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::File::open(parent)?.sync_all()
 }
 
-/// Removes the rebase scratch store on every exit path that has not
-/// handed it over, so a failed rebase never blocks the next one.
+/// Removes the scratch store on every exit path that has not handed it
+/// over, so a failed adoption never blocks the next one.
 struct Scratch(Option<std::path::PathBuf>);
 
 impl Drop for Scratch {
@@ -463,95 +536,28 @@ impl Drop for Scratch {
     }
 }
 
-/// A local commit's transaction, to be re-signed onto a new tip.
-enum Intent {
-    AddKey {
-        id: String,
-        signer: String,
-    },
-    DeleteKey {
-        id: String,
-        signer: String,
-    },
-    ReplaceKey {
-        id: String,
-        signer: String,
-    },
-    RevokeKey {
-        signer: String,
-    },
-    /// A `ds/create`. Its `id` names the Data Root of a tree the rebased
-    /// history does not have, so replay signs a fresh one over the rebased
-    /// tree instead of repeating this.
-    DsCreate {
-        signer: String,
-    },
-}
-
-/// Read the replayable intents out of a local commit's cozies. Terminal
-/// `commit/create` cozies are the commit's own seal, re-made on replay.
-fn intents(commit: &RawCommit) -> crate::Result<(Vec<Intent>, String)> {
-    use cyphr::parsed_coz::typ;
-    let mut out = Vec::new();
-    let mut authority = String::new();
-    for blob in commit.bundle.cozies() {
-        let v: Value = serde_json::from_slice(blob)?;
-        let pay = &v["pay"];
-        let t = pay["typ"].as_str().ok_or(Error::MissingField("pay.typ"))?;
-        let tmb = pay["tmb"].as_str().ok_or(Error::MissingField("pay.tmb"))?;
-        if let Some(a) = t.strip_suffix(typ::KEY_CREATE) {
-            authority = a.trim_end_matches('/').to_owned();
-            let id = pay["id"].as_str().ok_or(Error::MissingField("pay.id"))?;
-            out.push(Intent::AddKey {
-                id: id.to_owned(),
-                signer: tmb.to_owned(),
-            });
-        } else if let Some(a) = t.strip_suffix(typ::KEY_DELETE) {
-            authority = a.trim_end_matches('/').to_owned();
-            let id = pay["id"].as_str().ok_or(Error::MissingField("pay.id"))?;
-            out.push(Intent::DeleteKey {
-                id: id.to_owned(),
-                signer: tmb.to_owned(),
-            });
-        } else if let Some(a) = t.strip_suffix(typ::KEY_REPLACE) {
-            authority = a.trim_end_matches('/').to_owned();
-            let id = pay["id"].as_str().ok_or(Error::MissingField("pay.id"))?;
-            out.push(Intent::ReplaceKey {
-                id: id.to_owned(),
-                signer: tmb.to_owned(),
-            });
-        } else if let Some(a) = t.strip_suffix(typ::KEY_REVOKE) {
-            authority = a.trim_end_matches('/').to_owned();
-            out.push(Intent::RevokeKey {
-                signer: tmb.to_owned(),
-            });
-        } else if let Some(a) = t.strip_suffix(typ::DS_CREATE) {
-            authority = a.trim_end_matches('/').to_owned();
-            out.push(Intent::DsCreate {
-                signer: tmb.to_owned(),
-            });
-        } else if !t.ends_with("commit/create") {
-            return Err(Error::RebaseUnsupported(t.to_owned()));
-        }
-    }
-    Ok((out, authority))
-}
-
-/// `cyphr rebase`: replay local, unpushed commits onto the peer's history.
+/// Adopt the peer's history over local commits that diverge from it, on the
+/// user's explicit choice to trust the peer (`fetch --trust-remote`).
 ///
-/// The store is append-only (I1), so a diverged local commit cannot be
+/// Only the local commits after the parting point go; the shared prefix is
+/// kept. The store is append-only (I1), so a diverged local commit cannot be
 /// removed in place, and leaving it beside the peer's commit at the same
 /// height would make the principal's chain unrecoverable on reindex. The
-/// replay therefore builds a fresh store, copies every other principal into
-/// it unchanged, and swaps it in; the old store is kept as a backup.
-pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
+/// adoption therefore builds a fresh store, copies every other principal
+/// into it unchanged, and swaps it in; the old store is kept as a backup.
+/// Data actions recorded locally and in no commit survive.
+fn adopt_remote(
+    cli: &Cli,
+    identity: &str,
+    peer_url: &str,
+    old: super::common::CliStorageEngine,
+    history: PeerHistory,
+    local: &[RawCommit],
+    common: usize,
+) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
-    let wire = wire_id(identity)?;
-    let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
     let path = store_path(cli)?.to_owned();
-
-    let old = parse_store(cli)?;
     // A multi-key principal's identity is its PG, not a keystore key, so
     // its genesis comes from the stored history (as for the other
     // principals copied below).
@@ -559,48 +565,14 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         Some(g) => g,
         None => block_on(old.resolve_genesis(&principal_id, &[]))??,
     };
-    let (local, history) = block_on(async {
-        let history = peer.chain(&wire).await?;
-        let local = raw_chain(&old, &principal_id).await?;
-        Ok::<_, Error>((local, history))
-    })??;
     let PeerHistory {
         commits: theirs,
         actions: their_actions,
     } = history;
-    let common = local
+    let discarded: Vec<String> = local[common..]
         .iter()
-        .zip(&theirs)
-        .take_while(|(x, y)| same_commit(&x.bundle, y))
-        .count();
-    let mut replay = Vec::new();
-    let mut authority = cli.authority.clone();
-    for commit in &local[common..] {
-        let (found, auth) = intents(commit)?;
-        if !auth.is_empty() {
-            authority = auth;
-        }
-        replay.extend(found);
-    }
-    // Every local action is re-recorded before any intent replays, so the
-    // rebased tree is whole and one `ds/create` over it includes what each
-    // earlier one included: the last stands for all.
-    if let Some(last) = replay
-        .iter()
-        .rposition(|i| matches!(i, Intent::DsCreate { .. }))
-    {
-        let mut at = 0;
-        replay.retain(|i| {
-            at += 1;
-            !matches!(i, Intent::DsCreate { .. }) || at == last + 1
-        });
-    }
-    if local.len() == common || theirs.len() == common {
-        // Nothing local to move, or the peer holds nothing the local
-        // history lacks: the history already extends the peer's.
-        let out = json!({"identity": identity, "peer": peer_url, "rebased": 0});
-        return emit(cli, &out, || println!("Nothing to rebase"));
-    }
+        .map(|c| c.commit_id.clone())
+        .collect();
 
     // The data actions recorded locally, which a rebuild from the peer's
     // history must not lose (I1: the blob store is the source of truth).
@@ -611,15 +583,14 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             .collect::<crate::Result<_>>()?;
 
     let mut tmp = path.clone().into_os_string();
-    tmp.push(".rebase");
+    tmp.push(SCRATCH_SUFFIX);
     let tmp = std::path::PathBuf::from(tmp);
     if tmp.exists() {
-        return Err(Error::RebaseWorkspace(tmp));
+        return Err(Error::SwapWorkspace(tmp));
     }
     // Declared before the engine below so the engine closes its files first.
     let mut scratch = Scratch(Some(tmp.clone()));
     let mut resigned: Vec<Value> = Vec::new();
-    let mut included: Vec<Value> = Vec::new();
     {
         let new = open_store(&tmp, false)?;
         block_on(async {
@@ -659,7 +630,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             Ok::<_, Error>(())
         })??;
 
-        let mut principal = load_principal_from_engine(&new, &keystore, identity)?;
+        let principal = load_principal_from_engine(&new, &keystore, identity)?;
         // Re-record the local actions the peer's history lacks, as signed:
         // a re-signed action is a new digest, a duplicate of the original.
         // Only one the adopted history does not authorize at its own `now`
@@ -702,81 +673,23 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 },
             }
         }
-        if !missing.is_empty() {
-            principal = load_principal_from_engine(&new, &keystore, identity)?;
-        }
-        for intent in &replay {
-            match intent {
-                Intent::AddKey { id, signer } => {
-                    let key = super::common::load_key_from_keystore(&keystore, id)?;
-                    super::key::apply_key_create(
-                        &mut principal,
-                        &keystore,
-                        id,
-                        &key,
-                        signer,
-                        &authority,
-                    )?;
-                },
-                Intent::DeleteKey { id, signer } => {
-                    super::key::apply_key_delete(
-                        &mut principal,
-                        &keystore,
-                        id,
-                        signer,
-                        &authority,
-                    )?;
-                },
-                Intent::ReplaceKey { id, signer } => {
-                    let key = super::common::load_key_from_keystore(&keystore, id)?;
-                    super::key::apply_key_replace(
-                        &mut principal,
-                        &keystore,
-                        id,
-                        &key,
-                        signer,
-                        &authority,
-                        None,
-                    )?;
-                },
-                Intent::DsCreate { signer } => {
-                    let dr = super::data::apply_ds_create(
-                        &mut principal,
-                        &keystore,
-                        signer,
-                        &authority,
-                    )?;
-                    included.push(json!({"signer": signer, "dr": dr}));
-                },
-                Intent::RevokeKey { signer } => {
-                    super::key::apply_key_revoke(
-                        &mut principal,
-                        &keystore,
-                        signer,
-                        signer,
-                        &authority,
-                    )?;
-                },
-            }
-        }
-        super::common::save_principal_to_engine(&new, &keystore, &principal)?;
         new.blob_store()
             .database()
             .persist(fjall::PersistMode::SyncAll)?;
     }
     drop(old);
 
-    // Named by the second, so a rebase finishing in the same second as an
-    // earlier one must not take that one's backup: rename onto a non-empty
-    // directory fails.
+    // Named by the second, so an adoption finishing in the same second as
+    // an earlier one must not take that one's backup: rename onto a
+    // non-empty directory fails.
     let stamp = current_timestamp();
     let backup = (0u32..)
         .map(|n| match n {
-            0 => sibling(&path, &format!(".pre-rebase-{stamp}")),
-            n => sibling(&path, &format!(".pre-rebase-{stamp}-{n}")),
+            0 => sibling(&path, &format!("{BACKUP_PREFIX}{stamp}")),
+            n => sibling(&path, &format!("{BACKUP_PREFIX}{stamp}-{n}")),
         })
         .find(|candidate| !candidate.exists())
-        .ok_or_else(|| Error::InvalidArgument("no free rebase backup name".into()))?;
+        .ok_or_else(|| Error::InvalidArgument("no free backup name".into()))?;
     // The marker names the backup before anything moves, so a process that
     // dies between the two renames leaves a trail `parse_store` refuses on.
     let marker = sibling(&path, SWAP_MARKER);
@@ -791,24 +704,23 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     std::fs::remove_file(&marker)?;
     sync_dir(&path)?;
 
-    let out = json!({"identity": identity, "peer": peer_url,
-        "rebased": local.len() - common, "backup": backup.display().to_string(),
-        "resigned_actions": resigned, "ds_create": included});
+    let fetched = theirs.len() - common;
+    let out = json!({"identity": identity, "peer": peer_url, "fetched": fetched,
+        "discarded": discarded, "backup": backup.display().to_string(),
+        "resigned_actions": resigned});
     emit(cli, &out, || {
+        println!("Fetched {fetched} commit(s) from {peer_url}");
         println!(
-            "Rebased {} commit(s); old store kept at {}",
-            local.len() - common,
+            "Discarded {} local commit(s) after the parting point (old store kept at {}):",
+            discarded.len(),
             backup.display()
         );
-        for inc in &included {
-            println!(
-                "Signed a fresh ds/create including the rebased DR {}",
-                inc["dr"]
-            );
+        for id in &discarded {
+            println!("  {id}");
         }
         if !resigned.is_empty() {
             println!(
-                "Re-signed {} action(s) at rebase; original times and czds: {}",
+                "Re-signed {} action(s); original times and czds: {}",
                 resigned.len(),
                 Value::Array(resigned.clone())
             );

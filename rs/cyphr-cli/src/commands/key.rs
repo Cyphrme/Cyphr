@@ -398,7 +398,7 @@ fn commit_key_tx(
 }
 
 /// Commit one `key/create` of `new_key` (thumbprint `new_key_tmb`), signed
-/// by `signer_tmb`, onto `principal`. Shared by `key add` and rebase replay.
+/// by `signer_tmb`, onto `principal`.
 pub(crate) fn apply_key_create(
     principal: &mut CliPrincipal,
     keystore: &impl KeyBackend,
@@ -422,7 +422,7 @@ pub(crate) fn apply_key_create(
 }
 
 /// Commit one `key/delete` (SPEC 6.2) of `key_tmb`, signed by `signer_tmb`,
-/// onto `principal`. Shared by `key delete` and rebase replay.
+/// onto `principal`.
 pub(crate) fn apply_key_delete(
     principal: &mut CliPrincipal,
     keystore: &impl KeyBackend,
@@ -445,8 +445,7 @@ pub(crate) fn apply_key_delete(
 }
 
 /// Commit one `key/replace` (SPEC 6.3): `signer_tmb` is swapped for
-/// `new_key` (thumbprint `new_key_tmb`) atomically. Shared by `key replace`
-/// and rebase replay.
+/// `new_key` (thumbprint `new_key_tmb`) atomically.
 pub(crate) fn apply_key_replace(
     principal: &mut CliPrincipal,
     keystore: &impl KeyBackend,
@@ -472,7 +471,6 @@ pub(crate) fn apply_key_replace(
 
 /// Commit one self-`key/revoke` of `signer_tmb` onto `principal`: the
 /// standard revoke of SPEC 6.4, signed by the key itself inside a commit.
-/// Shared by `key revoke` and rebase replay.
 pub(crate) fn apply_key_revoke(
     principal: &mut CliPrincipal,
     keystore: &impl KeyBackend,

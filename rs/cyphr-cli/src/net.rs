@@ -40,7 +40,7 @@ pub enum PeerError {
         message: String,
     },
     /// The peer holds a tip the sender's history does not contain.
-    #[error("peer {peer} holds a newer or different tip ({detail}); rebase onto it first")]
+    #[error("peer {peer} holds a newer or different tip ({detail})")]
     Stale {
         /// The peer's base URL.
         peer: String,
@@ -84,12 +84,18 @@ pub enum PeerError {
     },
     /// The peer's history disagrees with the local history below the tip.
     /// The divergence is not verified: the peer's chain is not replayed.
-    #[error("peer {peer} history diverges from the local history at commit {height}")]
+    #[error(
+        "peer {peer} history diverges from the local history at commit {height}: {report}; \
+         nothing was changed. `fetch --trust-remote` discards the local commits after the \
+         parting point and adopts the peer's"
+    )]
     Diverged {
         /// The peer's base URL.
         peer: String,
         /// 0-based index of the first differing commit.
         height: usize,
+        /// Where the histories part and what each holds after it.
+        report: String,
     },
 }
 

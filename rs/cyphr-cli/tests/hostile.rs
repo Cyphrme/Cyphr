@@ -531,36 +531,11 @@ fn reserialized_chain_is_not_a_fork_in_fetch() {
     assert_eq!(r.json()["fetched"], 0);
 }
 
-/// Claim: rebase against a peer that re-serializes the shared prefix finds
-/// nothing to move and leaves the store alone. Turns red on a "duplicate
-/// key" failure from replaying onto a mis-detected empty common prefix.
-#[test]
-fn reserialized_chain_does_not_break_rebase() {
-    let (a, id, peer, _real) = reserialized_world();
-    a.add_key(&id);
-    let r = a.peer_cmd("rebase", &id, &peer.url);
-    assert!(
-        r.ok,
-        "rebase over an equal prefix must succeed: {}",
-        r.stderr
-    );
-    assert_eq!(r.json()["rebased"], 0);
-    assert_eq!(
-        a.commit_count(&id),
-        3,
-        "local history untouched: genesis, setup add, our add"
-    );
-    assert!(
-        siblings(&a.store(), "data.").is_empty(),
-        "no scratch or backup left"
-    );
-}
-
 /// Claim: what a signature does not bind (an extra top-level member, the
 /// `tag` and `now` of a key sidecar) does not make a different commit, so a
-/// peer adding them is serving the same history in verify, fetch and rebase.
+/// peer adding them is serving the same history in verify and fetch.
 /// Turns red on a comparison of the whole blob (false fork at height 0,
-/// `forked`, and COZ_REUSE from rebase). End-to-end: yes.
+/// `forked`). End-to-end: yes.
 #[test]
 fn unsigned_additions_are_not_a_fork_in_verify() {
     let (a, id, peer, _real) = world(true);
@@ -588,35 +563,14 @@ fn unsigned_additions_are_not_a_fork_in_fetch() {
     assert_eq!(r.json()["fetched"], 0);
 }
 
-#[test]
-fn unsigned_additions_do_not_break_rebase() {
-    let (a, id, peer, _real) = world(true);
-    a.add_key(&id);
-    let r = a.peer_cmd("rebase", &id, &peer.url);
-    assert!(
-        r.ok,
-        "rebase over the same signed prefix must succeed: {}",
-        r.stderr
-    );
-    assert_eq!(r.json()["rebased"], 0);
-    assert_eq!(
-        a.commit_count(&id),
-        3,
-        "local history untouched: genesis, setup add, our add"
-    );
-    assert!(
-        siblings(&a.store(), "data.").is_empty(),
-        "no scratch or backup left"
-    );
-}
+// ------------------------------------------------- 2. failed adoption scratch
 
-// ------------------------------------------------- 2. failed rebase scratch
-
-/// Claim: a rebase that fails while building the new store leaves no
-/// scratch directory behind, so the next rebase is not refused for it, and
-/// the original store is intact. Turns red on a leftover `data.rebase`.
+/// Claim: an adoption (`fetch --trust-remote`) that fails while building the
+/// new store leaves no scratch directory behind, so the next one is not
+/// refused for it, and the original store is intact. Turns red on a leftover
+/// `data.adopt`.
 #[test]
-fn failed_rebase_cleans_up_its_scratch_store() {
+fn failed_adoption_cleans_up_its_scratch_store() {
     let real = Server::start();
     let a = User::new();
     let id = a.new_identity();
@@ -640,16 +594,26 @@ fn failed_rebase_cleans_up_its_scratch_store() {
     let body = reserialized_patch(&chain);
     let peer = Hostile::start(move |_| Reply::Body(body.clone()));
 
-    let first = a.peer_cmd("rebase", &id, &peer.url);
-    assert!(!first.ok, "a damaged peer chain must fail the rebase");
+    let first = a.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &format!("--peer={}", peer.url),
+        "--trust-remote",
+    ]);
+    assert!(!first.ok, "a damaged peer chain must fail the adoption");
     assert!(
         siblings(&a.store(), "data.").is_empty(),
         "scratch left: {:?}",
         siblings(&a.store(), "data.")
     );
-    let second = a.peer_cmd("rebase", &id, &peer.url);
+    let second = a.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &format!("--peer={}", peer.url),
+        "--trust-remote",
+    ]);
     assert!(
-        !second.stderr.contains("rebase workspace"),
+        !second.stderr.contains("swap workspace"),
         "the retry must fail for the real cause, not the leftover: {}",
         second.stderr
     );
@@ -662,22 +626,22 @@ fn failed_rebase_cleans_up_its_scratch_store() {
 
 // ------------------------------------------------- 3. interrupted swap
 
-/// Claim: a store that has gone missing next to a rebase backup (the
+/// Claim: a store that has gone missing next to a swap backup (the
 /// process died between the two renames) is refused with an error naming
 /// the backup, never silently replaced by a new empty store. Turns red on
 /// a CLI that creates `data` afresh.
 #[test]
-fn interrupted_rebase_swap_is_refused_not_emptied() {
+fn interrupted_swap_is_refused_not_emptied() {
     let a = User::new();
     let id = a.new_identity();
-    let backup = a.dir.path().join("data.pre-rebase-1700000000");
+    let backup = a.dir.path().join("data.pre-adopt-1700000000");
     std::fs::rename(a.store(), &backup).expect("simulate the first rename");
 
     let r = a.run(&["inspect", &format!("--identity={id}")]);
     assert!(!r.ok, "must refuse to open a store that is missing");
     let msg = r.stderr.lines().last().unwrap_or("");
     assert!(
-        msg.contains("data.pre-rebase-1700000000"),
+        msg.contains("data.pre-adopt-1700000000"),
         "names the backup: {msg}"
     );
     assert!(

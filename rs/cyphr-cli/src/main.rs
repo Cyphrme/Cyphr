@@ -52,14 +52,21 @@ fn run(cli: Cli) -> cyphr_cli::Result<()> {
         Commands::Inspect { identity } => commands::inspect::run(&cli, identity),
         Commands::Export { identity, output } => commands::io::export(&cli, identity, output),
         Commands::Import { input } => commands::io::import(&cli, input),
-        Commands::Push { identity, peer } => commands::network::push(&cli, identity, peer),
+        Commands::Push {
+            identity,
+            peer,
+            assert_local,
+        } => commands::network::push(&cli, identity, peer, *assert_local),
         Commands::Resync {
             identity,
             peer,
             signer,
         } => commands::network::resync(&cli, identity, peer, signer.as_deref()),
-        Commands::Rebase { identity, peer } => commands::network::rebase(&cli, identity, peer),
-        Commands::Fetch { identity, peer } => commands::network::fetch(&cli, identity, peer),
+        Commands::Fetch {
+            identity,
+            peer,
+            trust_remote,
+        } => commands::network::fetch(&cli, identity, peer, *trust_remote),
         Commands::Verify {
             identity,
             peer,
