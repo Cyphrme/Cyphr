@@ -10,7 +10,7 @@ Rust-only (`rs/`).
 Root `go.mod` covers this tree (`github.com/cyphrme/cyphr`); from the
 repo root: `go build ./go/... && go vet ./go/...`. `go test ./go/...`
 runs but fails golden categories as described below — that red is
-expected. `login/` has its own `go.mod` and is tested separately.
+expected. CI does not build Go until it is revived.
 
 ## What an agent must know
 
@@ -25,8 +25,6 @@ expected. `login/` has its own `go.mod` and is tested separately.
   match Go.
 - The working tree may carry reference-only checkouts from other branches;
   do not merge or commit them.
-- `login/` (repo root) is a separate, isolated Go module — a design
-  reference for SPEC §17 auth flows, not wired to this package.
 
 ## Unknowns
 

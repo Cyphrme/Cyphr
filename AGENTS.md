@@ -76,11 +76,10 @@ of PR #23 is the candidate list for what comes after.
   - `fmt`: `treefmt --fail-on-change`;
   - `fixture-freshness`: regenerates `tests/golden` from `tests/intents`
     and fails on any diff (the enforcement of R2);
-  - `rust-audit` (rustsec) and `rust-msrv` (`cargo check --all-features`);
-  - `go`, `go-vuln` and `go-static`: build/test/vet, govulncheck and
-    staticcheck for `go/`.
+  - `rust-audit` (rustsec) and `rust-msrv` (`cargo check --all-features`).
 
-  Releases: `release-{rs,go}.yml` on tags.
+  Go is not built in CI until it is revived. Releases: `release-rs.yml`
+  on tags.
 
 - **Docket is a local merge gate, not a CI step.** `docket` binds a claim
   in prose to the check that closes it. The maintainer runs
