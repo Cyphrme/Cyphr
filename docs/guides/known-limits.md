@@ -254,6 +254,12 @@ These are guarantees a reader might assume. None is provided today.
   server issues every token with read and write permission. No route
   requires a token. `POST /push` is authorized by the bundle's own
   signatures, and checks a token only when the request presents one.
+- **Unlinkable accounts.** A principal's PG and each key's `tmb` are the
+  same at every site it signs in to. Two services that compare the
+  identifiers they hold can tell that one person has an account at both.
+  Sign-on here follows the login design of the specification's author, which
+  does not hide the identifier from the service; nothing derives a
+  per-service identifier.
 - **Key custody.** A key stored by the CLI is software-held and
   unencrypted, and nothing can record how a key is held. See
   [key storage](key-storage.md).

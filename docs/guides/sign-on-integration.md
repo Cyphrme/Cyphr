@@ -497,6 +497,12 @@ scope your account table to the specific server that vouched for the
 principal. `invite` also needs a `tokens_path` set alongside it; the
 policy alone will not parse.
 
+The identifier you store is the principal's PG, and it is the same at every
+service the principal signs in to, as is each key's `tmb`. Another service
+that holds the same identifier can match its account to yours, so accounts
+can be correlated across sites. Cyphr sign-on does not hide this; if your
+users need accounts that cannot be linked, this scheme does not provide it.
+
 ## The rejections you have to handle
 
 The message text is the `payload.error` field verbatim. Every row except the
