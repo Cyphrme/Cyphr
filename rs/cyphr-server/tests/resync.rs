@@ -1,5 +1,5 @@
-//! `POST /resync` and `GET /resync?pr=` (SPEC 15.8 item 2): a proof of possession over one branch's tip selects it at a fork
-//! both of whose branches are extended, which no commit can. The chosen
+//! `POST /resync` and `GET /resync?pr=` (SPEC 15.8 item 2): a proof of possession over one branch's
+//! tip selects it at a fork both of whose branches are extended, which no commit can. The chosen
 //! tip admits writes, the abandoned branch stays served as evidence, and
 //! the holders that read the fork as Error (a gossiping peer, a witness)
 //! reach Active on the same tip once they carry the PoP.
@@ -194,6 +194,7 @@ async fn serve(state: &Arc<AppState>) -> String {
 /// the principal is Active on the chosen branch's held leaf L_5, a write on it is admitted and one
 /// on the abandoned branch is not, the abandoned branch is still served as
 /// evidence, and `GET /resync` lists the PoP.
+// @docket: sc-l2822 :: scripts/docket-run sc-l2822
 #[tokio::test]
 async fn a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch() {
     let f = fork().await;

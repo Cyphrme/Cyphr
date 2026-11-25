@@ -247,6 +247,7 @@ proptest! {
     /// R1. Catches re-opening by extension: with one branch asserted, the
     /// walk follows it, and any commits under the other branch (which may
     /// extend it, so rule E alone would call Error) change nothing.
+    // @docket: sc-l2822 :: scripts/docket-run sc-l2822
     #[test]
     fn one_asserted_child_is_followed_whatever_is_extended_elsewhere(
         common in 1usize..4, left in 1usize..4, right in 1usize..4,
@@ -271,6 +272,7 @@ proptest! {
 
     /// R2. Catches a PoP race: assertions in two children are Error at the
     /// fork point, and no added commit or assertion returns Active.
+    // @docket: sc-l2822 :: scripts/docket-run sc-l2822
     #[test]
     fn assertions_in_two_children_are_error_for_good(
         common in 1usize..4, left in 1usize..4, right in 1usize..4,

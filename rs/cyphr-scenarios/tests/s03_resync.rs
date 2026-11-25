@@ -18,6 +18,7 @@ use cyphr_scenarios::{Capability, Harness};
 
 const CONVERGE: Duration = Duration::from_secs(30);
 
+// @docket: sc-l2822 :: scripts/docket-run sc-l2822
 #[tokio::test(flavor = "multi_thread")]
 async fn s03_resync_resolves_the_double_offline_fork() {
     let h = Harness::start_gossiping(&["p1", "p2"], 1)

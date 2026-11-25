@@ -199,6 +199,7 @@ async fn deliver(
 /// fed in another order. Catches a verdict that depends on which offers
 /// the caps kept, a PoP that only works when its tip arrived first, and a
 /// live state a rebuild does not reproduce.
+// @docket: sc-l2822 :: scripts/docket-run sc-l2822
 #[tokio::test]
 async fn a_pop_selects_the_asserted_line_in_every_order() {
     const { assert!(3 > BRANCH_PER_KEY, "the lines must exceed one key's quota") };
@@ -283,6 +284,7 @@ async fn pops_in_two_lines_are_error_in_every_order() {
 /// absent route): the signer is not active at the tip, the signer is
 /// revoked at `now`, the tip is not held and no line comes, and `id` is no
 /// PR of this principal.
+// @docket: sc-l2822 :: scripts/docket-run sc-l2822
 #[tokio::test]
 async fn an_unfit_pop_is_refused_and_stores_nothing() {
     let rig = Rig::new(5).await;

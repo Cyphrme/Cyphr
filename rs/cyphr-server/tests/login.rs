@@ -854,7 +854,11 @@ async fn create_key_push(
     id: &str,
 ) -> String {
     let signer = pool.get(signer_name).expect("signer in pool");
-    let new = pool.get(new_key).expect("new key in pool").key().expect("key");
+    let new = pool
+        .get(new_key)
+        .expect("new key in pool")
+        .key()
+        .expect("key");
     let pay = serde_json::to_vec(&serde_json::json!({
         "alg": signer.alg,
         "id": new.tmb().to_b64(),
