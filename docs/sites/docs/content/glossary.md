@@ -5,7 +5,7 @@ weight      = 3
 toc         = true
 +++
 
-Terms are drawn from [SPEC.md §2.2](specification.html#22-terminology).
+Terms are drawn from [SPEC.md §2.2](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#22-terminology).
 Implementation-specific terms are noted as such.
 
 ## State Tree
@@ -31,7 +31,7 @@ Introduced at Level 5.
 : Merkle root of user data action digests. Introduced at Level 4.
 
 **Commit Root (CR)**
-: MALT root of transactions. `CR = MALTR(TR₀, TR₁?, ...)`.
+: Merkle root of the commit's transaction roots. `CR = MR(TR₀, TR₁?, ...)`.
 Introduced at Level 3.
 
 **Transaction Root (TR)**
@@ -119,9 +119,9 @@ Enabled at Level 4.
 payloads. Defines signature format, verification, and thumbprint
 computation.
 
-**MALT**
-: Merkle Append-only Log Tree. The data structure underlying the
-Commit Tree. Provides append-only, verifiable accumulation.
+**EML**
+: Epoch Merkle Log. The multihash append-only Merkle log that
+underlies the Commit Tree. Provides append-only, verifiable accumulation.
 
 **MultiHash Merkle Root (MHMR)**
 : Algorithm-tagged digest format. PG, PR, SR, AR, KR, RR, DR, and CR
