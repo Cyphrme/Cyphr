@@ -86,10 +86,12 @@ impl Drop for Server {
 }
 
 /// Spawn `cyphr-server serve` against a keyed, ephemeral data directory and
-/// block until it reports its bound port on stdout. `--config` names a
-/// file that is never created, so resolution falls through to compiled
-/// defaults regardless of the test runner's working directory.
+/// block until it reports its bound port on stdout. `--config` names an
+/// empty file, so resolution falls through to compiled defaults regardless
+/// of the test runner's working directory.
 fn spawn_server(data_dir: &Path, key_path: &Path) -> Server {
+    std::fs::create_dir_all(data_dir).expect("data dir");
+    std::fs::write(data_dir.join("unused.toml"), "").expect("empty config");
     let mut child = Command::new(server_binary())
         .args([
             "--config",

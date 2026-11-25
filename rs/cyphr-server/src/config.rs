@@ -7,7 +7,7 @@
 //! 4. Compiled defaults
 
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
@@ -16,13 +16,18 @@ use serde::Deserialize;
 // CLI (clap)
 // ========================================================================
 
+/// The configuration file read, when present, if `--config` names none.
+const DEFAULT_CONFIG_FILE: &str = "cyphr-server.toml";
+
 /// Cyphr Protocol server.
 #[derive(Parser, Debug)]
 #[command(name = "cyphr-server", version, about)]
 pub struct Cli {
-    /// Path to TOML configuration file.
-    #[arg(short, long, default_value = "cyphr-server.toml")]
-    pub config: PathBuf,
+    /// Path to a TOML configuration file. Named, it must exist; left out,
+    /// `./cyphr-server.toml` is read when present and defaults apply when
+    /// not.
+    #[arg(short, long)]
+    pub config: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Command,
@@ -601,9 +606,17 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
     // Layer 1: compiled defaults.
     let mut figment = Figment::new().merge(Serialized::defaults(ServerConfig::default()));
 
-    // Layer 2: TOML config file (if it exists).
-    if cli.config.exists() {
-        figment = figment.merge(Toml::file(&cli.config));
+    // Layer 2: TOML config file. One the operator named must exist: a
+    // typo'd path otherwise runs the server on defaults and says nothing.
+    match &cli.config {
+        Some(path) if !path.exists() => {
+            return Err(ConfigError::MissingConfigFile(path.clone()));
+        },
+        Some(path) => figment = figment.merge(Toml::file(path)),
+        None if Path::new(DEFAULT_CONFIG_FILE).exists() => {
+            figment = figment.merge(Toml::file(DEFAULT_CONFIG_FILE));
+        },
+        None => {},
     }
 
     let mut config: ServerConfig = figment
@@ -703,6 +716,10 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
 /// Configuration errors.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// A configuration file named with `--config` does not exist.
+    #[error("configuration file {} does not exist", .0.display())]
+    MissingConfigFile(PathBuf),
+
     /// Figment extraction failed (bad TOML, type mismatch, etc.).
     #[error("configuration: {0}")]
     Figment(Box<figment::Error>),
@@ -744,15 +761,24 @@ mod tests {
         Cli::try_parse_from(args).expect("valid CLI args")
     }
 
+    /// An empty configuration file in `dir`, so a test resolves from flags
+    /// and defaults whatever the working directory holds.
+    fn empty_config(dir: &tempfile::TempDir) -> String {
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").expect("write config");
+        path.to_str().expect("utf-8 path").to_owned()
+    }
+
     /// Backs: operator-visible `--signing-key` flag reaches `ServerConfig` (a keyed server is only
     /// reachable via it). Unit: `serve()` boots a socket; the CLI-to-config resolution is a pure
     /// function.
     #[test]
     fn serve_with_signing_key_flag_resolves_the_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
         let cli = parse(&[
             "cyphr-server",
             "--config",
-            "/nonexistent-config-for-test.toml",
+            &empty_config(&dir),
             "serve",
             "--signing-key-path",
             "/etc/cyphr/signing-key.json",
@@ -768,10 +794,11 @@ mod tests {
     /// SPEC 17.2). Unit: `serve()` boots a socket; the CLI-to-config resolution is a pure function.
     #[test]
     fn serve_with_audience_flag_resolves_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
         let cli = parse(&[
             "cyphr-server",
             "--config",
-            "/nonexistent-config-for-test.toml",
+            &empty_config(&dir),
             "serve",
             "--audience",
             "cyphr.me",
@@ -780,13 +807,27 @@ mod tests {
         assert_eq!(config.audience, Some("cyphr.me".to_string()));
     }
 
+    /// Regression: `--config` naming a file that does not exist was
+    /// ignored, so a typo'd path ran the server on compiled defaults with
+    /// no word of it. Red if a missing named file resolves.
+    #[test]
+    fn a_named_config_file_that_does_not_exist_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("typo.toml");
+        let cli = parse(&["cyphr-server", "--config", missing.to_str().expect("utf-8"), "serve"]);
+        assert!(matches!(
+            resolve_config(&cli),
+            Err(ConfigError::MissingConfigFile(path)) if path == missing
+        ));
+    }
+
     /// Build a `Cli` for `serve` pointing at a TOML file carrying the given
     /// `[admission]` table body.
     fn parse_with_admission_table(tmp: &std::path::Path, admission_table: &str) -> Cli {
         let config_path = tmp.join("cyphr-server.toml");
         std::fs::write(&config_path, admission_table).expect("write config");
         Cli {
-            config: config_path,
+            config: Some(config_path),
             command: Command::Serve(ServeArgs {
                 listen: None,
                 transport_listen: None,

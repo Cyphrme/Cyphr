@@ -201,7 +201,8 @@ impl Peer {
         });
         std::fs::write(&key_path, key.to_string()).map_err(io_err("writing signing key"))?;
 
-        // Without pinned limits the file is never created: compiled defaults.
+        // Without pinned limits the file stays empty: compiled defaults (a
+        // named config file must exist).
         let config_path = dir.path().join("server.toml");
         let mut limits_toml = String::new();
         if let Some(n) = limits.max_body_bytes {
@@ -214,10 +215,12 @@ impl Peer {
                 ));
             }
         }
-        if !limits_toml.is_empty() {
-            std::fs::write(&config_path, format!("[limits]\n{limits_toml}"))
-                .map_err(io_err("writing config"))?;
-        }
+        let config = if limits_toml.is_empty() {
+            String::new()
+        } else {
+            format!("[limits]\n{limits_toml}")
+        };
+        std::fs::write(&config_path, config).map_err(io_err("writing config"))?;
         let launch = Launch {
             config: config_path,
             key: key_path,

@@ -70,7 +70,8 @@ impl Server {
 
     fn start_with(peers: &[&str], audience: Option<&str>) -> Self {
         let dir = TempDir::new().expect("server tempdir");
-        let config = dir.path().join("absent.toml");
+        let config = dir.path().join("server.toml");
+        std::fs::write(&config, "").expect("empty config");
         if !peers.is_empty() {
             let list = peers
                 .iter()
