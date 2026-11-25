@@ -138,7 +138,7 @@ data lives; Decision 1's layout answers that.
 Chain order is not server-asserted in the trust-model sense: every
 `commit/create` transaction carries `arrow = MR(pre, fwd, TMR)` inside
 its signed content, where `pre` is the prior Principal Root
-(`SPEC.md:587-588`). Two servers ingesting the same blobs cannot
+(SPEC §4.2). Two servers ingesting the same blobs cannot
 disagree about chain order without one of them failing replay
 verification. The server's `sequence` counter is availability
 machinery — its assigned position for range scans — not a second source
@@ -183,13 +183,13 @@ digest is also recomputable from the file, and the file remains
 authoritative once signed. The discriminating question is whether
 principal-signed content depends on the structure being what it is.
 
-By SPEC construction, it does. The Commit Root is defined as the EML
-root over the commit's transaction leaves — `CR = EMLR(TR₀, TR₁?, ...)`
-(`SPEC.md:114`) — exactly what the EML keyspaces store. The Principal
-Root binds it by construction: `PR = H(SR ∥ CR)` for every post-genesis
-commit (`SPEC.md:333-339`). Every commit's signed `arrow` binds the
-prior PR via `pre` (`SPEC.md:587-588`). So every commit's signature
-attests the commit tree's root as of its predecessor, one hash away:
+By SPEC construction, it does. The Commit Root is the Merkle root of
+the commit's transaction roots — `CR = MR(TR₀, TR₁?, ...)` (SPEC
+§3.7.6) — and this implementation computes that root as an EML root,
+exactly what the EML keyspaces store. The Principal Root binds it by
+construction: `PR = MR(SR, CR?, ...)` (SPEC §3.7.1). Every commit's
+signed `arrow` binds the prior PR via `pre` (SPEC §4.2). So every
+commit's signature attests the commit tree's root as of its predecessor, one hash away:
 **the EML commit tree is the record's own structure, not a projection
 of it.** (One precision that changes nothing in the classification: the
 attestation of the tree's tip arrives with the _next_ commit, since
@@ -257,7 +257,7 @@ cache, it is record structure. I1 is rewritten to:
 > losing them is a recovery event, not a routine operation, unlike the
 > index. The index alone is a rebuildable cache: the sole derived-class
 > member, safely and routinely disposable. Grounding: ADR-0002
-> (`SPEC.md:114`, `:333-339`, `:587-588`). Signpost: any design that
+> (SPEC §3.7.1, §3.7.6, §4.2). Signpost: any design that
 > makes the index authoritative, or that treats deleting the EML
 > keyspaces as a routine operation, violates this.
 
@@ -314,11 +314,11 @@ while `index/` remains the one path safe for an operator's `rm -rf`.
 
 - Proposal: `docs/proposals/storage-layering.md` (full argument for
   Decisions 1-3; §4.2 alternatives considered; §5 costs).
-- SPEC.md: `:108-117` (Commit Root definition), `:333-339` (PR
-  construction), `:583-603` (Arrow, commit finality).
+- SPEC (`be0663f`): §3.7.6 (Commit Root), §3.7.1 (PR construction),
+  §4.2 and §4.3 (Arrow, commit finality).
 - `rs/cyphr-server/src/routes.rs` (`sign_tip_attestation`) — the
   record-cross-check precedent Decision 5 generalizes.
-- `rs/cyphr-blob-fjall/src/lib.rs:70-82` — the single-WAL co-location
+- `rs/cyphr-blob-fjall/src/lib.rs` — the single-WAL co-location
   Decision 4's wrap argument responds to.
 - ADR-0001 — the format this ADR follows; establishes the adjacent
   Prover/Verifier vocabulary this ADR's storage layer sits beneath.

@@ -20,7 +20,7 @@ edition      = "2024"
 homepage     = "https://cyphr.me"
 license-file = "../LICENSE"
 repository   = "https://github.com/Cyphrme/Cyphr"
-rust-version = "1.88"
+rust-version = "1.90"
 
 [workspace.dependencies]
 # Core crypto - from coz-rs (re-exports digest, sha2)

@@ -133,8 +133,36 @@ jobs:
       - name: Fail if tests/golden drifted from tests/intents
         run: git diff --exit-code -- tests/golden
 
+  # Checks the minimum Rust version the workspace declares in
+  # `rust-version`, read from Cargo.toml so the two cannot drift.
+  # `rs/rust-toolchain.toml` pins a nightly for formatting; the
+  # RUSTUP_TOOLCHAIN override is what makes this job build with the
+  # declared version instead.
   rust-msrv:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the declared minimum Rust version
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rs
+      - run: cargo check --workspace --all-features --locked
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.version }}
+
+  # Releases ship Windows binaries; this builds the two shipped binaries
+  # there on every change so a Windows break shows before a release tag.
+  # Build only.
+  rust-windows:
+    runs-on: windows-latest
     defaults:
       run:
         working-directory: rs
@@ -144,7 +172,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rs
-      - run: cargo check --all-features
+      - run: cargo build -p cyphr-cli -p cyphr-server --locked
 
   # The core runs in the browser: it must keep building without ambient
   # OS services (the verifier clock is injected, see Principal::set_clock).

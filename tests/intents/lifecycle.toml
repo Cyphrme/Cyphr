@@ -9,7 +9,7 @@
 # signing principal's own PR rather than a distinct key, so `target`
 # (a key alias) is omitted here.
 
-# Test: principal/delete transitions Active -> Deleted (SPEC.md:1994-2013)
+# Test: principal/delete transitions Active -> Deleted (SPEC §11.4)
 [[test]]
 name      = "principal_delete_transitions_to_deleted"
 principal = ["golden"]
@@ -27,7 +27,7 @@ frozen    = false
 key_count = 1
 level     = 3
 
-# Test: freeze/create transitions Active -> Frozen (SPEC.md:2782-2801)
+# Test: freeze/create transitions Active -> Frozen (SPEC §14.9.1)
 [[test]]
 name      = "freeze_create_transitions_to_frozen"
 principal = ["golden"]
@@ -45,7 +45,7 @@ frozen    = true
 key_count = 1
 level     = 3
 
-# Test: freeze/delete (Thaw) transitions Frozen -> Active (SPEC.md:2803-2818)
+# Test: freeze/delete (Thaw) transitions Frozen -> Active (SPEC §14.9.3)
 [[test]]
 name      = "freeze_delete_thaws_to_active"
 principal = ["golden"]
@@ -70,7 +70,7 @@ frozen    = false
 key_count = 1
 level     = 3
 
-# Test: Deleted and Frozen are mutually exclusive (SPEC.md:1974-1978)
+# Test: Deleted and Frozen are mutually exclusive (SPEC §11.2)
 # [no-both-deleted-and-frozen] — a principal that has signed
 # principal/delete can never also be Frozen. Per SPEC.md §11.4, a closed
 # (Deleted) principal permits no further transactions at all

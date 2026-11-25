@@ -7,8 +7,10 @@
 # table: "how it fits together" answers to the `requirement` kind). It is
 # the first tree this repository wires the gate to.
 #
-# `docs/trust-model.md` is declared with no permitted kinds, which is what
-# makes it enforceable as definitions rather than requirements: an empty
+# `docs/trust-model.md` maps this project's terms onto the factoring-trust
+# paper and defers to the paper for the model. It is declared with no
+# permitted kinds, which is what makes it enforceable as a mapping rather
+# than requirements: an empty
 # `kinds` bars claim blocks outright and turns an RFC-2119 keyword in the
 # document's own voice into a check failure. A definitions document that
 # needs "MUST" has drifted into being a specification, and this catches

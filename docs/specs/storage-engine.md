@@ -72,7 +72,6 @@ layers: a content-addressed BlobStore (Layer 0) and a relational Indexer
 backends — it operates exclusively on in-memory types. Storage layers load
 data, hand it to the protocol engine for validation, and persist validated
 output.
-`VERIFIED: StorageEngine<B, I> generic over backend types`
 
 The two layers are:
 
@@ -87,7 +86,6 @@ truth; the index is a derived, rebuildable projection. If the index is lost,
 it is reconstructed from the content store via re-indexing. Cross-store
 atomicity is not a correctness requirement — the engine's recovery semantics
 handle partial failures.
-`VERIFIED: cyphr-index-fjall is the production Indexer; cyphr-index-sqlite was retired 2026-07-08 in the KV-index migration — see indexer.md`
 
 **[crate-isolation]**: Implementation backends MUST be isolated in their
 own crates, separate from the trait definitions. The trait crate defines
@@ -183,7 +181,6 @@ ordering:
 - **POST**: Either all blobs are persisted and indexed (success), or no
   side effects occur (failure during validation). Persistence MUST NOT
   precede validation.
-  `VERIFIED: rs/cyphr-storage/src/engine/mod.rs — submit_commit()`
 
 **[ingest-ordering]**: Within the persist phase, the engine MUST follow
 this sequence:
@@ -248,12 +245,9 @@ is no option to turn it off.
 - **Cost**: One data sync per accepted commit, about 8 ms on a path of about
   40 ms. Syncing once per bundle of commits is deferred.
 
-`VERIFIED: rs/cyphr-storage/tests/sync_order.rs`
-
 - **PRE**: Validation has succeeded; commit is finalized.
 - **POST**: All blobs exist in the BlobStore. Index entry exists for the
   commit.
-  `VERIFIED: rs/cyphr-storage/src/engine/mod.rs — ingest_commit()`
 
 ### Read Path
 
@@ -271,7 +265,6 @@ For `get_entity()`:
 
 Neither the BlobStore nor the Indexer can serve these responses alone.
 The engine's coordination is the value.
-`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — get_patch(), get_entity()`
 
 ### Recovery
 
@@ -280,11 +273,9 @@ system MUST be recoverable by re-indexing. Re-indexing scans the BlobStore,
 parses each blob, and reconstructs the Indexer state. This process MUST
 produce an index identical to one built from a clean sequential ingest of
 the same commits.
-`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — reindex()`
 
 **[recovery-convergence]**: Re-indexing from the BlobStore MUST converge to
 a consistent state in finite time.
-`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — reindex() terminates`
 
 ### Hash Boundary
 
@@ -298,7 +289,6 @@ a consistent state in finite time.
 
 The engine MUST format ALL active algorithm variants for each state
 identifier, per [`indexer.md`](indexer.md) [digest-index-completeness].
-`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — format_multihash_all()`
 
 ## Hash Coordination Model
 
@@ -376,7 +366,6 @@ subsequent `get_tip()`, `get_patch()`, or `resolve_digest()` call for the
 same principal MUST reflect the ingested commit's state.
 
 - **Type**: Safety
-  `VERIFIED: integration tests`
 
 ## Verification
 

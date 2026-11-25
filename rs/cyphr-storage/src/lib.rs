@@ -241,3 +241,9 @@ impl CommitEntry {
         })
     }
 }
+
+// Compiles every Rust block in the README as a doctest, so a quick-start
+// that stops matching the API fails `cargo test --doc`.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

@@ -53,14 +53,12 @@ TYPE BlobStore       = Blake3Hash → Maybe<Blob>
 **[blake3-content-address]**: The BlobStore MUST use BLAKE3 as its sole
 content-addressing algorithm. The BLAKE3 hash of a blob's raw bytes IS
 its storage key. No other addressing scheme is permitted.
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — Blake3Hash type, FjallBlobStore`
 
 **[blake3-isolation]**: BLAKE3 hashes MUST NOT be conflated with protocol
 hash algorithms (SHA-256, SHA-384, SHA-512). Storage hashes identify raw
 bytes for persistence; protocol digests identify semantic objects for
 verification. An implementation MUST NOT use a protocol hash algorithm
 as the BlobStore content-addressing algorithm.
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — separate Blake3Hash type`
 
 ### Immutability
 
@@ -68,7 +66,6 @@ as the BlobStore content-addressing algorithm.
 BlobStore is append-only at the blob level. Storing identical content
 MUST yield the same BLAKE3 hash and MUST NOT duplicate data (idempotent
 put).
-`VERIFIED: rs/cyphr-blob-fjall/src/lib.rs — content-addressed put`
 
 ### Write Interface
 
@@ -84,14 +81,12 @@ addressable store design) and EML's `store_leaf(index, &[u8])` pattern.
 A streaming write interface (open/write/close) was evaluated and rejected:
 it splits one conceptual operation into two fallible steps with a handle
 state in between, adding ceremony with no benefit for small payloads.
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — put(&[u8]) API`
 
 **[max-blob-size]**: The BlobStore SHOULD enforce a configurable maximum
 blob size. Since blobs are protocol messages (not DT payload data), they
 are bounded by Coz envelope size. A witness SHOULD reject blobs exceeding
 the configured limit to mitigate denial-of-service attacks. The default
 limit is implementation-defined.
-`VERIFIED: rs/cyphr-blob-fjall/src/lib.rs — with_max_blob_size() builder (opt-in)`
 
 **[digest-as-output]**: The BlobStore's `put` operation MUST compute and
 return the content digest as output, not accept it as input. The store
@@ -99,18 +94,15 @@ computes the BLAKE3 hash internally and returns it on completion. This
 prevents hash-mismatch defects at the API boundary — the store owns the
 hash function. (Irmin pattern; contrast IPFS Blockstore where the CID is
 caller-supplied, requiring a paranoia flag `HashOnRead` to compensate.)
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — put() returns Blake3Hash`
 
 ### Read Interface
 
 **[get-by-hash]**: The BlobStore MUST support retrieval by BLAKE3 hash,
 returning `None` for unknown hashes. This is the only read primitive.
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — get() method`
 
 **[existence-check]**: The BlobStore MUST support an existence check
 (`exists(hash) → bool`) that does not retrieve blob content. Used for
 deduplication and index recovery.
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — exists() method`
 
 ### Enumeration
 
@@ -118,7 +110,6 @@ deduplication and index recovery.
 stored blob hashes. Used for index recovery (`reindex`). The iterator
 MUST be consistent — it MUST NOT skip blobs that existed when iteration
 began, and it MUST NOT return blobs that were never stored.
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — iter() method`
 
 ### Async
 
@@ -135,8 +126,6 @@ for multi-threaded executors.
 > prevent use from multi-threaded executors. The explicit `impl Future +
 Send` form is used instead to enforce this bound at the trait level.
 
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — all methods use RPITIT`
-
 **[runtime-agnostic]**: The `BlobStore` trait MUST NOT depend on any
 specific async runtime (tokio, smol, async-std, etc.) in its signature.
 All methods use bare `impl Future + Send` via RPITIT, which is executor-
@@ -149,7 +138,6 @@ environments without modifying the trait.
 
 **[send-sync]**: The `BlobStore` trait MUST require `Send + Sync`. The
 store is shared across concurrent request handlers in the server.
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — trait bound`
 
 ## Trait Signature
 
@@ -169,7 +157,6 @@ No associated types. No runtime-specific imports. Four methods.
 **[no-protocol-hash-in-blobstore]**: The BlobStore MUST NOT use SHA-256,
 SHA-384, or SHA-512 as its content-addressing algorithm. This prevents
 collision-domain confusion between storage identity and protocol identity.
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — hardcoded BLAKE3`
 
 ## Behavioral Properties
 

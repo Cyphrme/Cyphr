@@ -17,7 +17,7 @@ Cyphr replaces passwords with public key cryptography, enabling secure multi-dev
 │            ▼                              ▼                      │
 │  ┌──────────────────────┐     ┌───────────────────────┐          │
 │  │  State Root (SR)     │     │  Commit Root (CR)     │          │
-│  │  = MR(AR, DR?)       │     │  = MALT(TR₀,TR₁,...) │          │
+│  │  = MR(AR, DR?)       │     │  = MR(TR₀,TR₁,...)   │          │
 │  └──────────────────────┘     └───────────────────────┘          │
 │            ▼                                                     │
 │  ┌──────────────────────┐     ┌───────────────────────┐          │
@@ -161,7 +161,7 @@ All tests pass using shared language-agnostic test vectors.
 ## Built On
 
 - **[Coz](https://github.com/Cyphrme/Coz)** — Cryptographic JSON messaging (ES256, ES384, ES512, Ed25519)
-- **[MALT](https://github.com/Cyphrme/malt)** — Merkle Append-only Log Tree
+- **[EML](https://eml-paper.netlify.app)** — Epoch Merkle Log, the multihash append-only Merkle log behind the Commit Root
 
 ## Documentation
 
