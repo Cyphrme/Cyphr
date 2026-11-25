@@ -54,7 +54,7 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
             } else {
                 for (i, tx) in cozies.iter().enumerate() {
                     println!(
-                        "  [{}] {:?} by {} @ {}",
+                        "  [{}] {} by {} @ {}",
                         i,
                         tx.kind(),
                         &tx.signer().to_b64()[..12],
