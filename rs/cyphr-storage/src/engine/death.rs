@@ -272,6 +272,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         )
         .map_err(|e| EngineError::MalformedBlob(format!("revoke record serialize: {e}")))?;
         let death = Death::new(wrt, *blake3::hash(&bytes).as_bytes());
+        // The revoke of a key a stored principal holds is recorded whatever
+        // the ceiling (SPEC 6.4); a revoke of an unheld key is held to it.
+        if self.indexer.get_key(&tmb).await?.is_none() {
+            self.ensure_room(u64::try_from(bytes.len()).unwrap_or(u64::MAX))?;
+        }
         self.put_counted(&bytes).await?;
         // The caller is told the key was durably recorded dead (the
         // /revoke response), and a death-set a power cut can revert would

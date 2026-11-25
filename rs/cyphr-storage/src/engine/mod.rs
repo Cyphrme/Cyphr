@@ -339,6 +339,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self
     }
 
+    /// [`Self::with_storage_ceiling`] on an engine already built.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_storage_ceiling(&mut self, ceiling: Option<u64>) {
+        self.storage_ceiling = ceiling;
+    }
+
     /// Bytes the blob store holds, as this engine counts them.
     pub fn stored_bytes(&self) -> u64 {
         self.stored_bytes.load(std::sync::atomic::Ordering::SeqCst)
