@@ -12,7 +12,7 @@
 data_dir   = "/var/lib/cyphr"
 listen     = "127.0.0.1:3000" # ":0" picks a free port and prints it
 log_format = "pretty"         # "json" for a log pipeline
-mode       = "service"       # or "witness": refuses writes, follows its peers
+mode       = "service"        # or "witness": refuses writes, follows its peers
 
 # signing_key_path = "/etc/cyphr/signing-key.json"
 # audience = "login.example.com"
