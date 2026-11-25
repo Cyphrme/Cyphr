@@ -402,6 +402,16 @@ pub struct LimitsConfig {
     /// needs no prior knowledge of its key, so this quota (with the rate
     /// buckets) is what bounds the set; a revoke past it is refused `507`.
     pub max_dead_keys: NonZeroU64,
+
+    /// The most bytes the blob store may hold, as the engine counts them.
+    /// A write that would pass it is refused `507` and nothing of it is
+    /// stored; reads, and the revoke of a held key, still work. Unset by
+    /// default: no ceiling. No value is recommended: size it to the disk
+    /// the data directory sits on, leaving room for the index (rebuildable)
+    /// and the server's other stores. Storage pressure is relieved by
+    /// refusing writes, never by pruning history.
+    #[serde(default)]
+    pub max_stored_bytes: Option<NonZeroU64>,
 }
 
 /// A token-bucket rate: `per_second` cells replenished each second, up to a
@@ -449,6 +459,7 @@ impl Default for LimitsConfig {
             login: writes,
             revoke: writes,
             max_dead_keys: NonZeroU64::new(1_000_000).expect(NONZERO),
+            max_stored_bytes: None,
         }
     }
 }

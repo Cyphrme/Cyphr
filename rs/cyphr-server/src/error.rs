@@ -228,6 +228,16 @@ impl AppError {
                 Self::internal("internal storage error")
             },
             EngineError::BranchLimit { .. } => Self::conflict(err.to_string()),
+            // The operator's storage ceiling: pressure relieved by refusal,
+            // as the dead-key ceiling is (507).
+            EngineError::StorageFull { .. } => {
+                tracing::warn!(error = %err, "write refused: storage ceiling reached");
+                Self {
+                    status: StatusCode::INSUFFICIENT_STORAGE,
+                    message: err.to_string(),
+                    kind: None,
+                }
+            },
             // Key death at admission (SPEC 6.4) is an auth refusal, never a
             // stale-predecessor 409.
             EngineError::DeadKey { .. } => Self::unauthorized("push signing key was revoked"),
@@ -265,6 +275,7 @@ impl AppError {
             EngineError::InvalidInput(_) => Some("invalid_input"),
             EngineError::MalformedBlob(_) => Some("malformed_blob"),
             EngineError::BranchLimit { .. } => Some("branch_limit"),
+            EngineError::StorageFull { .. } => Some("storage_full"),
             EngineError::Errored { .. } => Some("errored"),
             EngineError::Protocol(cyphr::Error::Storage(_)) => None,
             EngineError::Protocol(cyphr::Error::StateMismatch) => Some("state_mismatch"),

@@ -122,7 +122,13 @@ impl AppState {
         let blob_store = FjallBlobStore::from_database(db.clone())?;
         let indexer = FjallIndexer::open(&config.index_dir())?;
         let logs = cyphr_blob_fjall::EmlLogs::new(db)?;
-        let engine = StorageEngine::with_log_factory(blob_store, indexer, logs);
+        let engine = StorageEngine::with_log_factory(blob_store, indexer, logs)
+            .with_storage_ceiling(
+                config
+                    .limits
+                    .max_stored_bytes
+                    .map(std::num::NonZeroU64::get),
+            );
 
         let identity = match &config.signing_key_path {
             Some(path) => Some(Arc::new(auth::ServerIdentity::load_from_path(path)?)),
