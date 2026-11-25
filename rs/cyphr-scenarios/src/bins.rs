@@ -45,10 +45,6 @@ impl Bins {
             "cyphr-server",
             "-p",
             "cyphr-cli",
-            // The servers a scenario spawns honour `CYPHR_KEPT_SHADOW`, which
-            // only a build with the engine's test switches reads.
-            "--features",
-            "cyphr-storage/test-utils",
         ]);
         // A release harness drives release servers: debug servers are slow
         // enough to distort timing-sensitive scenarios.
