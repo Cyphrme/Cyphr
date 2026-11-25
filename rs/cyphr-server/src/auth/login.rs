@@ -398,10 +398,10 @@ pub async fn login(
     // on-chain -- the death-set, not the chain, carries that fact. Death is
     // global by thumbprint, so the check names only the key, never a principal.
     if state
-        .observations
-        .is_dead(&parsed.tmb)
+        .engine
+        .is_revoked(&parsed.tmb.to_b64())
         .await
-        .map_err(AppError::observation)?
+        .map_err(AppError::engine)?
     {
         return Err(LoginError::KeyNakedRevoked.into());
     }

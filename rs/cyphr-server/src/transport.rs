@@ -454,8 +454,8 @@ async fn authorize_initiator(
     }
     // Naked revoke (SPEC 6.4) is global by thumbprint and invisible to the chain.
     if state
-        .observations
-        .is_dead(statement.tmb())
+        .engine
+        .is_revoked(&statement.tmb().to_b64())
         .await
         .map_err(|e| SessionError::Lookup(e.to_string()))?
     {

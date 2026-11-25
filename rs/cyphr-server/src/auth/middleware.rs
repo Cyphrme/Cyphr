@@ -21,7 +21,6 @@ use super::token::Claims;
 use super::{ServerIdentity, server_now};
 use crate::AppState;
 use crate::error::AppError;
-use crate::observation::{ObservationError, ObservationStore};
 
 /// The concrete engine type the server runs on.
 type Engine = cyphr_storage::engine::StorageEngine<
@@ -36,10 +35,6 @@ pub enum SessionError {
     /// The token's principal has no stored chain, so no key can be checked.
     #[error("bearer token's principal is unknown")]
     UnknownPrincipal,
-
-    /// Reading the naked-revoke death-set failed.
-    #[error("reading the naked-revoke record: {0}")]
-    Observation(ObservationError),
 
     /// Reading the principal from storage failed.
     #[error("loading the session's principal: {0}")]
@@ -77,7 +72,6 @@ impl From<SessionError> for AppError {
     fn from(err: SessionError) -> Self {
         match err {
             SessionError::Storage(e) => AppError::engine(e),
-            SessionError::Observation(e) => AppError::observation(e),
             other => AppError::unauthorized(format!("bearer token rejected: {other}")),
         }
     }
@@ -114,7 +108,6 @@ pub fn check_channel(claims: &Claims, channel: Option<&[u8]>) -> Result<(), Sess
 /// the principal -- and costs no replay while the engine keeps its state.
 pub async fn check_session_key(
     engine: &Engine,
-    observations: &ObservationStore,
     claims: &Claims,
 ) -> Result<(), SessionError> {
     let load_error = |e: EngineError| match e {
@@ -144,10 +137,10 @@ pub async fn check_session_key(
     // A naked revoke (SPEC 6.4) kills the key globally without touching the
     // chain, so the chain alone still calls it active; login refuses such a
     // key and so must the session it opened.
-    if observations
-        .is_dead(&login_tmb)
+    if engine
+        .is_revoked(&login_tmb.to_b64())
         .await
-        .map_err(SessionError::Observation)?
+        .map_err(SessionError::Storage)?
     {
         return Err(SessionError::Revoked);
     }
@@ -174,7 +167,7 @@ pub async fn authenticate(
         .verify_token(token, server_now())
         .map_err(|e| AppError::unauthorized(format!("bearer token rejected: {e}")))?;
     check_channel(&claims, channel)?;
-    check_session_key(&state.engine, &state.observations, &claims).await?;
+    check_session_key(&state.engine, &claims).await?;
     Ok(claims)
 }
 
@@ -221,7 +214,6 @@ pub async fn check_push_admission(
     token: Option<&str>,
     identity: Option<&ServerIdentity>,
     engine: &Engine,
-    observations: &ObservationStore,
     target_principal: &str,
     now: i64,
     channel: Option<&[u8]>,
@@ -252,7 +244,7 @@ pub async fn check_push_admission(
         ));
     }
     check_channel(&claims, channel)?;
-    match check_session_key(engine, observations, &claims).await {
+    match check_session_key(engine, &claims).await {
         // A push naming a principal with no stored chain is its genesis:
         // no session can exist yet, and the optional knob (R7) leaves the
         // bundle's own signatures as the authorization.
@@ -327,7 +319,6 @@ mod tests {
                 bearer_token(&headers),
                 Some(&identity),
                 &state.engine,
-                &state.observations,
                 PR,
                 1_100,
                 None

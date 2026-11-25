@@ -6,7 +6,7 @@
 //! constants below, predicate unchanged):
 //!
 //! - JSON documents carry a top-level integer `v`.
-//! - A dedicated fjall store (death set, spent set) records its version in the keyspace
+//! - A dedicated fjall store (the admission spent set) records its version in the keyspace
 //!   [`META_KEYSPACE`] under [`VERSION_KEY`] as decimal text, written when the store is first
 //!   opened.
 //! - An absent `v` (a file or store from before versions) means v1: it loads, and is written back
@@ -28,7 +28,6 @@ use cyphr_server::admission::{AdmissionError, ResidentProbe, layer};
 use cyphr_server::auth::principal::{ServerPrincipal, ServerPrincipalError};
 use cyphr_server::auth::{AuthError, ServerIdentity};
 use cyphr_server::config::AdmissionConfig;
-use cyphr_server::observation::{ObservationError, ObservationStore};
 use fjall::{Database, KeyspaceCreateOptions, PersistMode};
 
 mod common;
@@ -142,30 +141,6 @@ async fn version_server_principal_sidecar_unknown_is_refused() {
     }
 }
 
-// ---- death set ---------------------------------------------------------
-
-/// Claim: the naked-revoke death set records its format version when first
-/// opened and refuses a store of another version, named. A refused death set
-/// must not be read: a mis-decoded set would un-revoke keys silently. Turns
-/// red on a store that stamps nothing, or an `open` that ignores the stamp.
-#[tokio::test]
-async fn version_death_set_unknown_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    drop(ObservationStore::open(dir.path()).expect("fresh open"));
-    assert!(
-        stored_version(dir.path()).is_some(),
-        "a fresh death set must record its version"
-    );
-    ObservationStore::open(dir.path()).expect("the current version reopens");
-    for unknown in UNKNOWN {
-        restamp(dir.path(), unknown);
-        let err = ObservationStore::open(dir.path())
-            .err()
-            .unwrap_or_else(|| panic!("death set v={unknown} was accepted"));
-        assert_unsupported!(err, ObservationError, "death set", unknown);
-    }
-}
-
 // ---- admission spent set -----------------------------------------------
 
 fn open_spent_set(
@@ -269,30 +244,6 @@ async fn version_server_principal_sidecar_absent_is_v1_and_written_back() {
         Some(1),
         "the sidecar must be written back with v=1"
     );
-}
-
-/// Claim: a death set from before versions keeps every recorded death (a
-/// lost record would un-revoke a key) and is stamped v1 on open. Turns red
-/// on an `open` that stamps nothing, or one that refuses or empties the set.
-#[tokio::test]
-async fn version_death_set_absent_is_v1_and_keeps_its_deaths() {
-    let dir = tempfile::tempdir().unwrap();
-    let tmb = coz::Thumbprint::from_bytes(vec![5; 32]);
-    {
-        let store = ObservationStore::open(dir.path()).expect("open");
-        store
-            .record(&tmb, serde_json::json!({"pay": {}}))
-            .await
-            .expect("record");
-    }
-    unstamp(dir.path());
-    let store = ObservationStore::open(dir.path()).expect("an absent version loads as v1");
-    assert!(
-        store.is_dead(&tmb).await.unwrap(),
-        "a recorded death was lost"
-    );
-    drop(store);
-    assert_eq!(stored_version(dir.path()).as_deref(), Some("1"));
 }
 
 /// Claim: a spent set from before versions loads as v1 and is stamped on

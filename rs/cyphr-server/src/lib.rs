@@ -21,7 +21,7 @@ pub mod error;
 pub mod gossip;
 pub mod logging;
 pub mod metrics;
-pub mod observation;
+pub mod durable;
 pub mod ops;
 pub mod rate_limit;
 pub mod receipt;
@@ -95,11 +95,11 @@ pub struct AppState {
     /// service ([`AppState::with_login_policy`]). Defaults to granting none.
     pub login_policy: Arc<dyn auth::policy::LoginPolicy>,
 
-    /// Durable, server-local naked-revoke observations (SPEC §6.4). Its
-    /// own store, distinct from the rebuildable index: a naked revoke
-    /// mutates no chain and must survive a reindex, so it cannot live in
-    /// the index that a reindex rebuilds.
-    pub observations: observation::ObservationStore,
+    /// Serializes a naked revoke's ceiling check and its write, so
+    /// concurrent revokes cannot each pass the check and overshoot
+    /// `[limits] max_dead_keys`. The deaths themselves live in the engine
+    /// alone ([`StorageEngine::record_revoke`]).
+    pub revoke_gate: tokio::sync::Mutex<()>,
 
     /// Reusable HTTP client for witness state sync and upstream calls.
     pub http_client: reqwest::Client,
@@ -129,16 +129,12 @@ impl AppState {
             None => None,
         };
 
-        let observations = observation::ObservationStore::open(&config.observations_dir())?
-            .with_ceiling(config.limits.max_dead_keys.get());
-
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(10))
             .build()?;
 
         let health = metrics::HealthProbe::new(&config.record_dir());
-        health.watch(observations.latch());
 
         Ok(Self {
             config,
@@ -148,7 +144,7 @@ impl AppState {
             principal: None,
             challenges: auth::login::ChallengeStore::new(),
             login_policy: Arc::new(auth::policy::NoPermissions),
-            observations,
+            revoke_gate: tokio::sync::Mutex::new(()),
             http_client,
             metrics: metrics::Metrics::default(),
             health,

@@ -1,7 +1,7 @@
 //! `backup` and `restore`: a copy of the `record/` tree and its return.
 //!
 //! **Consistency.** `record/` holds every fjall database the server was
-//! told (blobs with the EML keyspaces, observations). Each is opened by
+//! told (blobs with the EML keyspaces). Each is opened by
 //! this command first, which takes fjall's exclusive lock (no server is
 //! running) and replays its journal; the commit counts are taken, and the
 //! stores are closed before the copy. The lock cannot be held across the
@@ -10,8 +10,8 @@
 //! counts taken before the copy, or the backup is refused and deleted.
 //! The check detects a torn copy, it does not prevent one: a change that
 //! leaves every commit count as it was would pass it: chain writes always
-//! add a commit, but a write to the observation store (the key death-set)
-//! does not, and is not detected. `index/` is derived (ADR-0002) and is neither copied nor trusted
+//! add a commit, but a naked revoke writes only a blob record (the key
+//! death-set), which adds none, and is not detected. `index/` is derived (ADR-0002) and is neither copied nor trusted
 //! back: a restore drops it and rebuilds from the restored blobs (I1).
 //!
 //! **Keys.** The copy is of `record/` only. The server's signing key

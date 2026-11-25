@@ -774,10 +774,10 @@ pub async fn revoked(
         let bytes = Base64UrlUnpadded::decode_vec(raw)
             .map_err(|_| AppError::bad_request(format!("`{raw}` is not a base64url thumbprint")))?;
         if let Some(envelope) = state
-            .observations
-            .revoke_of(&coz::Thumbprint::from_bytes(bytes))
+            .engine
+            .revoke_of(&coz::Thumbprint::from_bytes(bytes).to_b64())
             .await
-            .map_err(AppError::observation)?
+            .map_err(AppError::engine)?
         {
             revoked.push(envelope);
         }
@@ -1179,7 +1179,6 @@ pub async fn push(
         crate::auth::middleware::bearer_token(&headers).or(request.token.as_deref()),
         state.identity.as_deref(),
         &state.engine,
-        &state.observations,
         &request.principal_id,
         crate::auth::server_now(),
         peer.as_ref().map(|p| p.0.handshake_hash.as_slice()),

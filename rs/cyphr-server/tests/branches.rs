@@ -850,11 +850,6 @@ async fn revoke_eve(state: &cyphr_server::AppState, now: i64) {
         "key": {"alg": e.alg, "pub": Base64UrlUnpadded::encode_string(&e.pubb)},
     });
     state
-        .observations
-        .record(&e.tmb, envelope.clone())
-        .await
-        .expect("observed");
-    state
         .engine
         .record_revoke(&envelope, now)
         .await

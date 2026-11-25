@@ -519,7 +519,7 @@ fn trust_remote_discards_only_diverged_commits_and_keeps_actions() {
             .expect("runtime")
             .block_on(async {
                 engine.rebuild_index_from_manifests().await.expect("heal");
-                engine.is_revoked(&k2)
+                engine.is_revoked(&k2).await.expect("verdict")
             })
     };
     assert!(revoked_in(&b), "B holds the revoke record before adopting");

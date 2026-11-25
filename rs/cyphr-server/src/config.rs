@@ -522,12 +522,6 @@ impl ServerConfig {
         self.record_dir().join("blobs")
     }
 
-    /// The naked-revoke observation store's path (the key death-set):
-    /// server-local, told, and not derivable from any chain.
-    pub fn observations_dir(&self) -> PathBuf {
-        self.record_dir().join("observations")
-    }
-
     /// The index database's path -- the sole derived-class member
     /// (ADR-0002 Decision 1, 6). Unchanged by the `record/` regroup: it
     /// stays a direct sibling of `record/`, the only directory an operator

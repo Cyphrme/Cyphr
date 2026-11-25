@@ -12,7 +12,6 @@
 //! │   ├── blobs/                  (+ every principal's EML commit-tree
 //! │   │                            keyspaces -- record, not derived: see
 //! │   │                            Decision 6)
-//! │   ├── observations/
 //! │   ├── admission/
 //! │   └── server-principal.json
 //! └── index/                  what the server works out; the sole
@@ -132,20 +131,15 @@ async fn get_bytes(app: axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {
 // ========================================================================
 
 /// A fresh keyed boot under `policy = "invite"` must create exactly
-/// `record/{blobs,observations,admission,server-principal.json}` plus
+/// `record/{blobs,admission,server-principal.json}` plus
 /// `index/`, and nothing else, at either level of the data directory.
 ///
-/// Every one of the four stores under `record/` is only created by a
-/// distinct construction site (`AppState::new` for `blobs`/`observations`;
+/// Every one of the three stores under `record/` is only created by a
+/// distinct construction site (`AppState::new` for `blobs`;
 /// `admission::layer`, wired only inside `build_app_router`, for
 /// `admission` -- and only under the invite policy; `ServerPrincipal::
 /// bootstrap` for `server-principal.json`), so this test exercises the
 /// full startup sequence, not just `AppState::new`.
-///
-/// Currently RED: today's construction sites open `blobs/`, `observations/`,
-/// `admission/`, and `server-principal.json` directly as siblings under
-/// `data_dir`, so the actual top-level set is `{blobs, index, observations,
-/// admission, server-principal.json}` -- five entries, no `record/` at all.
 #[tokio::test]
 async fn fresh_boot_creates_exact_record_and_index_tree() {
     let root = tempfile::tempdir().expect("tempdir");
@@ -179,7 +173,6 @@ async fn fresh_boot_creates_exact_record_and_index_tree() {
     let record_entries = read_dir_names(&record_dir);
     let expected_record_entries: BTreeSet<String> = [
         "blobs",
-        "observations",
         "admission",
         "server-principal.json",
     ]
@@ -188,11 +181,11 @@ async fn fresh_boot_creates_exact_record_and_index_tree() {
     .collect();
     assert_eq!(
         record_entries, expected_record_entries,
-        "record/ must hold exactly the four told stores (ADR-0002 Decision 1), got: \
+        "record/ must hold exactly the three told stores (ADR-0002 Decision 1), got: \
          {record_entries:?}"
     );
 
-    for name in ["blobs", "observations", "admission"] {
+    for name in ["blobs", "admission"] {
         let p = record_dir.join(name);
         assert!(
             p.is_dir(),

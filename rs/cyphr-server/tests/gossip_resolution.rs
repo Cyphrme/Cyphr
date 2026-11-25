@@ -500,8 +500,8 @@ async fn a_relayed_future_revoke_is_accepted_and_kept() {
         .expect("eve")
         .compute_tmb()
         .expect("tmb");
-    p2.observations
-        .record(&eve, future.clone())
+    p2.engine
+        .record_revoke(&future, clock)
         .await
         .expect("P2 serves it");
 

@@ -238,13 +238,13 @@ impl Gossip {
             }
         }
         // A key revoked since the memo was read is no longer worth asking about.
-        Some(
-            memo.keys
-                .iter()
-                .filter(|t| !state.engine.is_revoked(&t.to_b64()))
-                .cloned()
-                .collect(),
-        )
+        let mut live = Vec::with_capacity(memo.keys.len());
+        for tmb in &memo.keys {
+            if !state.engine.is_revoked(&tmb.to_b64()).await.ok()? {
+                live.push(tmb.clone());
+            }
+        }
+        Some(live)
     }
 }
 
@@ -335,8 +335,10 @@ async fn round_principal(
     let held = record
         .principal()
         .map_or_else(Vec::new, |p| p.ever_held_keys());
-    for tmb in held.iter().filter(|t| state.engine.is_revoked(&t.to_b64())) {
-        record.note_revoked(tmb);
+    for tmb in &held {
+        if state.engine.is_revoked(&tmb.to_b64()).await? {
+            record.note_revoked(tmb);
+        }
     }
     let memo = KeyMemo {
         tip: tip.commit_id,
