@@ -503,6 +503,8 @@ impl RelyingParty {
         binding: SessionBinding,
     ) -> Result<Session, Refusal> {
         let now = (self.clock)();
+        // A session nobody presents again would otherwise stay for ever.
+        self.sessions.retain(|_, held| now < held.expires_at);
         let parsed = login::parse_request(login).map_err(|e| match e {
             VerifyError::MissingField(name) => Refusal::Malformed(name),
             VerifyError::NotALogin | VerifyError::AudienceMissing => {

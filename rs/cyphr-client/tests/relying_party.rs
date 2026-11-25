@@ -439,6 +439,48 @@ async fn a_session_ends_at_its_lifetime_with_a_current_view() {
         .expect("signing in again opens a fresh session");
 }
 
+static SWEEP_CLOCK: AtomicI64 = AtomicI64::new(T0);
+fn sweep_clock() -> i64 {
+    SWEEP_CLOCK.load(Ordering::SeqCst)
+}
+
+/// Claim: a session that reached its lifetime and was never presented again
+/// is dropped by the next sign-in, so abandoned sessions do not pile up.
+/// Observed as the old token being unknown (`NoSession`), where presenting
+/// it without the sweep would answer `Expired`.
+/// Turns red if sign-in leaves expired sessions in place.
+/// End-to-end scenario: yes (a real chain and two sign-ins).
+#[tokio::test]
+async fn an_expired_session_is_swept_at_the_next_sign_in() {
+    let (g, device) = (kp(), kp());
+    let pg = g.tmb.to_b64();
+    let mut chain = Chain::new(&g).await;
+    let mut line = Line::of(&chain);
+    let blobs = chain.commit(&device, T0 + 50).await;
+    line.push(&chain, blobs);
+    let mirror = Mirror::of(line);
+    SWEEP_CLOCK.store(T0 + 100, Ordering::SeqCst);
+    let mut rp = RelyingParty::new(
+        &pg,
+        Anchor::GenesisKey(g.domain_key(T0)),
+        config(),
+        sweep_clock,
+    );
+    rp.refresh(&[peer("p1", &mirror)]).await;
+    let c = rp.challenge().expect("challenge");
+    let first = rp
+        .sign_in(&login(&device, &pg, AUDIENCE, &c))
+        .expect("signed in");
+
+    let ttl = i64::try_from(SESSION_TTL.as_secs()).expect("fits");
+    SWEEP_CLOCK.store(T0 + 100 + ttl, Ordering::SeqCst);
+    rp.refresh(&[peer("p1", &mirror)]).await;
+    let c = rp.challenge().expect("challenge");
+    rp.sign_in(&login(&device, &pg, AUDIENCE, &c))
+        .expect("signed in again");
+    assert_eq!(rp.check_session(&first.token), Err(Refusal::NoSession));
+}
+
 fn noise_binding(h: u8) -> ChannelBinding {
     ChannelBinding::new(BindingKind::NoiseHandshakeHash, vec![h; 32])
 }
