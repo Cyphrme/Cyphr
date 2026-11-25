@@ -389,8 +389,12 @@ async fn a_thief_prefilling_the_shared_keys_quota_cannot_keep_a_server_active() 
             assert_eq!(post(&h, name, &id, b).await, 201, "{name}: C_{i}");
         }
     }
-    h.proxy.partition("p1", "p3");
-    h.proxy.partition("p2", "p3");
+    // Every link is cut: with p1-p2 open, gossip hands p2 the owner's
+    // commits (an Extended pull) before the test posts them, and the post
+    // answers 422.
+    for (a, b) in [("p1", "p2"), ("p1", "p3"), ("p2", "p3")] {
+        h.proxy.partition(a, b);
+    }
     // p3: the thief takes the tip, then fills the quota.
     assert_eq!(post(&h, "p3", &id, &j[0]).await, 201, "J_3");
     assert_eq!(post(&h, "p3", &id, &j[1]).await, 201, "J_4");
@@ -405,8 +409,9 @@ async fn a_thief_prefilling_the_shared_keys_quota_cannot_keep_a_server_active() 
             assert_eq!(post(&h, name, &id, junk).await, 409, "{name}: junk");
         }
     }
-    h.proxy.heal("p1", "p3");
-    h.proxy.heal("p2", "p3");
+    for (a, b) in [("p1", "p2"), ("p1", "p3"), ("p2", "p3")] {
+        h.proxy.heal(a, b);
+    }
 
     let pr = Principal(id.clone());
     h.eventually(
