@@ -185,19 +185,23 @@ pub(super) fn canonical_coz(blob: &[u8], i: usize) -> Result<Vec<u8>, EngineErro
 /// travelled with it.
 pub(super) fn canonical_bundle(bundle: &WireBundle) -> Result<WireBundle, EngineError> {
     let mut canonical = bundle.try_map(|i, blob| canonical_coz(blob, i))?;
-    // The keys the canonical cozies introduce: a bundle that does not decode
-    // names none, and the refusal follows from the core's own decode.
-    let named: std::collections::HashSet<String> = canonical
-        .decode()
-        .map(|decoded| {
-            decoded
-                .txs()
-                .iter()
-                .flatten()
-                .filter_map(|coz| decoded.introduced_key(coz).map(|k| k.tmb().to_b64()))
-                .collect()
-        })
-        .unwrap_or_default();
+    // The keys the canonical cozies name by `id`, unresolved: a `keys` entry
+    // that is malformed is refused by the core with its own typed error
+    // when the commit is verified, not dropped here.
+    let mut named: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for blob in canonical.txs.iter().flatten() {
+        let coz = cyphr::replay::StoredCoz::from_wire(blob).map_err(|e| match e {
+            // The core's own refusal, as `decode_bundle` gives it: an
+            // `alg` outside the table is `UnknownAlg`, not a malformed blob.
+            cyphr::replay::WireError::Key(p) | cyphr::replay::WireError::Protocol(p) => {
+                EngineError::Protocol(p)
+            },
+            other => EngineError::MalformedBlob(format!("a stored coz: {other}")),
+        })?;
+        if let Some(id) = coz.introduces() {
+            named.insert(id.to_owned());
+        }
+    }
     let mut keys: Vec<KeyEntry> = Vec::new();
     for entry in &bundle.keys {
         if !named.contains(&entry.tmb) || keys.iter().any(|k| k.tmb == entry.tmb) {

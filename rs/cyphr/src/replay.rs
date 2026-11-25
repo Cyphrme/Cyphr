@@ -259,8 +259,11 @@ impl StoredCoz {
     }
 
     /// The thumbprint a key-introducing coz names by its `id`; `None` for
-    /// any other coz.
-    fn introduces(&self) -> Option<&str> {
+    /// any other coz. The `id` is not resolved to a key: a bundle's `keys`
+    /// entry for it may be absent or malformed, and the core's own checks
+    /// say so.
+    #[must_use]
+    pub fn introduces(&self) -> Option<&str> {
         typ::is_key_introducing(&self.header.typ)
             .then(|| self.pay.get("id").and_then(Value::as_str))
             .flatten()
