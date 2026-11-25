@@ -133,6 +133,7 @@ fn login_app_state() -> AppState {
     let key_file = serde_json::json!({
         "alg": kp.alg.name(),
         "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+        "v": 1,
         "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
     });
     std::fs::write(&key_path, serde_json::to_vec(&key_file).unwrap()).unwrap();
@@ -1145,6 +1146,7 @@ async fn login_and_challenge_refuse_alike_without_audience() {
     let key_file = serde_json::json!({
         "alg": kp.alg.name(),
         "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+        "v": 1,
         "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
     });
     std::fs::write(&key_path, serde_json::to_vec(&key_file).unwrap()).unwrap();

@@ -117,7 +117,7 @@ refused limits max_body_byte 'max_body_byte = 1' '^[[]limits[]]' || failed=1
 raw() { openssl pkey "$@" -outform DER | tail -c 32 | python3 -I -c \
   'import base64,sys; print(base64.urlsafe_b64encode(sys.stdin.buffer.read()).rstrip(b"=").decode())'; }
 openssl genpkey -algorithm ed25519 -out "$tmp/key.pem"
-printf '{"alg":"Ed25519","pub_key":"%s","prv_key":"%s"}' \
+printf '{"v":1,"alg":"Ed25519","pub_key":"%s","prv_key":"%s"}' \
   "$(raw -in "$tmp/key.pem" -pubout)" "$(raw -in "$tmp/key.pem")" >"$tmp/signing-key.json"
 
 # Start a server on the example config plus the transport line, uncommented

@@ -24,6 +24,7 @@ fn identity() -> &'static ServerIdentity {
         let file = serde_json::json!({
             "alg": "ES256",
             "pub_key": b64(vk.public_key_bytes()),
+            "v": 1,
             "prv_key": b64(&sk.private_key_bytes()),
         });
         let path = std::env::temp_dir().join(format!("fuzz-bearer-{}.key", std::process::id()));

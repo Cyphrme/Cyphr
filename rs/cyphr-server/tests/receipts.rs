@@ -485,6 +485,7 @@ fn fixed_identity() -> (tempfile::TempDir, ServerIdentity) {
     let file = serde_json::json!({
         "alg": coz::Alg::Ed25519.name(),
         "pub_key": Base64UrlUnpadded::encode_string(&pub_key),
+        "v": 1,
         "prv_key": Base64UrlUnpadded::encode_string(&prv_key),
     });
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();

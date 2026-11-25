@@ -9,8 +9,9 @@
 //! - A dedicated fjall store (the admission spent set) records its version in the keyspace
 //!   [`META_KEYSPACE`] under [`VERSION_KEY`] as decimal text, written when the store is first
 //!   opened.
-//! - An absent `v` (a file or store from before versions) means v1: it loads, and is written back
-//!   with `v` (`1`). Any other unknown `v` is refused.
+//! - An absent `v` (a sidecar or store from before versions) means v1: it loads, and is written back
+//!   with `v` (`1`). A signing-key file with no `v` is refused, never rewritten. Any other unknown
+//!   `v` is refused.
 //! - A refusal is a typed `UnsupportedVersion` variant of the format's own error, pinned by
 //!   `matches!` on the variant and the offending number. The envelope is read through its typed
 //!   reader `Envelope::from_value`; its plain serde `Deserialize` can only flatten that to a
@@ -204,20 +205,23 @@ fn unstamp_json(path: &Path) {
     std::fs::write(path, serde_json::to_vec(&doc).unwrap()).unwrap();
 }
 
-/// Claim: a signing-key file from before versions (no `v`) loads as v1 and
-/// is written back stamped `v: 1`, so the next read is of a versioned file.
-/// Turns red on a loader that leaves the file unstamped, or one that refuses
-/// the absent version.
+/// Claim: a signing-key file from before versions (no `v`) is refused with
+/// an error that says to add it, and the file is left as it was: no
+/// migration rewrites a key file. Turns red on a loader that accepts the
+/// absent version, or one that rewrites the file.
 #[test]
-fn version_signing_key_file_absent_is_v1_and_written_back() {
+fn version_signing_key_file_absent_is_refused_and_untouched() {
     let dir = tempfile::tempdir().unwrap();
     let path = common::write_signing_key(dir.path());
-    ServerIdentity::load_from_path(&path).expect("an absent `v` loads as v1");
-    assert_eq!(
-        stamped_v(&path),
-        Some(1),
-        "the file must be written back with v=1"
-    );
+    let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    doc.as_object_mut().unwrap().remove("v");
+    let bytes = serde_json::to_vec(&doc).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    let err = ServerIdentity::load_from_path(&path)
+        .err()
+        .expect("an absent `v` is refused");
+    assert!(err.to_string().contains("\"v\""), "{err}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "the file is not rewritten");
 }
 
 /// Claim: a server-principal.json from before versions loads as v1 and is

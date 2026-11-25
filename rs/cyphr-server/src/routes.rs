@@ -1441,6 +1441,7 @@ mod commit_count_underflow_tests {
         let file = serde_json::json!({
             "alg": kp.alg.name(),
             "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+            "v": 1,
             "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
         });
         std::fs::write(&key_path, serde_json::to_vec(&file).unwrap()).unwrap();
@@ -1903,6 +1904,7 @@ mod push_response_tests {
             serde_json::to_vec(&serde_json::json!({
                 "alg": kp.alg.name(),
                 "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+                "v": 1,
                 "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
             }))
             .unwrap(),

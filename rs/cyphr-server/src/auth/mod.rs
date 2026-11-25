@@ -64,6 +64,11 @@ pub enum AuthError {
     /// key was loaded from it.
     #[error("signing key file version {found} is not the supported {supported}")]
     UnsupportedVersion { found: u64, supported: u32 },
+
+    /// The key file carries no `v`. A file from before versions is not
+    /// read, and is not rewritten: add `"v": 1` to it.
+    #[error("signing key file has no format version: add \"v\": {FILE_FORMAT_VERSION} to it")]
+    Unversioned,
 }
 
 /// The format version of the signing-key file and the server-principal
@@ -148,6 +153,9 @@ impl ServerIdentity {
         // The file text holds the private key; it is wiped once parsed.
         let content = zeroize::Zeroizing::new(std::fs::read_to_string(path)?);
         let doc: serde_json::Value = serde_json::from_str(&content)?;
+        if doc.get("v").is_none() {
+            return Err(AuthError::Unversioned);
+        }
         let found = document_version(&doc)?;
         if found != u64::from(FILE_FORMAT_VERSION) {
             return Err(AuthError::UnsupportedVersion {
@@ -155,7 +163,6 @@ impl ServerIdentity {
                 supported: FILE_FORMAT_VERSION,
             });
         }
-        let stamped = doc.get("v").is_some();
         let file: KeyFile = serde_json::from_value(doc)?;
 
         let alg = coz::Alg::from_str(&file.alg)
@@ -166,12 +173,6 @@ impl ServerIdentity {
             .ok_or_else(|| AuthError::InvalidPrivateKey(file.alg.clone()))?;
         if derived_pub != file.pub_key {
             return Err(AuthError::PublicKeyMismatch);
-        }
-
-        // A file from before versions is v1: rewrite it stamped, so every
-        // later read is of a versioned file.
-        if !stamped {
-            std::fs::write(path, serde_json::to_vec(&file)?)?;
         }
 
         Ok(Self {
