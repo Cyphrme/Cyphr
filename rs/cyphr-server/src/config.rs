@@ -412,6 +412,18 @@ pub struct LimitsConfig {
     /// refusing writes, never by pruning history.
     #[serde(default)]
     pub max_stored_bytes: Option<NonZeroU64>,
+
+    /// Seconds a client may take to send a request's headers before the
+    /// connection is dropped.
+    pub header_read_timeout_secs: NonZeroU64,
+
+    /// Seconds a whole request may take, body included, before it is
+    /// answered `408`.
+    pub request_timeout_secs: NonZeroU64,
+
+    /// Seconds a connection may sit with no byte read or written, a
+    /// keep-alive between requests included, before it is closed.
+    pub idle_timeout_secs: NonZeroU64,
 }
 
 /// A token-bucket rate: `per_second` cells replenished each second, up to a
@@ -460,6 +472,9 @@ impl Default for LimitsConfig {
             revoke: writes,
             max_dead_keys: NonZeroU64::new(1_000_000).expect(NONZERO),
             max_stored_bytes: None,
+            header_read_timeout_secs: NonZeroU64::new(10).expect(NONZERO),
+            request_timeout_secs: NonZeroU64::new(60).expect(NONZERO),
+            idle_timeout_secs: NonZeroU64::new(120).expect(NONZERO),
         }
     }
 }

@@ -17,35 +17,43 @@ name = "cyphr-server"
 path = "src/main.rs"
 
 [dependencies]
-axum.workspace               = true
-blake3.workspace             = true
-clap.workspace               = true
-coz.workspace                = true
-cyphr                        = { path = "../cyphr", version = "0.1.0" }
-cyphr-blob-fjall             = { path = "../cyphr-blob-fjall", version = "0.1.0" }
-cyphr-client                 = { path = "../cyphr-client", version = "0.1.0" }
-cyphr-index-fjall            = { path = "../cyphr-index-fjall", version = "0.1.0" }
-cyphr-storage                = { path = "../cyphr-storage", version = "0.1.0" }
-eml.workspace                = true
-figment.workspace            = true
-fjall.workspace              = true
-futures.workspace            = true
-governor                     = "0.10"
-moka                         = { version = "0.12", features = ["sync"], default-features = false }
-rand                         = "0.8"
-reqwest                      = { version = "0.12", default-features = false, features = ["json"] }
-serde.workspace              = true
-serde_json.workspace         = true
-sha2                         = "0.10"
-subtle                       = "2"
-thiserror.workspace          = true
-tokio.workspace              = true
-tower                        = { version = "0.5", features = ["util"] }
-tower-http.workspace         = true
-tracing.workspace            = true
+axum.workspace = true
+blake3.workspace = true
+clap.workspace = true
+coz.workspace = true
+cyphr = { path = "../cyphr", version = "0.1.0" }
+cyphr-blob-fjall = { path = "../cyphr-blob-fjall", version = "0.1.0" }
+cyphr-client = { path = "../cyphr-client", version = "0.1.0" }
+cyphr-index-fjall = { path = "../cyphr-index-fjall", version = "0.1.0" }
+cyphr-storage = { path = "../cyphr-storage", version = "0.1.0" }
+eml.workspace = true
+figment.workspace = true
+fjall.workspace = true
+futures.workspace = true
+governor = "0.10"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = [
+  "server",
+  "server-graceful",
+  "service",
+  "tokio",
+  "http1",
+] }
+moka = { version = "0.12", features = ["sync"], default-features = false }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+subtle = "2"
+thiserror.workspace = true
+tokio.workspace = true
+tower = { version = "0.5", features = ["util"] }
+tower-http.workspace = true
+tracing.workspace = true
 tracing-subscriber.workspace = true
-uuid.workspace               = true
-zeroize.workspace            = true
+uuid.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 blake3 = { workspace = true }

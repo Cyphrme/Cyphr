@@ -142,7 +142,7 @@ override them. Pass `--config` explicitly in anything you automate.
 | `log_format`       | `--log-format`                                                      | `CYPHR_LOG_FORMAT`                                                               | `pretty` for a terminal, `json` for a log pipeline.                                                                                                    |
 | `[gossip]`         | `--gossip-peer`, `--gossip-interval-secs`, `--gossip-fetch-on-read` | `CYPHR_GOSSIP_PEERS`, `CYPHR_GOSSIP_INTERVAL_SECS`, `CYPHR_GOSSIP_FETCH_ON_READ` | The peers to pull from and how. A peer can name its server principal's PG, which is **TOML only**.                                                     |
 | `[admission]`      | —                                                                   | —                                                                                | The gate on new principals. **TOML only.**                                                                                                             |
-| `[limits]`         | —                                                                   | —                                                                                | Rate, body size, commit-count and stored-byte fences. **TOML only.**                                                                                   |
+| `[limits]`         | —                                                                   | —                                                                                | Rate, body size, commit-count, stored-byte and connection-timeout fences. **TOML only.**                                                               |
 
 The last three have no flag and no environment variable. If you are
 deploying from a unit file or a container spec that only sets environment,
@@ -165,6 +165,9 @@ tokens_path = "/var/lib/cyphr/invites.txt"
 max_body_bytes = 2097152
 count_quota = 1000000
 # max_stored_bytes = 107374182400  # unset by default: no ceiling
+header_read_timeout_secs = 10
+request_timeout_secs = 60
+idle_timeout_secs = 120
 per_ip = { per_second = 100, burst = 200 }
 read = { per_second = 100, burst = 200 }
 push = { per_second = 50, burst = 100 }
@@ -898,6 +901,21 @@ principal holds:
 The record is bounded. The death set has a ceiling, `[limits] max_dead_keys`
 (1,000,000 by default); once it is full the server still records a revoke
 of a key a stored principal holds and answers `507` to the rest.
+
+## Connection timeouts
+
+Three `[limits]` settings bound how long a client may hold a connection
+without finishing its work, so a stalled client cannot pin a connection for
+ever.
+
+| Setting                    | Default | What it bounds                                                                                                         |
+| :------------------------- | :------ | :--------------------------------------------------------------------------------------------------------------------- |
+| `header_read_timeout_secs` | 10      | How long a client may take to send a request's headers; past it the connection is dropped.                             |
+| `request_timeout_secs`     | 60      | How long a whole request may take, body included; past it the answer is `408`.                                         |
+| `idle_timeout_secs`        | 120     | How long a connection may carry no byte in either direction, a keep-alive between requests included, before it closes. |
+
+Zero is refused at start. They apply to the HTTP listener; the Noise
+transport has its own idle timeout.
 
 ## The storage ceiling
 

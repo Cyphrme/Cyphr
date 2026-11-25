@@ -20,6 +20,7 @@ pub mod durable;
 pub mod envelope;
 pub mod error;
 pub mod gossip;
+mod http_serve;
 pub mod logging;
 pub mod metrics;
 pub mod ops;
@@ -375,6 +376,10 @@ pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn st
         app = app.layer(gate);
     }
     app = app.layer(rate_limit::layer(&limits, count_probe));
+    app = app.layer(tower_http::timeout::TimeoutLayer::with_status_code(
+        axum::http::StatusCode::REQUEST_TIMEOUT,
+        std::time::Duration::from_secs(limits.request_timeout_secs.get()),
+    ));
     app = app.layer(axum::extract::DefaultBodyLimit::max(
         limits.max_body_bytes.get() as usize,
     ));
@@ -514,14 +519,20 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
 
     // Serve with per-connection peer info so the per-IP fence can key on the
     // real peer address the kernel reports.
-    axum::serve(
+    http_serve::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app,
+        http_serve::Timeouts {
+            header_read: std::time::Duration::from_secs(
+                state.config.limits.header_read_timeout_secs.get(),
+            ),
+            idle: std::time::Duration::from_secs(state.config.limits.idle_timeout_secs.get()),
+        },
+        shutdown_signal(
+            #[cfg(unix)]
+            signals,
+        ),
     )
-    .with_graceful_shutdown(shutdown_signal(
-        #[cfg(unix)]
-        signals,
-    ))
     .await?;
 
     if let Some(handle) = transport {
