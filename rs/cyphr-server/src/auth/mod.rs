@@ -302,16 +302,34 @@ pub(crate) fn discard_staged_key(path: &Path) -> Result<(), AuthError> {
 /// nothing and a server that refuses to boot.
 pub(crate) fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
+    // A name no other writer shares (process and call), created exclusively,
+    // so two writers never truncate one temp file under each other.
+    static CALLS: AtomicU64 = AtomicU64::new(0);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
+    tmp.push(format!(
+        ".tmp{}.{}",
+        std::process::id(),
+        CALLS.fetch_add(1, Ordering::Relaxed)
+    ));
     let tmp = PathBuf::from(tmp);
-    let mut out = std::fs::File::create(&tmp)?;
-    out.write_all(bytes)?;
-    out.sync_all()?;
-    drop(out);
-    std::fs::rename(&tmp, path)?;
-    sync_parent_dir(path)
+    let written = (|| {
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        out.write_all(bytes)?;
+        out.sync_all()?;
+        drop(out);
+        std::fs::rename(&tmp, path)?;
+        sync_parent_dir(path)
+    })();
+    if written.is_err() {
+        // After a rename the temp name is gone and this is a no-op.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// fsync the directory holding `path`, making a rename or unlink in it
