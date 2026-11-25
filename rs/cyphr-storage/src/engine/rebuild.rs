@@ -349,6 +349,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut action_manifests: Vec<(Blake3Hash, ActionManifest)> = Vec::new();
         let mut revoked = Revoked::default();
         let mut resyncs = Resyncs::default();
+        // What was counted when the scan began: a write that lands during
+        // it is kept, not overwritten by the scan's own total.
+        let counted_at_start = self.stored_bytes();
         let mut stored_bytes: u64 = 0;
         for hash in hashes {
             let Some(data) = self.blob_store.get(&hash).await? else {
@@ -733,8 +736,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.branches.replace(branches);
         self.deaths.replace(revoked);
         self.resyncs.replace(resyncs);
-        self.stored_bytes
-            .store(stored_bytes, std::sync::atomic::Ordering::SeqCst);
+        let written_during = self.stored_bytes().saturating_sub(counted_at_start);
+        self.stored_bytes.store(
+            stored_bytes.saturating_add(written_during),
+            std::sync::atomic::Ordering::SeqCst,
+        );
 
         quarantined.sort_by_key(|q| *q.manifest.as_bytes());
         Ok(RebuildReport {
