@@ -508,7 +508,7 @@ pub fn check_equivocation(
     // are dated in whole seconds, so a pair signed within one second cannot
     // be ordered: it is explained when exactly one of its commits was
     // passed over, and the other is not.
-    let (earlier, later) = (a.pay["now"].as_i64(), b.pay["now"].as_i64());
+    let (earlier, later) = (a_report.now, b_report.now);
     let passed_over = |report: &TipReport| abandoned(forks, &report.commit_id.to_string());
     let explained = match (earlier, later) {
         (Some(x), Some(y)) if x < y => passed_over(&a_report),

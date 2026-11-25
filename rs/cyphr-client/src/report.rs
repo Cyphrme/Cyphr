@@ -46,6 +46,10 @@ pub struct TipReport {
     pub sequence: u64,
     pub commit_id: TaggedDigest,
     pub roots: TipReportRoots,
+    /// The signer's own `now` (Unix seconds) when it signed. Not every
+    /// statement states one, so it is `None` rather than a default; a
+    /// reader orders two reports by it only when both carry it.
+    pub now: Option<i64>,
 }
 
 /// The `typ` of the statement a server signs over `/tip` for a principal in
@@ -85,6 +89,9 @@ pub enum TipReportParseError {
     /// array -- is malformed, never coerced).
     #[error("sequence is not a canonical non-negative integer: {0}")]
     Sequence(Value),
+    /// `now` is present but not a JSON integer: never coerced.
+    #[error("now is not an integer: {0}")]
+    Now(Value),
     /// `roots.<field>` -- same disposition as `pr`/`commit_id`.
     #[error("roots.{field}: {source}")]
     Roots {
@@ -134,11 +141,16 @@ impl TipReport {
                 }
             })?,
         };
+        let now = match coz.pay.get("now") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_i64().ok_or_else(|| TipReportParseError::Now(value.clone()))?),
+        };
         Ok(Self {
             pg,
             sequence,
             commit_id,
             roots,
+            now,
         })
     }
 }
