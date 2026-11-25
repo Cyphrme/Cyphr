@@ -686,8 +686,7 @@ Unbound. Tests exercise the refusal at the default skew
 (`s15_9_future_dated_message_is_rejected_by_default` in
 `rs/cyphr/tests/spec_conformance.rs`, and the extremes in
 `rs/cyphr-server/tests/now_range.rs`), but this claim has no evaluator
-registered. No test configures a skew with `set_max_clock_skew` and checks
-that setting it to 0 keeps the check. Binding needs such a test.
+registered. The skew is fixed at `DEFAULT_MAX_CLOCK_SKEW`; nothing sets it.
 
 #### [rv-lifecycle-transitions]
 

@@ -89,8 +89,7 @@ inferable from SPEC.md at `be0663f`," not "implemented in `rs/` or
 - **Timestamps:** `cyphr::Principal` rejects a data action whose `now`
   is older than the latest it has seen (`TimestampPast`), and rejects a
   future-dated one (`TimestampFuture`) beyond the verifier clock plus a
-  skew. The default skew is 360 s (SPEC §15.9); `set_max_clock_skew(0)`
-  removes the tolerance and does not disable the check.
+  skew of 360 s (SPEC §15.9), which is fixed.
 - **No third-party resolution:** no server route resolves a fork or
   picks a branch, and no server pushes a principal's commits to another
   server (`rs/cyphr-server/tests/no_registration.rs`).
