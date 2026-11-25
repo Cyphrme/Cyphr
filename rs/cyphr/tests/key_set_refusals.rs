@@ -63,7 +63,9 @@ fn replace(signer: &Kp, id: &coz::Thumbprint, now: i64) -> Signed {
 /// A principal over `keys[0]`'s genesis, which creates the rest.
 async fn principal_of(keys: &[Kp]) -> Principal {
     let others: Vec<Key> = keys[1..].iter().map(key_of).collect();
-    let mut p = Principal::implicit(key_of(&keys[0])).await.expect("implicit");
+    let mut p = Principal::implicit(key_of(&keys[0]))
+        .await
+        .expect("implicit");
     p.commit_genesis(&software(&keys[0]), &others, 1, "cyphr.me")
         .await
         .expect("genesis commit");
@@ -88,7 +90,10 @@ async fn replace_onto_a_held_key_is_refused_and_a_fresh_key_swaps() {
         let mut scope = p.begin_commit();
         let (pay, sig, czd) = replace(&keys[0], &named.tmb, T);
         let refused = scope.verify_and_apply(&pay, &sig, czd, Some(key_of(named)));
-        assert!(matches!(refused, Err(Error::DuplicateKey)), "naming a held key: {refused:?}");
+        assert!(
+            matches!(refused, Err(Error::DuplicateKey)),
+            "naming a held key: {refused:?}"
+        );
         drop(scope);
         assert_eq!(before, state(&p), "a refused replace changed state");
     }

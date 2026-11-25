@@ -24,7 +24,12 @@ struct Kp {
 fn kp() -> Kp {
     let k = coz::Alg::Ed25519.generate_keypair();
     let tmb = k.alg.compute_thumbprint(&k.pub_bytes).unwrap();
-    Kp { alg: k.alg.name().to_string(), pubb: k.pub_bytes, prv: k.prv_bytes, tmb }
+    Kp {
+        alg: k.alg.name().to_string(),
+        pubb: k.pub_bytes,
+        prv: k.prv_bytes,
+        tmb,
+    }
 }
 fn key_of(k: &Kp) -> Key {
     Key::new(k.alg.clone(), k.tmb.clone(), k.pubb.clone()).unwrap()
@@ -40,7 +45,9 @@ fn b64(b: &[u8]) -> String {
 async fn prefix_steps_do_not_prove_a_bundle_never_committed() {
     let (alice, bob) = (kp(), kp());
     let mut p = Principal::implicit(key_of(&alice)).await.unwrap();
-    p.commit_genesis(&signer(&alice), &[], T, AUTHORITY).await.unwrap();
+    p.commit_genesis(&signer(&alice), &[], T, AUTHORITY)
+        .await
+        .unwrap();
 
     // Commit 1 = [[key/create bob], [commit/create]].
     let mut pay = json!({"alg": alice.alg, "id": b64(bob.tmb.as_bytes()), "now": T + 10,
@@ -50,20 +57,40 @@ async fn prefix_steps_do_not_prove_a_bundle_never_committed() {
     let (sig, cad) = coz::sign_json(&v, &alice.alg, &alice.prv, &alice.pubb).unwrap();
     let czd = coz::czd_for_alg(&cad, &sig, &alice.alg).unwrap();
     let mut scope = p.begin_commit();
-    scope.verify_and_apply(&v, &sig, czd, Some(key_of(&bob))).unwrap();
-    scope.finalize_with_software(&signer(&alice), T + 11, AUTHORITY).await.unwrap();
+    scope
+        .verify_and_apply(&v, &sig, czd, Some(key_of(&bob)))
+        .unwrap();
+    scope
+        .finalize_with_software(&signer(&alice), T + 11, AUTHORITY)
+        .await
+        .unwrap();
 
     let honest = WireBundle::of_commit(p.commit_at(1).unwrap()).unwrap();
     assert_eq!(honest.txs.len(), 2, "setup: one mutation tx + commit tx");
     let (m_blob, c_blob) = (honest.txs[0][0].clone(), honest.txs[1][0].clone());
-    let czd_m = StoredCoz::from_wire(&m_blob).unwrap().czd().as_bytes().to_vec();
-    let czd_c = StoredCoz::from_wire(&c_blob).unwrap().czd().as_bytes().to_vec();
+    let czd_m = StoredCoz::from_wire(&m_blob)
+        .unwrap()
+        .czd()
+        .as_bytes()
+        .to_vec();
+    let czd_c = StoredCoz::from_wire(&c_blob)
+        .unwrap()
+        .czd()
+        .as_bytes()
+        .to_vec();
 
     let root = p.root_at(2).unwrap();
     let anchor = Anchor::pin(root);
-    let honest_claim = Claim::Member { index: 1, commit: honest };
+    let honest_claim = Claim::Member {
+        index: 1,
+        commit: honest,
+    };
     let cert = p.prove(2, &honest_claim).await.unwrap();
-    assert_eq!(verify(&anchor, &cert, 2, &honest_claim), Ok(()), "honest baseline");
+    assert_eq!(
+        verify(&anchor, &cert, 2, &honest_claim),
+        Ok(()),
+        "honest baseline"
+    );
 
     let forge = |pos: usize, sib: &[u8]| -> Certificate {
         let mut w: Value = serde_json::to_value(&cert).unwrap();
@@ -75,7 +102,11 @@ async fn prefix_steps_do_not_prove_a_bundle_never_committed() {
     // Forgery A: commit 1 "was" only the commit/create coz (the key/create dropped).
     let only_commit = Claim::Member {
         index: 1,
-        commit: WireBundle { actions: vec![], txs: vec![vec![c_blob.clone()]], keys: vec![] },
+        commit: WireBundle {
+            actions: vec![],
+            txs: vec![vec![c_blob.clone()]],
+            keys: vec![],
+        },
     };
     let ra = verify(&anchor, &forge(1, &czd_m), 2, &only_commit);
     println!("forgery A (bundle [[commit/create]] at index 1): {ra:?}");
@@ -83,7 +114,11 @@ async fn prefix_steps_do_not_prove_a_bundle_never_committed() {
     // Forgery B: commit 1 "was" only the key/create coz, standing as its own commit tx.
     let only_mut = Claim::Member {
         index: 1,
-        commit: WireBundle { actions: vec![], txs: vec![vec![m_blob.clone()]], keys: vec![] },
+        commit: WireBundle {
+            actions: vec![],
+            txs: vec![vec![m_blob.clone()]],
+            keys: vec![],
+        },
     };
     let rb = verify(&anchor, &forge(0, &czd_c), 2, &only_mut);
     println!("forgery B (bundle [[key/create]] at index 1): {rb:?}");
