@@ -25,7 +25,7 @@ Coz Rust library (`Cyphrme/coz-rust`) still takes raw private-key bytes
 in `coz::sign_json`, so a backend that cannot export its key needs an
 upstream change.
 
-## Building: the shared target directory
+## Building: the target directory
 
 If your checkout shares a cargo target directory across worktrees (a local,
 untracked `.cargo/config.toml` with `build.target-dir`), then when two worktrees
@@ -43,9 +43,11 @@ cd rs && cargo metadata --no-deps --format-version 1 \
 Dependency crates stay cached, so this costs a rebuild of the workspace
 only.
 
-Concurrent builds into the shared target replace the `debug/cyphr` and
-`debug/cyphr-server` binaries that CLI and scenario tests run by path, so only
-one build or test run may use the target at a time.
+Each worktree builds into its own default `rs/target`, with no shared
+`target-dir`: concurrent builds into a shared target replace the `debug/cyphr`
+and `debug/cyphr-server` binaries that CLI and scenario tests run by path.
+Test temp files go under the repo's `.scratch/tmp`, never `/tmp`. A worktree is
+removed when its node merges.
 
 ## Testing policy
 
