@@ -35,7 +35,9 @@ async fn only_the_revoke_of_a_held_key_passes_a_full_ceiling() {
     e.set_storage_ceiling(Some(e.stored_bytes()));
     let before = e.stored_bytes();
 
-    let refused = e.record_revoke(&naked_revoke(&stranger, NOW + 5), NOW + 5).await;
+    let refused = e
+        .record_revoke(&naked_revoke(&stranger, NOW + 5), NOW + 5)
+        .await;
     assert!(
         matches!(refused, Err(EngineError::StorageFull { .. })),
         "{refused:?}"

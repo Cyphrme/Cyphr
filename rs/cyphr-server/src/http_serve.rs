@@ -76,7 +76,11 @@ impl IdleStream {
     /// The write side of the idle bound: a write the peer is not draining
     /// (a client that does not read its response, or drips it) fails with
     /// `TimedOut` once `idle` passes with no progress, as a silent read does.
-    fn bounded<T>(&mut self, cx: &mut Context<'_>, polled: Poll<io::Result<T>>) -> Poll<io::Result<T>> {
+    fn bounded<T>(
+        &mut self,
+        cx: &mut Context<'_>,
+        polled: Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>> {
         match polled {
             Poll::Ready(result) => {
                 if result.is_ok() {

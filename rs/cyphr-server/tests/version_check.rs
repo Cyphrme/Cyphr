@@ -9,9 +9,9 @@
 //! - A dedicated fjall store (the admission spent set) records its version in the keyspace
 //!   [`META_KEYSPACE`] under [`VERSION_KEY`] as decimal text, written when the store is first
 //!   opened.
-//! - An absent `v` (a sidecar or store from before versions) means v1: it loads, and is written back
-//!   with `v` (`1`). A signing-key file with no `v` is refused, never rewritten. Any other unknown
-//!   `v` is refused.
+//! - An absent `v` (a sidecar or store from before versions) means v1: it loads, and is written
+//!   back with `v` (`1`). A signing-key file with no `v` is refused, never rewritten. Any other
+//!   unknown `v` is refused.
 //! - A refusal is a typed `UnsupportedVersion` variant of the format's own error, pinned by
 //!   `matches!` on the variant and the offending number. The envelope is read through its typed
 //!   reader `Envelope::from_value`; its plain serde `Deserialize` can only flatten that to a
@@ -213,15 +213,18 @@ fn unstamp_json(path: &Path) {
 fn version_signing_key_file_absent_is_refused_and_untouched() {
     let dir = tempfile::tempdir().unwrap();
     let path = common::write_signing_key(dir.path());
-    let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     doc.as_object_mut().unwrap().remove("v");
     let bytes = serde_json::to_vec(&doc).unwrap();
     std::fs::write(&path, &bytes).unwrap();
-    let err = ServerIdentity::load_from_path(&path)
-        .err()
-        .expect("an absent `v` is refused");
+    let err = ServerIdentity::load_from_path(&path).expect_err("an absent `v` is refused");
     assert!(err.to_string().contains("\"v\""), "{err}");
-    assert_eq!(std::fs::read(&path).unwrap(), bytes, "the file is not rewritten");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "the file is not rewritten"
+    );
 }
 
 /// Claim: a server-principal.json from before versions loads as v1 and is
