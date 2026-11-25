@@ -1,19 +1,24 @@
 //! Claim: the server is not an authority that pushes to registered
 //! witnesses. `/witness/register` does not exist, and an accepted push
 //! makes no outbound request, even to a peer that a (formerly valid)
-//! signed registration named.
+//! signed registration named. The server is configured with the peer it is
+//! watched dialling, as its one gossip peer, so a push-time fanout to
+//! configured peers would reach it.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_server::build_app_router;
+use cyphr_server::auth::principal::ServerPrincipal;
+use cyphr_server::config::{GossipConfig, PeerEntry, ServerConfig};
+use cyphr_server::{AppState, build_app_router};
 use test_fixtures::Pool;
 use tokio::net::TcpListener;
 
 mod common;
 
-use common::{attestor_server, build_genesis_push_body, golden_principal_id, load_pool, post_json};
+use common::{build_genesis_push_body, golden_principal_id, load_pool, post_json, write_signing_key};
 
 const NOW: i64 = 1_700_000_000;
 
@@ -49,12 +54,31 @@ fn signed_register_create(pool: &Pool, principal_id: &str, witness_url: &str) ->
 // @docket: arch-verifier-chooses-peers :: scripts/docket-run arch-verifier-chooses-peers
 #[tokio::test]
 async fn register_route_is_gone_and_push_never_dials_out() {
-    let (state, _identity, _dir) = attestor_server().await;
-    let app = build_app_router(state).expect("router");
-
     // A would-be witness: any inbound connection is the fanout this node cuts.
     let peer = TcpListener::bind("127.0.0.1:0").await.expect("bind peer");
     let peer_url = format!("http://{}", peer.local_addr().expect("peer addr"));
+
+    // An attestor that holds the peer as a gossip peer: the one way a server
+    // is told of a peer it could dial. Gossip rounds run only under `serve`,
+    // so the only dial-out this test can see is one a push makes.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = write_signing_key(dir.path());
+    let mut state = AppState::new(ServerConfig {
+        data_dir: dir.path().join("data"),
+        signing_key_path: Some(key_path.clone()),
+        gossip: GossipConfig {
+            peers: vec![PeerEntry::Url(peer_url.clone())],
+            ..GossipConfig::default()
+        },
+        ..ServerConfig::default()
+    })
+    .expect("state");
+    let identity = state.identity.clone().expect("keyed state has identity");
+    let principal = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
+        .await
+        .expect("bootstrap the server principal");
+    state.principal = Some(Arc::new(principal));
+    let app = build_app_router(Arc::new(state)).expect("router");
 
     let pool = load_pool();
     let pid = golden_principal_id(&pool).await;
