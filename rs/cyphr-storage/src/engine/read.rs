@@ -89,7 +89,7 @@ pub(super) struct HeldCommit<'m> {
 }
 
 pub(super) enum HeldOrigin<'m> {
-    Canonical(crate::index::CommitRef),
+    Canonical(Box<crate::index::CommitRef>),
     Retained(Box<Retained>),
     Manifest(&'m CommitManifest),
 }
@@ -1239,7 +1239,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         sequence: c.sequence,
                         pr: c.pr.clone(),
                         pre: c.pre.clone(),
-                        origin: HeldOrigin::Canonical(c),
+                        origin: HeldOrigin::Canonical(Box::new(c)),
                     })
                     .collect();
                 let retained = self.branches.retained(&id);
