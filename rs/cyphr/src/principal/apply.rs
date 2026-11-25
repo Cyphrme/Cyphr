@@ -496,13 +496,22 @@ impl PrincipalState {
                     return Err(Error::UnknownKey);
                 }
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
-                if key.tmb().to_b64() != id.to_b64() {
+                let tmb_of_new = key.tmb().to_b64();
+                if tmb_of_new != id.to_b64() {
                     return Err(Error::MalformedPayload);
                 }
                 // The signed pay binds only `tmb`; the sidecar `pub` is unsigned.
                 // SPEC §6.4: a revoked key is never trusted again.
                 if self.auth.revoked.contains_key(&id.to_b64()) {
                     return Err(Error::KeyRevoked);
+                }
+                // SPEC 6.3: the swap "removes the signing key and adds a new
+                // key", and 7.6 makes a create of an existing key DUPLICATE.
+                // Naming the signer would add nothing and then remove it,
+                // emptying the set; naming another held key would only
+                // delete the signer.
+                if self.auth.keys.contains_key(&tmb_of_new) {
+                    return Err(Error::DuplicateKey);
                 }
                 // Atomic swap: add new key first, then remove signer
                 // This allows Level 2 single-key accounts to replace their key
@@ -539,6 +548,12 @@ impl PrincipalState {
                 // SPEC 5.1 step 3, 5.2 TX1 "ID == PG == SR": `id` is the
                 // future SR, the state every genesis mutation before this
                 // one reached (keys, nonces), promoted to PR with no CR.
+                // SPEC 7.6: `create` of an item that exists is `DUPLICATE`.
+                // Decided before the id is compared, which a repeat would
+                // only fail as a state mismatch.
+                if self.pg.is_some() {
+                    return Err(Error::DuplicatePrincipal);
+                }
                 let pg = self.genesis_pr()?;
                 if !id.0.matches(&pg.0) {
                     return Err(Error::StateMismatch);
