@@ -87,6 +87,7 @@ without padding over raw key bytes:
 
 ```json
 {
+  "v": 1,
   "alg": "Ed25519",
   "pub_key": "y1xCqdKo0nTUHXpOnKOpw44VbKB9lvPmphkVULNnQbw",
   "prv_key": "4jl-rNm5WGFSDHTQM3cHmB5lVVs_eGzYFpmsOddUEno"
@@ -100,6 +101,7 @@ const crypto = require("crypto");
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 console.log(
   JSON.stringify({
+    v: 1,
     alg: "Ed25519",
     pub_key: publicKey
       .export({ format: "der", type: "spki" })

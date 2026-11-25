@@ -47,6 +47,7 @@ const crypto = require("crypto");
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 console.log(
   JSON.stringify({
+    v: 1,
     alg: "Ed25519",
     pub_key: publicKey
       .export({ format: "der", type: "spki" })
@@ -662,6 +663,7 @@ curl -s "http://127.0.0.1:4101/tip?pg=$PR" | jq -c '.statement.coz.pay'
 
 ```json
 {
+  "v": 1,
   "alg": "Ed25519",
   "now": 1795229090,
   "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
@@ -682,6 +684,7 @@ curl -s "http://127.0.0.1:4101/tip?pg=$PR" | jq -c '.statement.coz.pay'
 
 ```json
 {
+  "v": 1,
   "alg": "Ed25519",
   "now": 1795229090,
   "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",

@@ -53,6 +53,7 @@ file holding a raw keypair:
 
 ```json
 {
+  "v": 1,
   "alg": "Ed25519",
   "pub_key": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
   "prv_key": "-YSZ3MD_vmCxINuQHpTM3LkQ9zCdBVkYEVr1glDJp-Q"
@@ -67,6 +68,7 @@ const crypto = require("crypto");
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 console.log(
   JSON.stringify({
+    v: 1,
     alg: "Ed25519",
     pub_key: publicKey
       .export({ format: "der", type: "spki" })
@@ -314,7 +316,7 @@ principal specifically. Your client therefore has to remember which principal
 it is signing in as. Store it next to the key.
 
 `cyphr key generate` left your test key in `./cyphr-keys.json`, keyed by
-thumbprint: `{"<tmb>": {"alg", "pub_key", "prv_key"}}`, both key fields
+thumbprint, beside a top-level `"v": 1`: `{"v": 1, "<tmb>": {"alg", "pub_key", "prv_key"}}`, both key fields
 base64url without padding over raw bytes. Base64url-decode them into the
 `prv`/`pub` the signing code below expects.
 
