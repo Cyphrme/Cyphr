@@ -293,9 +293,28 @@ pub(crate) fn discard_staged_key(path: &Path) -> Result<(), AuthError> {
     Ok(())
 }
 
+/// Replace the file at `path` with `bytes` so a crash leaves either the old
+/// contents or the new, never a torn file: write a sibling temp file, fsync
+/// it, rename it over `path`, fsync the directory. A plain `fs::write`
+/// truncates in place, so a crash mid-write leaves a file that parses as
+/// nothing and a server that refuses to boot.
+pub(crate) fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let mut out = std::fs::File::create(&tmp)?;
+    out.write_all(bytes)?;
+    out.sync_all()?;
+    drop(out);
+    std::fs::rename(&tmp, path)?;
+    sync_parent_dir(path)
+}
+
 /// fsync the directory holding `path`, making a rename or unlink in it
 /// durable (POSIX: the directory entry is data of the directory).
-fn sync_parent_dir(path: &Path) -> Result<(), AuthError> {
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
