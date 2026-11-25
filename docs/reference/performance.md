@@ -41,13 +41,13 @@ The first table is the storage engine, called directly.
 
 | Operation                     | Bound                         | Counts at n = 10 and n = 10000                         | Time, ms at n = 10 / 100 / 1000 / 10000 |
 | :---------------------------- | :---------------------------- | :----------------------------------------------------- | :-------------------------------------- |
-| Write one commit (kept)       | O(new): 0 commits replayed    | replayed 0; 7 index rows; 4 blobs read                 | 0.90 / 0.71 / 0.98 / 8.3                |
+| Write one commit (kept)       | O(new): 0 commits replayed    | replayed 0; 7 index rows; 6 blobs read                 | 0.90 / 0.71 / 0.98 / 8.3                |
 | Read the tip                  | O(1): 0 replayed              | replayed 0; 3 index rows                               | 0.03 / 0.04 / 0.03 / 0.04               |
 | Read a patch from the tip     | O(1): 0 replayed              | replayed 0; 5 index rows                               | 0.07 / 0.07 / 0.06 / 0.07               |
-| Refused push (bad signature)  | O(bundle), independent of `n` | replayed 0; 6 index rows; 4 blobs read                 | 0.70 / 0.49 / 0.76 / 7.9                |
-| Refused push (unknown key)    | O(bundle), independent of `n` | replayed 0; 6 index rows; 4 blobs read                 | 0.21 / 0.19 / 0.49 / 7.8                |
-| After a restart, first write  | O(n), once per principal      | replayed n + 6; index rows 2n + 19; blobs read 5n + 42 | 9.5 / 52 / 502 / 9642                   |
-| After a restart, second write | O(new): 0 replayed            | replayed 0; 7 index rows; 4 blobs read                 | 0.71 / 1.0 / 1.7 / 12.6                 |
+| Refused push (bad signature)  | O(bundle), independent of `n` | replayed 0; 6 index rows; 5 blobs read                 | 0.70 / 0.49 / 0.76 / 7.9                |
+| Refused push (unknown key)    | O(bundle), independent of `n` | replayed 0; 6 index rows; 5 blobs read                 | 0.21 / 0.19 / 0.49 / 7.8                |
+| After a restart, first write  | O(n), once per principal      | replayed n + 6; index rows 2n + 19; blobs read 7n + 56 | 9.5 / 52 / 502 / 9642                   |
+| After a restart, second write | O(new): 0 replayed            | replayed 0; 7 index rows; 6 blobs read                 | 0.71 / 1.0 / 1.7 / 12.6                 |
 
 The second table is the same engine behind the HTTP server, one request per
 operation, and the gossip loop between servers.
@@ -65,6 +65,15 @@ operation, and the gossip loop between servers.
 | Gossip round, first (cold memo) | 0 replayed (state is kept)    | 4 requests; replayed 0                                         | 1.2 / 1.3 / 1.8 / 16                          |
 | Gossip pull of k new commits    | O(k) commits replayed         | k = 1: replayed 1; k = 10: replayed 10                         | k = 10: 14 / 13 / 19 / 110                    |
 | Fork location                   | O(h): see "Deferred", below   | proof asks 5 / 8 / 11 / 15, plus 1 patch ask, 1 commit fetched | 6.1 / 24 / 192 / 2808                         |
+
+A commit's grouping, signers and first-seen time are read from its stored
+manifest when needed, not kept in memory. The blob-read counts above
+include those reads: two more per commit on the first write after a
+restart (`7n + 56`, once `5n + 42`), and two more on a write or a refused
+push (a constant). The counts were re-measured with the engine bench
+(`U3_NS=10,100,1000,10000 ./bench-u3.sh`) on a disk, not a RAM disk, so
+the times in these tables were not re-taken; the counts did not change
+across the four sizes except in the restart row.
 
 Reading the tables:
 
