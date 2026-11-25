@@ -49,7 +49,7 @@ pub trait Signer {
 /// completes on first poll, which [`SoftwareSigner::sign_now`] relies on.
 pub struct SoftwareSigner {
     alg: String,
-    prv: Vec<u8>,
+    prv: zeroize::Zeroizing<Vec<u8>>,
     pub_key: Vec<u8>,
     tmb: Thumbprint,
 }
@@ -59,7 +59,7 @@ impl SoftwareSigner {
     pub fn new(alg: &str, prv: &[u8], pub_key: &[u8], tmb: &Thumbprint) -> Self {
         Self {
             alg: alg.to_string(),
-            prv: prv.to_vec(),
+            prv: zeroize::Zeroizing::new(prv.to_vec()),
             pub_key: pub_key.to_vec(),
             tmb: tmb.clone(),
         }
