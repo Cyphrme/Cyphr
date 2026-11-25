@@ -56,7 +56,7 @@ use cyphr_client::{
     BindingPolicy, ChainSource, Connector, HttpConnector, PatchEntry, PatchFailure, PatchRequest,
     PeerKey, PullPeer, Record, TipReport, branch_bundles, fetch_patch, fetch_patch_keyed,
     fetch_resyncs, fetch_tip_body, peer_heads, pull, statement_signer, verified_revokes,
-    verify_authenticated_envelope,
+    verify_authenticated_envelope, verify_held_envelope,
 };
 use cyphr_storage::engine::{PulledOffer, ResyncOffer};
 use cyphr_storage::index::Indexer as _;
@@ -348,7 +348,7 @@ async fn round_principal(
     // report first, and checked against the keys of that principal's chain;
     // one whose report does not verify is refused for the round, and nothing
     // from it is applied.
-    let mut attested: Vec<(&Peer, TipReport)> = Vec::new();
+    let mut attested: Vec<(&Peer, Attested)> = Vec::new();
     let mut usable: Vec<&Peer> = Vec::new();
     for peer in peers {
         match verify_peer_tip(state, peer, principal_id).await {
@@ -442,20 +442,34 @@ async fn round_principal(
     // signed. A peer whose report this node does not reach after applying
     // what verified is asked for its branches and evidence, which the engine
     // keeps if they verify (I2: a fork is evidence, never merged).
-    for (peer, report) in &attested {
-        if tip_matches_report(
-            state
-                .engine
-                .get_tip(principal_id)
-                .await
-                .ok()
-                .flatten()
-                .as_ref(),
-            report,
-        ) {
+    for (peer, attestation) in &attested {
+        let matches = match attestation {
+            Attested::Tip(report) => tip_matches_report(
+                state
+                    .engine
+                    .get_tip(principal_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .as_ref(),
+                report,
+            ),
+            Attested::Held(held) => {
+                let mut all = true;
+                for head in &held.heads {
+                    all &= state
+                        .engine
+                        .holds_commit(principal_id, &head.commit_id.to_string())
+                        .await
+                        .unwrap_or(false);
+                }
+                all
+            },
+        };
+        if matches {
             continue;
         }
-        warn!(principal = %principal_id, peer = %peer.name, "gossip: the resulting tip is not the one the peer attests");
+        warn!(principal = %principal_id, peer = %peer.name, "gossip: this node does not hold what the peer attests");
         offer_peer_branches(state, peer, principal_id).await;
     }
     state.metrics.gossip_replayed(record.replayed());
@@ -603,7 +617,7 @@ async fn verify_peer_tip(
     state: &Arc<AppState>,
     peer: &Peer,
     principal_id: &str,
-) -> Result<Option<TipReport>, String> {
+) -> Result<Option<Attested>, String> {
     let Some(pg) = peer.pg.as_deref() else {
         return Ok(None);
     };
@@ -617,9 +631,7 @@ async fn verify_peer_tip(
         Err(err) => return Err(err.to_string()),
     };
     let value: serde_json::Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
-    if value["payload"]["state"] == "error" {
-        return Ok(None);
-    }
+    let in_error = value["payload"]["state"] == "error";
     let tmb = statement_signer(&body).ok_or("the tip is not signed")?;
     let mut key = peer_key(state, pg, &tmb).await;
     if key.is_none() {
@@ -628,9 +640,22 @@ async fn verify_peer_tip(
         key = peer_key(state, pg, &tmb).await;
     }
     let key = key.ok_or("its signing key is not active in its server principal")?;
+    if in_error {
+        // A peer in Error attests heads, not a tip.
+        return verify_held_envelope(&value, &key, principal_id)
+            .map(|held| Some(Attested::Held(held)))
+            .map_err(|e| e.to_string());
+    }
     verify_authenticated_envelope(&value, &key, principal_id)
-        .map(Some)
+        .map(|report| Some(Attested::Tip(report)))
         .map_err(|e| e.to_string())
+}
+
+/// What a peer's verified signed statement attests: a tip, or, in Error, its
+/// heads.
+enum Attested {
+    Tip(TipReport),
+    Held(cyphr_client::HeldReport),
 }
 
 fn bare(id: &str) -> &str {
@@ -796,13 +821,26 @@ async fn apply_fetched(
             },
         })
         .collect();
-    let branches: Vec<cyphr::replay::WireBundle> = patch
-        .fork
-        .iter()
-        .flat_map(|f| &f.branches)
-        .flat_map(|b| &b.entries)
-        .filter_map(|e| e.bundle.clone().ok())
-        .collect();
+    // Each branch's entries as positions among the branch bundles offered
+    // below: a head the caps refuse is bound to the bytes of its branch's
+    // last entry and to the answers to those entries.
+    let mut branches: Vec<cyphr::replay::WireBundle> = Vec::new();
+    let mut branch_at: Vec<(String, Vec<usize>)> = Vec::new();
+    for branch in patch.fork.iter().flat_map(|f| &f.branches) {
+        let mut positions = Vec::new();
+        for entry in &branch.entries {
+            match &entry.bundle {
+                Ok(bundle) => {
+                    positions.push(branches.len());
+                    branches.push(bundle.clone());
+                },
+                Err(defect) => {
+                    warn!(principal = %principal_id, ?defect, "branch entry undecodable; skipping");
+                },
+            }
+        }
+        branch_at.push((branch.head.clone(), positions));
+    }
 
     // The peer's verified revokes of the keys these commits name go to the
     // engine first, so its admission refuses what a dead key signed after
@@ -854,9 +892,43 @@ async fn apply_fetched(
             Err(err) => refused(principal_id, err, "fetch: commit not stored"),
         }
     }
-    for answer in &answers.branches {
+    let mut cap_refused: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for (j, answer) in answers.branches.iter().enumerate() {
         if let Err(err) = &answer.result {
             refused(principal_id, err, "fetch: branch commit answered");
+            if matches!(
+                err,
+                cyphr_storage::engine::EngineError::BranchLimit { .. }
+                    | cyphr_storage::engine::EngineError::Errored { .. }
+            ) {
+                cap_refused.insert(j);
+            }
+        }
+    }
+    // A peer in Error attests heads, not a tip: this node must hold every
+    // one, or have the line to it held to the cap, bound to the bytes of
+    // its last entry (SPEC 15.7.1).
+    if let Some(held) = &patch.held {
+        for head in &held.heads {
+            let id = head.commit_id.to_string();
+            let held_now = state
+                .engine
+                .holds_commit(principal_id, &id)
+                .await
+                .map_err(|e| e.to_string())?;
+            if !head_is_bound(
+                state,
+                principal_id,
+                &head.commit_id,
+                held_now,
+                &branch_at,
+                &branches,
+                &cap_refused,
+            )
+            .await
+            {
+                return Err(format!("a head of the peer is not held: {id}"));
+            }
         }
     }
     if let Some(report) = &patch.report {
@@ -893,28 +965,147 @@ pub(crate) async fn fetch_on_read(state: &Arc<AppState>, principal_id: &str) {
 /// does for a held principal and a fetch from genesis does for one that is
 /// not held.
 pub async fn fetch_from_peers(state: &Arc<AppState>, principal_id: &str) {
-    let peers = peers_of(state);
-    if peers.is_empty() {
-        return;
+    if let Err(why) = try_fetch_from_peers(state, principal_id).await {
+        warn!(principal = %principal_id, %why, "fetch from peers: refused");
     }
+}
+
+/// [`fetch_from_peers`], answering why a peer was refused: the patch of a
+/// peer in Error, whose signed held statement attests heads, is applied and
+/// each head must be held, or bound to the capped line the peer served
+/// (`head_is_bound`); otherwise the peer is refused.
+///
+/// # Errors
+///
+/// The reason a peer's answer was refused.
+pub async fn try_fetch_from_peers(state: &Arc<AppState>, principal_id: &str) -> Result<(), String> {
+    let peers = peers_of(state);
+    let mut refusal = None;
     match state.engine.get_tip(principal_id).await {
         Ok(Some(_)) => {
             if let Err(err) = round_principal(state, &peers, principal_id).await {
                 debug!(principal = %principal_id, %err, "fetch on read: round skipped");
             }
+            for peer in &peers {
+                if let Ok(Some(Attested::Held(_))) =
+                    verify_peer_tip(state, peer, principal_id).await
+                    && let Err(why) = fetch_unheld(state, peer, principal_id, true).await
+                {
+                    refusal = Some(why);
+                }
+            }
         },
         Ok(None) => {
             for peer in &peers {
                 match fetch_unheld(state, peer, principal_id, true).await {
-                    Ok(_) => break,
+                    Ok(_) => return Ok(()),
                     Err(why) => {
                         warn!(principal = %principal_id, peer = %peer.name, %why, "fetch on read: refused");
+                        refusal = Some(why);
                     },
                 }
             }
         },
-        Err(err) => {
-            warn!(principal = %principal_id, %err, "fetch on read: local tip lookup failed")
-        },
+        Err(err) => return Err(format!("local tip lookup failed: {err}")),
     }
+    refusal.map_or(Ok(()), Err)
+}
+
+/// Whether the attested head `head` is bound to a branch of the peer's
+/// patch. All of:
+/// 1. `head` is the commit id computed from the bytes of the last entry of one branch the peer
+///    names it the head of;
+/// 2. the entries of that branch this node holds chain: each held entry extends the held entry
+///    before it;
+/// 3. if this node does not hold `head`, it holds the branch to the cap (its first entry off its
+///    own chain, and the entry after it if there is one), and every entry past the cap is one it
+///    does not hold and answered by the cap (`BranchLimit` or `Errored`, in `cap_refused`).
+///
+/// What this does not check is that entries this node does not hold chain
+/// to each other: a commit's `pre` is bound only inside its arrow. Its harm
+/// is bounded: this node's own standing and fork point do not depend on it.
+async fn head_is_bound(
+    state: &Arc<AppState>,
+    principal_id: &str,
+    head: &cyphr::state::TaggedDigest,
+    head_held: bool,
+    branch_at: &[(String, Vec<usize>)],
+    bundles: &[cyphr::replay::WireBundle],
+    cap_refused: &std::collections::HashSet<usize>,
+) -> bool {
+    let Ok(branches) = state.engine.list_branches(principal_id).await else {
+        return false;
+    };
+    let retained: std::collections::HashSet<&str> = branches
+        .iter()
+        .filter(|b| !b.canonical)
+        .map(|b| b.tip.as_str())
+        .collect();
+    let named = head.to_string();
+    for (declared, positions) in branch_at {
+        if *declared != named {
+            continue;
+        }
+        let ids: Vec<Option<String>> = positions
+            .iter()
+            .map(|&at| {
+                bundles
+                    .get(at)?
+                    .decode()
+                    .ok()?
+                    .commit_id(head.alg())
+                    .map(|d| d.to_string())
+            })
+            .collect();
+        if ids.last().and_then(Option::as_ref) != Some(&named) {
+            continue;
+        }
+        let mut held = Vec::with_capacity(ids.len());
+        for id in &ids {
+            held.push(match id {
+                Some(id) => state
+                    .engine
+                    .holds_commit(principal_id, id)
+                    .await
+                    .unwrap_or(false),
+                None => false,
+            });
+        }
+        let mut chained = true;
+        for i in 1..ids.len() {
+            if let (true, true, Some(prev), Some(next)) =
+                (held[i - 1], held[i], &ids[i - 1], &ids[i])
+                && state
+                    .engine
+                    .extends(principal_id, prev, next)
+                    .await
+                    .ok()
+                    .flatten()
+                    != Some(true)
+            {
+                chained = false;
+            }
+        }
+        if !chained {
+            continue;
+        }
+        if head_held {
+            return true;
+        }
+        let on_chain =
+            |i: usize| held[i] && ids[i].as_deref().is_some_and(|id| !retained.contains(id));
+        let Some(first_off) = (0..ids.len()).find(|&i| !on_chain(i)) else {
+            continue;
+        };
+        let cap = state.engine.branch_depth();
+        let line_held = held[first_off] && held.get(first_off + 1).is_none_or(|h| *h);
+        let past: Vec<usize> = (first_off + cap..ids.len()).collect();
+        let past_answered = past
+            .iter()
+            .all(|&i| !held[i] && cap_refused.contains(&positions[i]));
+        if line_held && !past.is_empty() && past_answered {
+            return true;
+        }
+    }
+    false
 }
