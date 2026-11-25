@@ -581,6 +581,9 @@ impl Harness {
                 },
                 pull_age_bound: Duration::from_secs(30),
                 refresh_interval: Duration::from_secs(5),
+                session_ttl: Duration::from_secs(
+                    cyphr_client::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs(),
+                ),
             },
             original: Mutex::new(None),
             enrolled: tokio::sync::Mutex::new(None),
@@ -1097,15 +1100,6 @@ impl Client<'_> {
         self.cyphr(&args).await.map(|_| ())
     }
 
-    /// Hand every principal this client knows to `other`, as a bundle file.
-    pub async fn gossip_with(&self, other: &Client<'_>) -> ActionResult<()> {
-        let known: Vec<String> = self.state().peers.keys().cloned().collect();
-        for handle in known {
-            other.learn_from(self, &Principal(handle)).await?;
-        }
-        Ok(())
-    }
-
     /// Replay the principal from the given peers and conclude: `cyphr fetch`
     /// from each, then `cyphr verify`. An empty `from` means the peers this
     /// client currently knows for it, handed to the CLI as its choices file.
@@ -1479,7 +1473,7 @@ impl Client<'_> {
     }
 }
 
-/// Read a `cyphr verify --output json` answer as a [`Verdict`]. `names` and
+/// Read a `cyphr verify --format json` answer as a [`Verdict`]. `names` and
 /// `urls` pair the scenario's peer names with the URLs the CLI was given.
 fn parse_verdict(
     v: &serde_json::Value,

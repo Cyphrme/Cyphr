@@ -311,7 +311,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             },
         )
         .map_err(|e| EngineError::MalformedBlob(format!("resync record serialize: {e}")))?;
-        self.blob_store.put(&bytes).await?;
+        self.ensure_room(u64::try_from(bytes.len()).unwrap_or(u64::MAX))?;
+        self.put_counted(&bytes).await?;
         self.persist_record().await?;
         self.resyncs
             .note(principal_id.to_string(), resync.id.clone(), pop.clone());

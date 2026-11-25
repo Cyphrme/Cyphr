@@ -1,5 +1,5 @@
 //! A gossip hand-off that carries two refused line roots together with their
-//! extensions (frame 11.1: every carrier re-offers a refused entry with its
+//! extensions (every carrier re-offers a refused entry with its
 //! own extension).
 //!
 //! A holder whose key quota is full refuses each rival root alone, so each

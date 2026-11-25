@@ -2,7 +2,7 @@
 //!
 //! FRAMING (root `AGENTS.md` invariant I1, corrected): the EML commit tree
 //! is not a disposable cache. Its root is signed into every commit's Arrow
-//! (`docs/specs/SPEC.md:114`, `:333-339`, `:587-588`), so the tree is
+//! (SPEC 3.7.6, 4.2), so the tree is
 //! RECORD, not a cache -- destroying it and being unable to recover would
 //! be data loss, not the eviction of a rebuildable index. This test proves
 //! a disaster-recovery property of that record: after a principal's own

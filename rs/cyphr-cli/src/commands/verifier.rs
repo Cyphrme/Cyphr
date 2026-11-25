@@ -1,6 +1,6 @@
 //! The verifier: `verify`, `watch`, `audit` and `gossip export|import`.
 //!
-//! All of them are one round of the G2 pull step ([`cyphr_client::pull`])
+//! All of them are one round of the pull step ([`cyphr_client::pull`])
 //! over a peer set (HTTP peers, or a bundle file served as peers), against
 //! a record rebuilt from the local store. What the pull returns is what is
 //! persisted (new commits, rival branches and naked revokes into the store;
@@ -42,10 +42,7 @@ use super::common::{
 use crate::choices::Choices;
 use crate::keystore::KeyBackend;
 use crate::net::PeerError;
-use crate::state::{
-    HeldFork, HeldRevoke, PeerSeen, PrincipalState, RecoveryChoice, Resolution, VerifierState,
-    path_for,
-};
+use crate::state::{PeerSeen, PrincipalState, RecoveryChoice, VerifierState, path_for};
 use crate::{Cli, Error, OutputFormat};
 
 /// Seconds a view may age before `verify` reports it as stale, absent a
@@ -67,7 +64,7 @@ pub struct Inputs<'a> {
 }
 
 fn emit(cli: &Cli, value: &Value, table: impl FnOnce()) -> crate::Result<()> {
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(value)?),
         OutputFormat::Table => table(),
     }
@@ -305,16 +302,55 @@ fn latest_now(record: &Record) -> Option<i64> {
         .max()
 }
 
-/// A held fork as the store's [`Assessment`] reads it: resolved once the
-/// contest holding its commits settled, and unresolved again should it
-/// stand once more.
-fn resolution_of(fork: &HeldFork, assessed: &Assessment) -> Option<Resolution> {
+/// How a fork ended (SPEC 15.8): a chain continued past one branch.
+struct Resolution {
+    /// The fork commit the chain kept.
+    kept: String,
+    /// The fork commit it abandoned.
+    abandoned: String,
+    /// The key that settled the fork: the signer of the commit extending
+    /// the kept one, or of the commit that removed the rival's signer;
+    /// `None` when no commit did (a naked revoke).
+    by: Option<String>,
+}
+
+/// Two commits over one `pre`, with the other branch kept as evidence: a
+/// fork the store holds, read back from it.
+struct HeldFork {
+    /// The commit position both commits take.
+    height: usize,
+    /// The Principal Root both extend.
+    pre: Option<String>,
+    /// The two commit ids.
+    commits: [String; 2],
+    /// The commit the record does not follow.
+    rival: WireBundle,
+    /// When the store first held the rival, if it recorded it.
+    first_seen: Option<i64>,
+    /// Set once a chain continued past one branch.
+    resolution: Option<Resolution>,
+}
+
+/// A naked revoke the store holds for a key of the principal.
+struct HeldRevoke {
+    /// The revoked key.
+    tmb: String,
+    /// The `rvk` the revoke declared.
+    rvk: i64,
+    /// The signed envelope, so the verifier can serve it on.
+    envelope: Value,
+}
+
+/// How the store's [`Assessment`] reads the contest holding `commits`:
+/// resolved once it settled, and unresolved again should it stand once
+/// more.
+fn resolution_of(commits: &[String; 2], assessed: &Assessment) -> Option<Resolution> {
     let contest = assessed
         .forks
         .iter()
-        .find(|c| fork.commits.iter().all(|id| c.commits.contains(id)))?;
+        .find(|c| commits.iter().all(|id| c.commits.contains(id)))?;
     let kept = contest.kept.clone()?;
-    let side = fork.commits.iter().find(|c| **c != kept)?;
+    let side = commits.iter().find(|c| **c != kept)?;
     // The tip of the abandoned branch: what a holder of it served as its
     // head, not where it parted from the kept one.
     let abandoned = contest
@@ -328,6 +364,72 @@ fn resolution_of(fork: &HeldFork, assessed: &Assessment) -> Option<Resolution> {
         abandoned,
         by: contest.by.clone(),
     })
+}
+
+/// The forks and naked revokes the store holds for the principal, read
+/// back from the engine (the one store): each contest of its assessment
+/// paired with the retained rival's bundle, and each key the principal ever
+/// held that has a revoke record.
+async fn held_of(round: &Round<'_>) -> crate::Result<(Vec<HeldFork>, Vec<HeldRevoke>)> {
+    let assessed = round.store.assess(&round.principal_id).await?;
+    let (_, evidence) = round.store.fork_evidence(&round.principal_id).await?;
+    let mut forks = Vec::new();
+    for contest in assessed.forks.iter().filter(|c| c.commits.len() >= 2) {
+        let Some(alg) = contest
+            .commits
+            .first()
+            .and_then(|c| c.parse::<cyphr::state::TaggedDigest>().ok())
+            .map(|d| d.alg())
+        else {
+            continue;
+        };
+        // Each retained rival at this position names the fork's other side:
+        // the kept commit, or while the fork stands the canonical one.
+        for found in evidence.iter().filter(|e| e.sequence == contest.sequence) {
+            let Some(rival) = found
+                .rival
+                .decode()
+                .ok()
+                .and_then(|d| d.commit_id(alg))
+                .map(|id| id.to_string())
+                .filter(|id| contest.commits.contains(id))
+            else {
+                continue;
+            };
+            let reference = contest
+                .kept
+                .clone()
+                .filter(|k| *k != rival)
+                .or_else(|| contest.commits.iter().find(|c| **c != rival).cloned());
+            let Some(reference) = reference else { continue };
+            let commits = [reference, rival];
+            forks.push(HeldFork {
+                height: usize::try_from(contest.sequence).unwrap_or(usize::MAX),
+                pre: contest.pre.clone(),
+                resolution: resolution_of(&commits, &assessed),
+                commits,
+                rival: found.rival.clone(),
+                first_seen: found.rival_seen,
+            });
+        }
+    }
+    let record = round.record().await?;
+    let mut revoked = Vec::new();
+    for tmb in record
+        .principal()
+        .map(|p| p.ever_held_keys())
+        .unwrap_or_default()
+    {
+        let tmb = tmb.to_b64();
+        if let Some(envelope) = round.store.revoke_of(&tmb).await? {
+            revoked.push(HeldRevoke {
+                rvk: envelope["pay"]["rvk"].as_i64().unwrap_or_default(),
+                tmb,
+                envelope,
+            });
+        }
+    }
+    Ok((forks, revoked))
 }
 
 /// One round of the pull step over `peers`, persisted and described.
@@ -441,45 +543,11 @@ async fn run_round<C: Connector>(
     }
     entry.last_pull_at = Some(now);
     entry.commits_high = entry.commits_high.max(tip.commits);
-    for found in &report.revoked {
-        let tmb = found.tmb.to_b64();
-        if !entry.revoked.iter().any(|r| r.tmb == tmb) {
-            entry.revoked.push(HeldRevoke {
-                tmb,
-                rvk: found.rvk,
-                peer: found.peer.clone(),
-                envelope: found.envelope.clone(),
-            });
-        }
-    }
-    for fork in &report.forks {
-        if !entry.forks.iter().any(|f| f.is(&fork.commits)) {
-            entry.forks.push(HeldFork {
-                height: fork.height,
-                pre: fork.pre.clone(),
-                commits: fork.commits.clone(),
-                rival: fork.rival.clone(),
-                first_seen: now,
-                resolution: None,
-            });
-        }
-    }
-
-    for fork in &mut entry.forks {
-        fork.resolution = resolution_of(fork, &assessed);
-    }
+    let (forks, revoked) = held_of(round).await?;
 
     let added = tip.commits.saturating_sub(held_before);
-    let unresolved: Vec<&HeldFork> = entry
-        .forks
-        .iter()
-        .filter(|f| f.resolution.is_none())
-        .collect();
-    let resolved: Vec<&HeldFork> = entry
-        .forks
-        .iter()
-        .filter(|f| f.resolution.is_some())
-        .collect();
+    let unresolved: Vec<&HeldFork> = forks.iter().filter(|f| f.resolution.is_none()).collect();
+    let resolved: Vec<&HeldFork> = forks.iter().filter(|f| f.resolution.is_some()).collect();
     let mut evidence: Vec<Value> = unresolved
         .iter()
         .map(|f| {
@@ -496,10 +564,9 @@ async fn run_round<C: Connector>(
                     "commits": f.commits, "first_seen": f.first_seen, "resolved": true})
     }));
     evidence.extend(
-        entry
-            .revoked
+        revoked
             .iter()
-            .map(|r| json!({"kind": "naked_revoke", "tmb": r.tmb, "rvk": r.rvk, "peer": r.peer})),
+            .map(|r| json!({"kind": "naked_revoke", "tmb": r.tmb, "rvk": r.rvk})),
     );
     // Live heads only: a resolved pair is reported in `resolved_forks`.
     let branches = &assessed.heads;
@@ -567,7 +634,7 @@ async fn run_round<C: Connector>(
     let review = HumanRecovery(entry.recovery.clone()).review(
         &round.wire,
         assessed.consensus,
-        &fork_views(&entry.forks),
+        &fork_views(&forks),
     );
     if assessed.consensus == Consensus::Error || review.trusted.is_some() {
         out["recovery"] = json!({"note": review.note, "head": review.trusted,
@@ -721,6 +788,23 @@ fn settings(inputs: &Inputs<'_>) -> crate::Result<(Vec<String>, Option<String>, 
     ))
 }
 
+/// A verdict from one peer is that peer's word alone: it cannot show a fork
+/// it does not hold. One peer is allowed, with this warning, stated once per
+/// run however many rounds `watch` makes.
+fn warn_if_single_peer(urls: &[String]) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let distinct: std::collections::BTreeSet<&str> =
+        urls.iter().map(|u| u.trim_end_matches('/')).collect();
+    if distinct.len() == 1 {
+        WARNED.call_once(|| {
+            eprintln!(
+                "warning: only one peer; a verdict from a single peer cannot show a fork that \
+                 peer does not hold. Name more peers with --peer, or `peers` in the choices file"
+            );
+        });
+    }
+}
+
 /// One verify round over HTTP peers: the value `verify`, `watch` and
 /// `audit` print.
 fn verify_once(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<Value> {
@@ -728,6 +812,7 @@ fn verify_once(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<Value> {
     if urls.is_empty() {
         return Err(Error::NoPeers);
     }
+    warn_if_single_peer(&urls);
     let mut options = HttpOptions::new(Duration::from_secs(cli.peer_timeout_secs));
     options.allow_cleartext = cli.allow_cleartext;
     let mut connectors = Vec::new();
@@ -793,11 +878,11 @@ pub fn watch(
     let mut done = 0u64;
     loop {
         match verify_once(cli, inputs) {
-            Ok(out) => match cli.output {
+            Ok(out) => match cli.format {
                 OutputFormat::Json => println!("{}", serde_json::to_string(&out)?),
                 OutputFormat::Table => print_table(&out),
             },
-            Err(e) => match cli.output {
+            Err(e) => match cli.format {
                 OutputFormat::Json => println!(
                     "{}",
                     json!({"error": {"kind": e.kind(), "message": e.to_string()}})
@@ -816,19 +901,14 @@ pub fn watch(
 /// `cyphr audit`: `verify`, with the evidence held printed in full.
 pub fn audit(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<()> {
     let mut out = verify_once(cli, inputs)?;
-    let state = VerifierState::load(&path_for(store_path(cli)?))?;
-    let wire = bare_digest(&get_principal_id(&parse_principal_genesis(
-        inputs.identity,
-    )?)?)
-    .to_owned();
-    if let Some(held) = state.principals.get(&wire) {
-        out["held"] = json!({
-            "forks": held.forks.iter().map(|f| json!({"height": f.height, "pre": f.pre,
-                "commits": f.commits, "first_seen": f.first_seen,
-                "resolution": f.resolution})).collect::<Vec<_>>(),
-            "revoked": held.revoked.iter().map(|r| json!({"tmb": r.tmb, "rvk": r.rvk, "peer": r.peer})).collect::<Vec<_>>(),
-        });
-    }
+    let round = Round::open(cli, inputs.identity, None, DEFAULT_FRESHNESS_SECS, None)?;
+    let (forks, revoked) = block_on(held_of(&round))??;
+    out["held"] = json!({
+        "forks": forks.iter().map(|f| json!({"height": f.height, "pre": f.pre,
+            "commits": f.commits, "first_seen": f.first_seen,
+            "resolution": f.resolution.as_ref().map(|r| json!({"kept": r.kept, "abandoned": r.abandoned, "by": r.by}))})).collect::<Vec<_>>(),
+        "revoked": revoked.iter().map(|r| json!({"tmb": r.tmb, "rvk": r.rvk})).collect::<Vec<_>>(),
+    });
     emit(cli, &out, || {
         print_table(&out);
         println!("  held: {}", out["held"]);
@@ -848,11 +928,13 @@ pub fn recover(
     let path = path_for(store_path(cli)?);
     let mut state = VerifierState::load(&path)?;
     let wire = bare_digest(&get_principal_id(&parse_principal_genesis(identity)?)?).to_owned();
+    let round = Round::open(cli, identity, None, DEFAULT_FRESHNESS_SECS, None)?;
+    let (forks, _) = block_on(held_of(&round))??;
     let entry = state.principals.entry(wire).or_default();
     entry.recovery = match head {
         None => None,
         Some(head) => {
-            if !fork_views(&entry.forks)
+            if !fork_views(&forks)
                 .iter()
                 .any(|f| f.alternatives().contains(&head))
             {
@@ -881,15 +963,14 @@ pub fn recover(
 /// and the naked revokes held, as one file.
 pub fn export(cli: &Cli, identity: &str, file: &std::path::Path) -> crate::Result<()> {
     let round = Round::open(cli, identity, None, DEFAULT_FRESHNESS_SECS, None)?;
-    let state = VerifierState::load(&path_for(store_path(cli)?))?;
-    let held = state.principals.get(&round.wire);
+    let (held_forks, held_revoked) = block_on(held_of(&round))??;
     let record = block_on(round.record())??;
     if record.tip().is_none() {
         return Err(Error::EmptyHistory(identity.to_owned()));
     }
-    let forks: Vec<cyphr_client::ForkFinding> = held
-        .into_iter()
-        .flat_map(|h| h.forks.iter().filter(|f| f.resolution.is_none()))
+    let forks: Vec<cyphr_client::ForkFinding> = held_forks
+        .iter()
+        .filter(|f| f.resolution.is_none())
         .map(|f| cyphr_client::ForkFinding {
             height: f.height,
             pre: f.pre.clone(),
@@ -897,10 +978,7 @@ pub fn export(cli: &Cli, identity: &str, file: &std::path::Path) -> crate::Resul
             rival: f.rival.clone(),
         })
         .collect();
-    let revoked = held
-        .into_iter()
-        .flat_map(|h| h.revoked.iter().map(|r| r.envelope.clone()))
-        .collect();
+    let revoked = held_revoked.iter().map(|r| r.envelope.clone()).collect();
     let bundle = ExchangeBundle::export(&record, &forks, revoked);
     std::fs::write(file, serde_json::to_vec_pretty(&bundle)?)?;
     let out = json!({"identity": identity, "file": file.display().to_string(),

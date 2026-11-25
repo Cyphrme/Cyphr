@@ -774,10 +774,10 @@ pub async fn revoked(
         let bytes = Base64UrlUnpadded::decode_vec(raw)
             .map_err(|_| AppError::bad_request(format!("`{raw}` is not a base64url thumbprint")))?;
         if let Some(envelope) = state
-            .observations
-            .revoke_of(&coz::Thumbprint::from_bytes(bytes))
+            .engine
+            .revoke_of(&coz::Thumbprint::from_bytes(bytes).to_b64())
             .await
-            .map_err(AppError::observation)?
+            .map_err(AppError::engine)?
         {
             revoked.push(envelope);
         }
@@ -1015,7 +1015,7 @@ pub async fn patch(
     // existing `GET /e/{digest}` handler (`entity`, below) parses a digest
     // path parameter -- a malformed anchor is refused with the app's JSON
     // error envelope, not axum's generic query-rejection, matching that
-    // precedent exactly (parse-don't-validate, eng-frame §2).
+    // precedent exactly (parse, don't validate).
     let anchor: Option<cyphr::state::TaggedDigest> = match &query.from {
         Some(raw) => Some(
             raw.parse()
@@ -1179,7 +1179,6 @@ pub async fn push(
         crate::auth::middleware::bearer_token(&headers).or(request.token.as_deref()),
         state.identity.as_deref(),
         &state.engine,
-        &state.observations,
         &request.principal_id,
         crate::auth::server_now(),
         peer.as_ref().map(|p| p.0.handshake_hash.as_slice()),
@@ -1442,6 +1441,7 @@ mod commit_count_underflow_tests {
         let file = serde_json::json!({
             "alg": kp.alg.name(),
             "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+            "v": 1,
             "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
         });
         std::fs::write(&key_path, serde_json::to_vec(&file).unwrap()).unwrap();
@@ -1838,9 +1838,8 @@ mod commit_count_underflow_tests {
             .expect("a real tip exists after the genesis push");
 
         // A hand-corrupted copy of a REAL, otherwise-consistent tip: every
-        // root still matches what `rederive_roots` independently
-        // recomputes (so the desync guard at the top of
-        // `sign_tip_attestation` does not short-circuit before the
+        // root still matches what `attested_roots` re-derives from the
+        // chain (so its index-disagreement check does not fail before the
         // subtraction runs), with only `commit_count` forced to the
         // claimed-unreachable value.
         let mut corrupted = real_tip.clone();
@@ -1905,6 +1904,7 @@ mod push_response_tests {
             serde_json::to_vec(&serde_json::json!({
                 "alg": kp.alg.name(),
                 "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+                "v": 1,
                 "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
             }))
             .unwrap(),
@@ -1994,8 +1994,8 @@ mod push_response_tests {
 /// `GET /healthz` -- can this peer serve? Unauthenticated; the body names
 /// no principal, path, or error text (causes go to the log, not the wire).
 pub async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    // A failed sync of the record, the spent set or the death set leaves
-    // that store refusing every write until restart, and the sentinel
+    // A failed sync of the record or the spent set leaves that store
+    // refusing every write until restart, and the sentinel
     // probe may still succeed (it is not their sync).
     if !state.engine.durability_lost()
         && state.health.stores_writable()

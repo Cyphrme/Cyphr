@@ -350,6 +350,17 @@ pub async fn login(
         .map_err(map_load_error)?
         .ok_or_else(|| AppError::unauthorized("login: unknown principal"))?;
     let parsed = authorize_login(parsed, &principal)?;
+    // A fork leaves the lifecycle base state Active (SPEC 11.1: Errored is
+    // orthogonal), so `authorize_login` cannot see it; the engine's verdict
+    // can (SPEC 17.2: reject Errored).
+    if state
+        .engine
+        .is_errored(&parsed.pg)
+        .await
+        .map_err(map_load_error)?
+    {
+        return Err(LoginError::PrincipalNotActive.into());
+    }
     let canonical_id = state
         .engine
         .canonical_principal_id(&parsed.pg)
@@ -387,10 +398,10 @@ pub async fn login(
     // on-chain -- the death-set, not the chain, carries that fact. Death is
     // global by thumbprint, so the check names only the key, never a principal.
     if state
-        .observations
-        .is_dead(&parsed.tmb)
+        .engine
+        .is_revoked(&parsed.tmb.to_b64())
         .await
-        .map_err(AppError::observation)?
+        .map_err(AppError::engine)?
     {
         return Err(LoginError::KeyNakedRevoked.into());
     }

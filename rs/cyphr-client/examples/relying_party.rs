@@ -100,6 +100,9 @@ async fn run(server: &str, audience: &str) -> Result<(), String> {
         )),
         pull_age_bound: Duration::from_secs(30),
         refresh_interval: Duration::from_secs(10),
+        session_ttl: Duration::from_secs(
+            cyphr_client::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs(),
+        ),
     };
     let mut rp = RelyingParty::new(&pg, Anchor::GenesisKey(genesis), config, system_clock);
     rp.refresh(&[PullPeer {
@@ -153,7 +156,10 @@ async fn publish(
         }
     }
     let body = json!({ "principal_id": pg, "txs": txs, "keys": keys });
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?
         .post(format!("{}/push", server.trim_end_matches('/')))
         .header("content-type", "application/json")
         .body(body.to_string())

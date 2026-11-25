@@ -675,8 +675,8 @@ async fn the_ceiling_never_refuses_a_held_keys_revoke() {
     );
     assert!(
         state
-            .observations
-            .is_dead(&tmb("key_a"))
+            .engine
+            .is_revoked(&tmb("key_a").to_b64())
             .await
             .expect("death set"),
         "the held key is dead"
@@ -694,8 +694,8 @@ async fn the_ceiling_never_refuses_a_held_keys_revoke() {
     );
     assert!(
         !state
-            .observations
-            .is_dead(&tmb("bob"))
+            .engine
+            .is_revoked(&tmb("bob").to_b64())
             .await
             .expect("death set"),
         "the refused revoke recorded nothing"
@@ -1171,6 +1171,7 @@ async fn poison_index_directly(
     let attacker = pool.get(attacker_key_name).expect("attacker key in pool");
     let poison = IndexableCommit {
         pg: Vec::new(),
+        manifest: None,
         principal_id: "SHA-256:nr-poisoned-index".to_string(),
         commit_ids: vec!["SHA-256:POISON_COMMIT".to_string()],
         sequence: 0,
@@ -1442,7 +1443,7 @@ async fn the_first_accepted_revoke_stands() {
 }
 
 // ========================================================================
-// archrev:A2 -- one validity rule, one write order
+// archrev:A2 -- one validity rule, one store
 // ========================================================================
 
 /// A self-revoke of `key_a` whose payload carries `extra` fields and no
@@ -1568,39 +1569,6 @@ async fn archrev_a2_oversize_revoke_is_recorded_nowhere() {
     );
 }
 
-/// archrev:A2. The engine's record is the truth and is written first; the
-/// death set follows. A failure between the two writes (the process dies
-/// after the engine, before the set) leaves the engine dead and the set
-/// not, and re-posting the same revoke must close the gap, since both
-/// writes are idempotent. The crash is simulated by recording the revoke in
-/// the engine alone, which is the state that window leaves.
-#[tokio::test]
-async fn archrev_a2_repost_closes_a_gap_between_the_two_stores() {
-    let (state, _dir) = fresh_keyed_state();
-    let pool = common::load_pool();
-    let pid = bootstrap_golden_key_a(&state, &pool).await;
-
-    let coz = revoke_without_now(&pool, serde_json::json!({}));
-    state
-        .engine
-        .record_revoke(&coz, now_secs())
-        .await
-        .expect("engine accepts");
-    assert_eq!(
-        login_status(&state, &pool, "key_a", &pid).await,
-        StatusCode::OK,
-        "the gap: the death set does not yet know"
-    );
-
-    let (status, json) = post_revoke(&state, coz).await;
-    assert!(status.is_success(), "{status} {json:?}");
-    assert_eq!(
-        login_status(&state, &pool, "key_a", &pid).await,
-        StatusCode::UNAUTHORIZED,
-        "re-posting closes the gap"
-    );
-}
-
 /// A keyed state over a fresh store whose death set holds at most one key.
 fn state_with_ceiling_one() -> (Arc<AppState>, TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1651,46 +1619,23 @@ async fn archrev_a2_the_ceiling_bounds_every_caller() {
         "an unheld key past the ceiling: {refused:?}"
     );
     assert!(
-        !state.engine.is_revoked(&bob.to_b64()),
+        !state
+            .engine
+            .is_revoked(&bob.to_b64())
+            .await
+            .expect("verdict"),
         "a refused revoke reached the engine"
     );
-    assert!(!state.observations.is_dead(&bob).await.expect("set"));
 
     let (held, held_rv) = revoke_of(&pool, "key_a");
     cyphr_server::revoke::record_everywhere(&state, &held, &held_rv)
         .await
         .expect("a held key is recorded past the ceiling");
-    assert!(state.engine.is_revoked(&held.to_b64()));
-}
-
-/// archrev:A2. Re-posting a revoke the engine already holds closes the gap
-/// between the two stores even when the set is full and the key unheld: the
-/// engine has the death, so the set records it without growing past what
-/// the engine holds. Turns red if the full set answers 507 and the key
-/// stays alive for login while dead for admission.
-#[tokio::test]
-async fn archrev_a2_repost_closes_the_gap_with_a_full_set() {
-    let (state, _dir) = state_with_ceiling_one();
-    let pool = common::load_pool();
-    let (status, json) = post_revoke(
-        &state,
-        self_revoke_coz(&pool, "alice", serde_json::json!(RVK)),
-    )
-    .await;
-    assert!(status.is_success(), "{status} {json:?}");
-
-    let (bob, bob_rv) = revoke_of(&pool, "bob");
-    state
-        .engine
-        .record_revoke(&bob_rv, now_secs())
-        .await
-        .expect("the engine alone holds bob's death");
-    assert!(!state.observations.is_dead(&bob).await.expect("set"));
-
-    let (status, json) = post_revoke(&state, bob_rv).await;
     assert!(
-        status.is_success(),
-        "re-post with a full set: {status} {json:?}"
+        state
+            .engine
+            .is_revoked(&held.to_b64())
+            .await
+            .expect("verdict")
     );
-    assert!(state.observations.is_dead(&bob).await.expect("set"));
 }

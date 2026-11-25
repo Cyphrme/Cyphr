@@ -9,7 +9,7 @@
 //!
 //! The bundle holds principal-signed objects only (commits, the other
 //! branch, naked revokes), never a statement of the exporter's: the
-//! exporter is a mirror, as any peer is (GOSSIP-MIN section 2).
+//! exporter is a mirror, as any peer is.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;

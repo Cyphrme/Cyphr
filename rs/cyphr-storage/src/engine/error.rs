@@ -79,6 +79,19 @@ pub enum EngineError {
         key: String,
     },
 
+    /// The operator's storage ceiling is reached: the write would take the
+    /// stored bytes past it, so it is refused and nothing of it stored.
+    /// Storage pressure is relieved by refusal, never by pruning history.
+    #[error("storage is full: {stored} of {ceiling} bytes stored, and this write adds {incoming}")]
+    StorageFull {
+        /// The configured ceiling, in bytes.
+        ceiling: u64,
+        /// What the engine holds.
+        stored: u64,
+        /// What the refused write would add (an upper bound).
+        incoming: u64,
+    },
+
     /// A commit was admitted through the embedded principal `member` at its
     /// PR `b`, and the commits `b` descends from are not all held: blobs were
     /// lost. The commit is not replayable; it is never read as opaque.

@@ -73,7 +73,7 @@ pub fn request(
         None => println!("{}", serde_json::to_string_pretty(&envelope)?),
     }
     if file.is_some() {
-        match cli.output {
+        match cli.format {
             OutputFormat::Json => println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -204,7 +204,7 @@ pub fn accept(
     )?;
     save_principal_to_engine(&store, &keystore, &principal)?;
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({

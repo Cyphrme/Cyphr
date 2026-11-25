@@ -2,8 +2,7 @@
 //!
 //! Both tests are end-to-end scenarios over the production router
 //! (`build_app_router`): real fjall storage in a tempdir, a real push, a real
-//! HTTP request. They are RED until `/healthz` exists; run the reds with
-//! `cargo test -p cyphr-server --test healthz -- --ignored`.
+//! HTTP request.
 //!
 //! ## Why the fault is "the record directory vanishes"
 //!

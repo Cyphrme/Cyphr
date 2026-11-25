@@ -142,7 +142,7 @@ override them. Pass `--config` explicitly in anything you automate.
 | `log_format`       | `--log-format`                                                      | `CYPHR_LOG_FORMAT`                                                               | `pretty` for a terminal, `json` for a log pipeline.                                                                                                    |
 | `[gossip]`         | `--gossip-peer`, `--gossip-interval-secs`, `--gossip-fetch-on-read` | `CYPHR_GOSSIP_PEERS`, `CYPHR_GOSSIP_INTERVAL_SECS`, `CYPHR_GOSSIP_FETCH_ON_READ` | The peers to pull from and how. A peer can name its server principal's PG, which is **TOML only**.                                                     |
 | `[admission]`      | —                                                                   | —                                                                                | The gate on new principals. **TOML only.**                                                                                                             |
-| `[limits]`         | —                                                                   | —                                                                                | Rate, body size, and commit-count fences. **TOML only.**                                                                                               |
+| `[limits]`         | —                                                                   | —                                                                                | Rate, body size, commit-count, stored-byte and connection-timeout fences. **TOML only.**                                                               |
 
 The last three have no flag and no environment variable. If you are
 deploying from a unit file or a container spec that only sets environment,
@@ -164,6 +164,10 @@ tokens_path = "/var/lib/cyphr/invites.txt"
 [limits]
 max_body_bytes = 2097152
 count_quota = 1000000
+# max_stored_bytes = 107374182400  # unset by default: no ceiling
+header_read_timeout_secs = 10
+request_timeout_secs = 60
+idle_timeout_secs = 120
 per_ip = { per_second = 100, burst = 200 }
 read = { per_second = 100, burst = 200 }
 push = { per_second = 50, burst = 100 }
@@ -897,6 +901,33 @@ principal holds:
 The record is bounded. The death set has a ceiling, `[limits] max_dead_keys`
 (1,000,000 by default); once it is full the server still records a revoke
 of a key a stored principal holds and answers `507` to the rest.
+
+## Connection timeouts
+
+Three `[limits]` settings bound how long a client may hold a connection
+without finishing its work, so a stalled client cannot pin a connection for
+ever.
+
+| Setting                    | Default | What it bounds                                                                                                         |
+| :------------------------- | :------ | :--------------------------------------------------------------------------------------------------------------------- |
+| `header_read_timeout_secs` | 10      | How long a client may take to send a request's headers; past it the connection is dropped.                             |
+| `request_timeout_secs`     | 60      | How long a whole request may take, body included; past it the answer is `408`.                                         |
+| `idle_timeout_secs`        | 120     | How long a connection may carry no byte in either direction, a keep-alive between requests included, before it closes. |
+
+Zero is refused at start. They apply to the HTTP listener; the Noise
+transport has its own idle timeout.
+
+## The storage ceiling
+
+`[limits] max_stored_bytes` bounds what the blob store may hold. It is
+unset by default, which means no ceiling; no value is recommended, so size
+it to the disk under `data_dir`. The engine counts the bytes it finds when
+it scans the store at start and adds each new blob it writes. A write that
+would take the count past the ceiling is refused with `507`, nothing of it
+is stored, and reads and the revoke of a held key still work. The count
+is approximate under concurrent writes, which can overshoot it by what
+they add together. History is never pruned to make room: storage pressure
+is relieved by refusing writes.
 
 ## What the server tells you
 

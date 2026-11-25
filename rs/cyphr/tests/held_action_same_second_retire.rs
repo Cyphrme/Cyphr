@@ -24,7 +24,7 @@ fn sign(k: &coz::KeyPair, mut pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz:
     (v, sig, czd)
 }
 
-/// Red before the fix (NETSIM-2): the signer is judged (`UnknownKey`) before the
+/// Red before the fix: the signer is judged (`UnknownKey`) before the
 /// held-czd check, so the re-presented action is refused instead of ignored.
 #[tokio::test]
 async fn held_action_resubmitted_after_same_second_replace_is_ignored() {

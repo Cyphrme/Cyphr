@@ -1,5 +1,4 @@
-//! The pull step: one verifier procedure over the peers it chose
-//! (GOSSIP-MIN section 2).
+//! The pull step: one verifier procedure over the peers it chose.
 //!
 //! A peer here is a mirror of principal-signed objects, never a source of
 //! truth. [`pull`] reads three things from each chosen peer over its

@@ -7,8 +7,8 @@
 // converges; no evidence (prefix).
 //
 // Required capabilities: transport,cli-network,evidence,peer-gossip,pinning.
-// Red until they exist: the scenario starts its fresh-keyed peers, then the
-// harness reports the first absent capability.
+// The scenario starts its fresh-keyed peers, then the harness reports the
+// first absent capability.
 
 use std::time::{Duration, Instant};
 

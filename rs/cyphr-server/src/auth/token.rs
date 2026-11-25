@@ -47,13 +47,6 @@ use serde_json::Value;
 
 use super::ServerIdentity;
 
-/// Default token lifetime: 15 minutes.
-///
-/// SPEC.md 17.4 names no specific duration. Short enough that R8's
-/// no-revocation stance is a reasonable trade, long enough to avoid
-/// re-authenticating on every request.
-pub const DEFAULT_TTL_SECS: i64 = 15 * 60;
-
 /// The `typ` every bearer token this server issues is stamped with, and
 /// the only `typ` [`ServerIdentity::verify_token`] accepts.
 ///
@@ -340,6 +333,7 @@ mod tests {
         let file = serde_json::json!({
             "alg": coz::Alg::Ed25519.name(),
             "pub_key": Base64UrlUnpadded::encode_string(&pub_key),
+            "v": 1,
             "prv_key": Base64UrlUnpadded::encode_string(&prv_key),
         });
         std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
@@ -355,6 +349,7 @@ mod tests {
         let file = serde_json::json!({
             "alg": kp.alg.name(),
             "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+            "v": 1,
             "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
         });
         std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();

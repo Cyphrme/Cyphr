@@ -1,5 +1,5 @@
 //! Rule X: a cap never refuses what would change the standing or the fork
-//! point (frame section 11). When the caps would refuse an offer, the
+//! point. When the caps would refuse an offer, the
 //! engine retains it anyway if `assessment(held + offer)` differs in
 //! consensus or fork point; an offer is one commit, or a line root with
 //! its one extension (`submit_pair`).

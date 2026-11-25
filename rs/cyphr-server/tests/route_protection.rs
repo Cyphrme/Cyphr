@@ -235,6 +235,7 @@ fn state_with_identity() -> Arc<AppState> {
     let key_file = serde_json::json!({
         "alg": kp.alg.name(),
         "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+        "v": 1,
         "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
     });
     std::fs::write(&key_path, serde_json::to_vec(&key_file).unwrap()).unwrap();
@@ -513,6 +514,7 @@ fn state_with_login() -> Arc<AppState> {
     let key_file = serde_json::json!({
         "alg": kp.alg.name(),
         "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+        "v": 1,
         "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
     });
     std::fs::write(&key_path, serde_json::to_vec(&key_file).unwrap()).unwrap();

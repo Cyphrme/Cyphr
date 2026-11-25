@@ -724,7 +724,7 @@ fn a_sync_queued_behind_a_failed_one_is_refused() {
     });
 }
 
-/// The hacker seat's attack, as one scenario: a rival is pushed, the
+/// The attack, as one scenario: a rival is pushed, the
 /// server would sign a held statement over it, power is cut. The held
 /// statement survives (the property checks this over random sequences;
 /// this pins the case that was demonstrated). Turns red if a rival is

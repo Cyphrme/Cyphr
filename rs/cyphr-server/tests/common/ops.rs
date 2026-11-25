@@ -50,7 +50,11 @@ pub async fn alice_chain() -> (String, String) {
 
 /// Run `cyphr-server <args>` on `data` and return its output.
 pub fn server(data: &Path, args: &[&str], tail: &[&str]) -> Output {
+    // An empty file: the flags and defaults decide, whatever the working
+    // directory holds (a named config file must exist).
     let none: PathBuf = data.join("no-server.toml");
+    std::fs::create_dir_all(data).expect("data dir");
+    std::fs::write(&none, "").expect("empty config");
     std::process::Command::new(env!("CARGO_BIN_EXE_cyphr-server"))
         .arg("--config")
         .arg(none)

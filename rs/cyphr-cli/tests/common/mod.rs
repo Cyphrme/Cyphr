@@ -70,7 +70,8 @@ impl Server {
 
     fn start_with(peers: &[&str], audience: Option<&str>) -> Self {
         let dir = TempDir::new().expect("server tempdir");
-        let config = dir.path().join("absent.toml");
+        let config = dir.path().join("server.toml");
+        std::fs::write(&config, "").expect("empty config");
         if !peers.is_empty() {
             let list = peers
                 .iter()
@@ -98,6 +99,7 @@ impl Server {
                 serde_json::json!({
                     "alg": kp.alg.name(),
                     "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+                    "v": 1,
                     "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
                 })
                 .to_string(),
@@ -180,7 +182,7 @@ impl User {
             .arg(self.keystore())
             .arg("--store")
             .arg(self.store_uri())
-            .args(["--output", "json"])
+            .args(["--format", "json"])
             .args(args)
             .output()
             .expect("running cyphr");

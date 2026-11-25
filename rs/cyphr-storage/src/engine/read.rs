@@ -89,7 +89,7 @@ pub(super) struct HeldCommit<'m> {
 }
 
 pub(super) enum HeldOrigin<'m> {
-    Canonical(crate::index::CommitRef),
+    Canonical(Box<crate::index::CommitRef>),
     Retained(Box<Retained>),
     Manifest(&'m CommitManifest),
 }
@@ -222,43 +222,6 @@ pub(super) struct Frame {
     pub(super) signed: Signed,
     pub(super) seen: Option<i64>,
     pub(super) embedded: Vec<EmbeddedPin>,
-}
-
-/// How each stored chain commit's blobs group into its bundle, and the keys
-/// it introduced, by principal id and commit id: a cache of the commit
-/// manifests in the blob store (I1), filled by the rebuild scan and by
-/// ingest. The index's commit records name blobs only.
-#[derive(Debug, Default)]
-pub(super) struct Frames(std::sync::Mutex<HashMap<(String, String), Frame>>);
-
-impl Frames {
-    pub(super) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(super) fn get(&self, principal_id: &str, commit_id: &str) -> Option<Frame> {
-        self.0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&(principal_id.to_string(), commit_id.to_string()))
-            .cloned()
-    }
-
-    pub(super) fn record(&self, principal_id: &str, commit_id: &str, frame: Frame) {
-        self.0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert((principal_id.to_string(), commit_id.to_string()), frame);
-    }
-
-    /// Whether the commit is held with exactly this grouping.
-    pub(super) fn has_shape(&self, principal_id: &str, commit_id: &str, shape: &Shape) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&(principal_id.to_string(), commit_id.to_string()))
-            .is_some_and(|f| f.shape == *shape)
-    }
 }
 
 /// Accepted action-only bundles per principal id: a cache of the action
@@ -553,6 +516,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         commit: &CommitRef,
     ) -> Result<WireBundle, EngineError> {
+        Ok(self.commit_bundle_framed(principal_id, commit).await?.0)
+    }
+
+    /// [`Self::commit_bundle`] with the frame it read, for a caller that
+    /// needs both and should not read the manifest twice.
+    pub(super) async fn commit_bundle_framed(
+        &self,
+        principal_id: &str,
+        commit: &CommitRef,
+    ) -> Result<(WireBundle, Frame), EngineError> {
         let mut blobs = Vec::with_capacity(commit.blob_hashes.len());
         for hash in &commit.blob_hashes {
             blobs.push(self.blob_store.get(hash).await?.ok_or_else(|| {
@@ -565,7 +538,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // An index entry no manifest backs is a corrupt index: the index is
         // a cache of the blob store (I1), and nothing recorded how its blobs
         // group. It is refused, never served.
-        let Some(Frame { shape, keys, .. }) = self.frame(principal_id, commit) else {
+        let Some(frame) = self.frame(commit).await? else {
             tracing::warn!(
                 principal = %principal_id,
                 commit = %commit.commit_id,
@@ -578,42 +551,45 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 )),
             ));
         };
-        shape.group(blobs, keys).ok_or_else(|| {
-            EngineError::MalformedBlob(format!(
-                "commit {}: its manifest groups a different number of blobs",
-                commit.commit_id
-            ))
-        })
+        let bundle = frame
+            .shape
+            .group(blobs, frame.keys.clone())
+            .ok_or_else(|| {
+                EngineError::MalformedBlob(format!(
+                    "commit {}: its manifest groups a different number of blobs",
+                    commit.commit_id
+                ))
+            })?;
+        Ok((bundle, frame))
     }
 
-    /// How the stored chain commit `commit` groups its blobs, if a manifest
-    /// recorded it.
-    pub(super) fn frame(&self, principal_id: &str, commit: &CommitRef) -> Option<Frame> {
-        self.frames.get(principal_id, &commit.commit_id)
-    }
-
-    /// Record a chain commit's [`Frame`], in the `frames` cache.
-    pub(super) fn record_frame(
-        &self,
-        commit: &IndexableCommit,
-        shape: &Shape,
-        seen: Option<i64>,
-        embedded: &[EmbeddedPin],
-    ) {
-        let Some(id) = commit.commit_ids.first() else {
-            return;
+    /// What the stored chain commit `commit`'s manifest records: how its
+    /// blobs group, who signed it, when it was first seen. Read from the
+    /// manifest in the blob store (I1) each time it is needed; nothing is
+    /// kept in memory per commit. `None` when the index entry names no
+    /// manifest or the blob store does not hold it: an inconsistent index.
+    pub(super) async fn frame(&self, commit: &CommitRef) -> Result<Option<Frame>, EngineError> {
+        let Some(hash) = commit.manifest else {
+            return Ok(None);
         };
-        self.frames.record(
-            &commit.principal_id,
-            id,
-            Frame {
-                shape: shape.clone(),
-                keys: key_entries(&commit.keys),
-                signed: signed_of(commit),
-                seen,
-                embedded: embedded.to_vec(),
-            },
-        );
+        let Some(data) = self.blob_store.get(&hash).await? else {
+            return Ok(None);
+        };
+        let Some(json) = data
+            .strip_prefix(COMMIT_MANIFEST_PREFIX)
+            .or_else(|| data.strip_prefix(BRANCH_MANIFEST_PREFIX))
+        else {
+            return Ok(None);
+        };
+        let manifest: CommitManifest = serde_json::from_slice(json)
+            .map_err(|e| EngineError::MalformedBlob(format!("manifest {hash}: {e}")))?;
+        Ok(Some(Frame {
+            shape: manifest.shape,
+            keys: key_entries(&manifest.commit.keys),
+            signed: signed_of(&manifest.commit),
+            seen: manifest.seen,
+            embedded: manifest.embedded,
+        }))
     }
 
     /// Resolve a tagged digest to its raw blob content.
@@ -941,18 +917,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let chain = self.chain(principal_id, None, last).await?;
         let mut stored = StoredChain::default();
         for commit_ref in &chain {
-            let bundle = self.commit_bundle(principal_id, commit_ref).await?;
+            let (bundle, frame) = self.commit_bundle_framed(principal_id, commit_ref).await?;
             stored.entries.push(replay_entry(
                 &bundle,
                 &commit_ref.commit_id,
                 &commit_ref.pr,
             )?);
             stored.prs.push(commit_ref.pr.clone());
-            stored.pins.push(
-                self.frame(principal_id, commit_ref)
-                    .map(|f| f.embedded)
-                    .unwrap_or_default(),
-            );
+            stored.pins.push(frame.embedded);
         }
 
         Ok(stored)
@@ -1267,7 +1239,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         sequence: c.sequence,
                         pr: c.pr.clone(),
                         pre: c.pre.clone(),
-                        origin: HeldOrigin::Canonical(c),
+                        origin: HeldOrigin::Canonical(Box::new(c)),
                     })
                     .collect();
                 let retained = self.branches.retained(&id);
@@ -1293,9 +1265,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         for h in line.into_iter().rev() {
             let (entry, pins) = match &h.origin {
                 HeldOrigin::Canonical(c) => {
-                    let bundle = self.commit_bundle(&id, c).await?;
-                    let pins = self.frame(&id, c).map(|f| f.embedded).unwrap_or_default();
-                    (replay_entry(&bundle, &c.commit_id, &c.pr)?, pins)
+                    let (bundle, frame) = self.commit_bundle_framed(&id, c).await?;
+                    (replay_entry(&bundle, &c.commit_id, &c.pr)?, frame.embedded)
                 },
                 HeldOrigin::Retained(r) => {
                     let blobs = self.read_blobs(&r.blobs).await?;

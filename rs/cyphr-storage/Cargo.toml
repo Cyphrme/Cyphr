@@ -19,8 +19,9 @@ version                = "0.1.0"
 # dev-dependency with this feature enabled and hold its own backend to the
 # same conformance functions MemoryIndexer's/MemoryBlobStore's tests use.
 conformance-tests = []
-# Exposes engine switches a test of a consumer sets on an engine it did not
-# build (`StorageEngine::set_kept_shadow`), so a release never carries them.
+# Exposes what only a test reads or sets (`StorageEngine::set_kept_shadow`,
+# the kept-state and replay counters, the `CYPHR_KEPT_SHADOW` environment
+# variable), so a release never carries them.
 test-utils = []
 
 [dependencies]
@@ -37,6 +38,7 @@ tracing    = { workspace = true }
 cyphr             = { path = "../cyphr", version = "0.1.0", features = ["test-utils"] }
 cyphr-blob-fjall  = { path = "../cyphr-blob-fjall", version = "0.1.0" }
 cyphr-index-fjall = { path = "../cyphr-index-fjall", version = "0.1.0" }
+cyphr-storage     = { path = ".", features = ["test-utils"] }
 fjall             = { workspace = true }
 proptest          = { workspace = true }
 serde             = { workspace = true }

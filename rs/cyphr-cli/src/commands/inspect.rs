@@ -11,7 +11,7 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let active_keys: Vec<_> = principal
                 .active_keys()

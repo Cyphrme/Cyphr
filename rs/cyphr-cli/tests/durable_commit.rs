@@ -38,7 +38,7 @@ fn traced(user: &User, args: &[&str]) -> Vec<Call> {
         .arg(user.keystore())
         .arg("--store")
         .arg(user.store_uri())
-        .args(["--output", "json"])
+        .args(["--format", "json"])
         .args(args)
         .stdout(std::process::Stdio::piped())
         .status()

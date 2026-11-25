@@ -116,6 +116,7 @@ fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit 
 
     IndexableCommit {
         pg: Vec::new(),
+        manifest: None,
         principal_id: principal_id.to_string(),
         commit_ids: vec![format!("SHA-256:commit-{principal_id}-{seq}")],
         sequence: seq,

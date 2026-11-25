@@ -81,6 +81,7 @@ fn identity_with_seed(seed: u8) -> (tempfile::TempDir, ServerIdentity) {
     let file = serde_json::json!({
         "alg": coz::Alg::Ed25519.name(),
         "pub_key": Base64UrlUnpadded::encode_string(&pub_key),
+        "v": 1,
         "prv_key": Base64UrlUnpadded::encode_string(&prv_key),
     });
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
@@ -264,6 +265,34 @@ fn null_sr_and_ar_are_absent_roots_but_a_missing_field_is_malformed() {
             TipReport::parse(&missing).is_err(),
             "a report missing roots.{field} must be malformed"
         );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// Backs the typed parse keeping the signer's own `now`: the instant a
+    /// server signed a tip report is a claim of the statement, and the
+    /// typed value a verifier compares must carry it, as signed, for any
+    /// instant. A `now` that is not an integer is malformed, never
+    /// coerced to an absent one. Turns red if the parse drops `now`, reads
+    /// it as another value, or treats a non-integer as absent.
+    #[test]
+    fn the_signed_now_survives_the_typed_parse(now in any::<i64>()) {
+        let (_dir, identity) = identity_with_seed(0x47);
+        let root = digest_string(&[7u8; 32]);
+        let roots = Roots { pr: root.clone(), sr: None, ar: None, cr: None };
+        let report = block_on(receipt::tip_report(
+            &identity, now, principal_digest(&[9u8; 32]), 0u64, root, &roots, 1, now,
+        ))
+        .expect("signable");
+        prop_assert_eq!(TipReport::parse(&report).expect("parses").now, Some(now));
+
+        let text = resign_with_field(&identity, report, "now", serde_json::json!("1700000000"));
+        prop_assert!(matches!(
+            TipReport::parse(&text),
+            Err(cyphr_client::TipReportParseError::Now(_))
+        ));
     }
 }
 

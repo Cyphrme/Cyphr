@@ -67,7 +67,7 @@ fn generate(cli: &Cli, algo: &str, tag: Option<&str>) -> crate::Result<()> {
 
     let (tmb, _key) = generate_key(&mut keystore, algo, tag)?;
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let output = serde_json::json!({
                 "tmb": tmb,
@@ -138,7 +138,7 @@ fn add(
     // Store updated state
     save_principal_to_engine(&store, &keystore, &principal)?;
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let output = serde_json::json!({
                 "identity": identity,
@@ -175,7 +175,7 @@ fn revoke(
     // Store updated state
     save_principal_to_engine(&store, &keystore, &principal)?;
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let output = serde_json::json!({
                 "identity": identity,
@@ -210,7 +210,7 @@ fn delete(
     apply_key_delete(&mut principal, &keystore, key_tmb, signer_tmb, authority)?;
     save_principal_to_engine(&store, &keystore, &principal)?;
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let output = serde_json::json!({
                 "identity": identity,
@@ -261,7 +261,7 @@ fn replace(
     )?;
     save_principal_to_engine(&store, &keystore, &principal)?;
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let output = serde_json::json!({
                 "identity": identity,
@@ -344,7 +344,7 @@ fn naked_revoke(
         return Err(e);
     }
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let output = serde_json::json!({
                 "revoked_key": key_tmb,
@@ -538,14 +538,14 @@ fn list_keystore(cli: &Cli) -> crate::Result<()> {
     let keys = keystore.list()?;
 
     if keys.is_empty() {
-        match cli.output {
+        match cli.format {
             OutputFormat::Json => println!("[]"),
             OutputFormat::Table => println!("No keys in keystore"),
         }
         return Ok(());
     }
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let keys: Vec<_> = keys
                 .iter()
@@ -586,7 +586,7 @@ fn list_identity(cli: &Cli, identity: &str) -> crate::Result<()> {
 
     let active: Vec<_> = principal.active_keys().collect();
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let keys: Vec<_> = active
                 .iter()

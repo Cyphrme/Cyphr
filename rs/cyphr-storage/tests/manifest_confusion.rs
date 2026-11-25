@@ -143,6 +143,7 @@ fn forged(principal_id: &str, sequence: u64, tag: u8) -> IndexableCommit {
     let hash = Blake3Hash::from_bytes([tag; 32]);
     IndexableCommit {
         pg: Vec::new(),
+        manifest: None,
         principal_id: principal_id.to_string(),
         commit_ids: vec![fake_digest(tag)],
         sequence,
@@ -841,11 +842,17 @@ async fn snapshot(e: &Engine, probes: &[String]) -> String {
     let mut lines = Vec::new();
     for p in principals(e).await {
         let tip = e.indexer().get_tip(&p.0).await.unwrap();
-        let chain = e
+        let mut chain = e
             .indexer()
             .get_commit_chain(&p.0, None, None)
             .await
             .unwrap();
+        // The manifest a commit names carries the time it was first seen,
+        // so two ingests of one history name different manifests; every
+        // other field of the commit is what a hostile blob could move.
+        for c in &mut chain {
+            c.manifest = None;
+        }
         lines.push(format!("{p:?} {tip:?} {chain:?}"));
     }
     for d in probes {
@@ -1143,7 +1150,7 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
-// Replayed cozes (hacker-seat findings F-A, F-B, F-C). SPEC be0663f 7.6 lets
+// Replayed cozes. SPEC be0663f 7.6 lets
 // principals that share keys reuse a coz, and `key/create` needs no proof of
 // possession, so any principal can add another's public key and replay that
 // principal's signed cozes. Nothing replayed may block, misattribute or brick.

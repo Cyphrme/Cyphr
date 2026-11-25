@@ -6,11 +6,12 @@
 //! constants below, predicate unchanged):
 //!
 //! - JSON documents carry a top-level integer `v`.
-//! - A dedicated fjall store (death set, spent set) records its version in the keyspace
+//! - A dedicated fjall store (the admission spent set) records its version in the keyspace
 //!   [`META_KEYSPACE`] under [`VERSION_KEY`] as decimal text, written when the store is first
 //!   opened.
-//! - An absent `v` (a file or store from before versions) means v1: it loads, and is written back
-//!   with `v` (`1`). Any other unknown `v` is refused.
+//! - An absent `v` (a sidecar or store from before versions) means v1: it loads, and is written
+//!   back with `v` (`1`). A signing-key file with no `v` is refused, never rewritten. Any other
+//!   unknown `v` is refused.
 //! - A refusal is a typed `UnsupportedVersion` variant of the format's own error, pinned by
 //!   `matches!` on the variant and the offending number. The envelope is read through its typed
 //!   reader `Envelope::from_value`; its plain serde `Deserialize` can only flatten that to a
@@ -28,7 +29,6 @@ use cyphr_server::admission::{AdmissionError, ResidentProbe, layer};
 use cyphr_server::auth::principal::{ServerPrincipal, ServerPrincipalError};
 use cyphr_server::auth::{AuthError, ServerIdentity};
 use cyphr_server::config::AdmissionConfig;
-use cyphr_server::observation::{ObservationError, ObservationStore};
 use fjall::{Database, KeyspaceCreateOptions, PersistMode};
 
 mod common;
@@ -142,30 +142,6 @@ async fn version_server_principal_sidecar_unknown_is_refused() {
     }
 }
 
-// ---- death set ---------------------------------------------------------
-
-/// Claim: the naked-revoke death set records its format version when first
-/// opened and refuses a store of another version, named. A refused death set
-/// must not be read: a mis-decoded set would un-revoke keys silently. Turns
-/// red on a store that stamps nothing, or an `open` that ignores the stamp.
-#[tokio::test]
-async fn version_death_set_unknown_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    drop(ObservationStore::open(dir.path()).expect("fresh open"));
-    assert!(
-        stored_version(dir.path()).is_some(),
-        "a fresh death set must record its version"
-    );
-    ObservationStore::open(dir.path()).expect("the current version reopens");
-    for unknown in UNKNOWN {
-        restamp(dir.path(), unknown);
-        let err = ObservationStore::open(dir.path())
-            .err()
-            .unwrap_or_else(|| panic!("death set v={unknown} was accepted"));
-        assert_unsupported!(err, ObservationError, "death set", unknown);
-    }
-}
-
 // ---- admission spent set -----------------------------------------------
 
 fn open_spent_set(
@@ -229,19 +205,25 @@ fn unstamp_json(path: &Path) {
     std::fs::write(path, serde_json::to_vec(&doc).unwrap()).unwrap();
 }
 
-/// Claim: a signing-key file from before versions (no `v`) loads as v1 and
-/// is written back stamped `v: 1`, so the next read is of a versioned file.
-/// Turns red on a loader that leaves the file unstamped, or one that refuses
-/// the absent version.
+/// Claim: a signing-key file from before versions (no `v`) is refused with
+/// an error that says to add it, and the file is left as it was: no
+/// migration rewrites a key file. Turns red on a loader that accepts the
+/// absent version, or one that rewrites the file.
 #[test]
-fn version_signing_key_file_absent_is_v1_and_written_back() {
+fn version_signing_key_file_absent_is_refused_and_untouched() {
     let dir = tempfile::tempdir().unwrap();
     let path = common::write_signing_key(dir.path());
-    ServerIdentity::load_from_path(&path).expect("an absent `v` loads as v1");
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    doc.as_object_mut().unwrap().remove("v");
+    let bytes = serde_json::to_vec(&doc).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    let err = ServerIdentity::load_from_path(&path).expect_err("an absent `v` is refused");
+    assert!(err.to_string().contains("\"v\""), "{err}");
     assert_eq!(
-        stamped_v(&path),
-        Some(1),
-        "the file must be written back with v=1"
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "the file is not rewritten"
     );
 }
 
@@ -269,30 +251,6 @@ async fn version_server_principal_sidecar_absent_is_v1_and_written_back() {
         Some(1),
         "the sidecar must be written back with v=1"
     );
-}
-
-/// Claim: a death set from before versions keeps every recorded death (a
-/// lost record would un-revoke a key) and is stamped v1 on open. Turns red
-/// on an `open` that stamps nothing, or one that refuses or empties the set.
-#[tokio::test]
-async fn version_death_set_absent_is_v1_and_keeps_its_deaths() {
-    let dir = tempfile::tempdir().unwrap();
-    let tmb = coz::Thumbprint::from_bytes(vec![5; 32]);
-    {
-        let store = ObservationStore::open(dir.path()).expect("open");
-        store
-            .record(&tmb, serde_json::json!({"pay": {}}))
-            .await
-            .expect("record");
-    }
-    unstamp(dir.path());
-    let store = ObservationStore::open(dir.path()).expect("an absent version loads as v1");
-    assert!(
-        store.is_dead(&tmb).await.unwrap(),
-        "a recorded death was lost"
-    );
-    drop(store);
-    assert_eq!(stored_version(dir.path()).as_deref(), Some("1"));
 }
 
 /// Claim: a spent set from before versions loads as v1 and is stamped on

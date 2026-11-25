@@ -253,7 +253,7 @@ impl ServerPrincipal {
             pg: pg.clone(),
             genesis_key: GenesisKeyRecord::from_key(&genesis_key),
         };
-        std::fs::write(&state_path, serde_json::to_vec_pretty(&record)?)?;
+        super::write_file_atomic(&state_path, &serde_json::to_vec_pretty(&record)?)?;
 
         Ok(Self {
             pg,
@@ -533,7 +533,7 @@ fn read_record(state_path: &Path) -> Result<GenesisRecord, ServerPrincipalError>
     let record: GenesisRecord = serde_json::from_value(doc)?;
     // A record from before versions is v1: rewrite it stamped.
     if !stamped {
-        std::fs::write(state_path, serde_json::to_vec_pretty(&record)?)?;
+        super::write_file_atomic(state_path, &serde_json::to_vec_pretty(&record)?)?;
     }
     Ok(record)
 }

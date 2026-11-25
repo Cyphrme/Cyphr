@@ -23,9 +23,11 @@ fn server_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_cyphr-server"))
 }
 
-/// `cyphr-server <sub> ...` with a config file that never exists, so only
-/// the flags decide the data directory and key path.
+/// `cyphr-server <sub> ...` with an empty config file, so only the flags
+/// decide the data directory and key path.
 fn server_cmd(data_dir: &Path, sub: &str, key_path: &Path) -> Command {
+    std::fs::create_dir_all(data_dir).expect("data dir");
+    std::fs::write(data_dir.join("unused.toml"), "").expect("empty config");
     let mut cmd = Command::new(server_binary());
     cmd.args([
         "--config",

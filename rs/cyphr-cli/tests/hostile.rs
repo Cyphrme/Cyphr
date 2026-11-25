@@ -65,9 +65,11 @@ struct Server {
 impl Server {
     fn start() -> Self {
         let dir = TempDir::new().expect("server tempdir");
+        let config = dir.path().join("empty.toml");
+        std::fs::write(&config, "").expect("empty config");
         let mut child = Command::new(server_bin())
             .arg("--config")
-            .arg(dir.path().join("absent.toml"))
+            .arg(&config)
             .args(["serve", "--listen", "127.0.0.1:0", "--data-dir"])
             .arg(dir.path().join("data"))
             .stdin(Stdio::null())
@@ -334,7 +336,7 @@ impl User {
             .arg(self.dir.path().join("keys.json"))
             .arg("--store")
             .arg(format!("file:{}", self.store().display()))
-            .args(["--output", "json"])
+            .args(["--format", "json"])
             .args(args)
             .output()
             .expect("running cyphr");

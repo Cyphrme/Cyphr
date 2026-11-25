@@ -190,6 +190,7 @@ proptest! {
     /// Catches tallest-wins: two extended branches are Error at any
     /// heights; and a head list that drops the shorter branch's tip (the
     /// heads are the leaves above the fork point, of unequal heights).
+    // @docket: sc-l2814 :: scripts/docket-run sc-l2814
     #[test]
     fn both_extended_is_error_at_any_heights(
         common in 1usize..4, left in 2usize..6, right in 2usize..6,
@@ -223,6 +224,7 @@ proptest! {
 
     /// Catches an exit by out-building: from a both-extended fork, any
     /// further commits that verify leave it Error.
+    // @docket: sc-l2814 :: scripts/docket-run sc-l2814
     #[test]
     fn building_on_a_both_extended_fork_never_leaves_error(
         left in 2usize..4, right in 2usize..4,
@@ -242,6 +244,7 @@ proptest! {
     /// Catches "abandoned for good": one extended branch selects, and one
     /// extension of the abandoned branch re-opens the fork, whatever the
     /// heights.
+    // @docket: sc-l2814 :: scripts/docket-run sc-l2814
     #[test]
     fn one_extended_selects_and_the_other_extended_reopens(left in 2usize..6) {
         let (mut held, _, _) = fork(2, left, 1);

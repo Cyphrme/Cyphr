@@ -40,6 +40,7 @@ pub fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCom
         timestamp,
         keys: Vec::new(),
         pg: Vec::new(),
+        manifest: None,
     }
 }
 

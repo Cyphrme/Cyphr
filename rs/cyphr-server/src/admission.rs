@@ -36,10 +36,10 @@ use subtle::ConstantTimeEq;
 use tower::{Layer, Service};
 
 use crate::config::AdmissionConfig;
-use crate::envelope::Envelope;
-use crate::observation::{
+use crate::durable::{
     DurabilityLost, STORE_FORMAT_VERSION, StampError, SyncLatch, check_store_version,
 };
+use crate::envelope::Envelope;
 
 /// Header carrying the opaque, out-of-band invite token.
 const INVITE_HEADER: &str = "x-cyphr-invite";
@@ -130,7 +130,7 @@ fn backend(e: fjall::Error) -> AdmissionError {
 ///
 /// `record_dir` is the `record/` subtree (ADR-0002 Decision 1), not the bare
 /// data directory: the spent-set is told state the server cannot recover if
-/// lost, so it lives beside `blobs/`, `observations/`, and
+/// lost, so it lives beside `blobs/` and
 /// `server-principal.json` under `record/`, never beside the disposable
 /// `index/`.
 pub fn layer(
