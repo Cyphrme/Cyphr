@@ -115,3 +115,28 @@ fn an_idle_connection_is_closed() {
     assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
     closed_within(&mut kept, Duration::from_secs(8)).expect("the idle keep-alive is closed");
 }
+
+/// Claim: a client that sends a request's headers and then stalls on the
+/// body is answered `408` at the request timeout. Turns red if a stalled
+/// body holds its handler open for ever.
+/// End-to-end scenario: yes (the real binary over a socket).
+#[test]
+fn a_stalled_request_body_gets_408() {
+    let server = start("request_timeout_secs = 1");
+    let mut stalled = TcpStream::connect(&server.addr).expect("connect");
+    stalled
+        .write_all(
+            b"POST /push HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n\
+              Content-Length: 1000\r\n\r\n{\"principal_id\":",
+        )
+        .expect("head and part of the body");
+    stalled
+        .set_read_timeout(Some(Duration::from_secs(8)))
+        .expect("read timeout");
+    let started = Instant::now();
+    let mut buf = [0u8; 512];
+    let n = stalled.read(&mut buf).expect("an answer, not a hang");
+    let answer = String::from_utf8_lossy(&buf[..n]);
+    assert!(answer.starts_with("HTTP/1.1 408"), "{answer}");
+    assert!(started.elapsed() < Duration::from_secs(6));
+}

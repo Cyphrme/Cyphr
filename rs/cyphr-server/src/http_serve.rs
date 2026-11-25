@@ -72,21 +72,39 @@ impl AsyncRead for IdleStream {
     }
 }
 
+impl IdleStream {
+    /// The write side of the idle bound: a write the peer is not draining
+    /// (a client that does not read its response, or drips it) fails with
+    /// `TimedOut` once `idle` passes with no progress, as a silent read does.
+    fn bounded<T>(&mut self, cx: &mut Context<'_>, polled: Poll<io::Result<T>>) -> Poll<io::Result<T>> {
+        match polled {
+            Poll::Ready(result) => {
+                if result.is_ok() {
+                    self.touch();
+                }
+                Poll::Ready(result)
+            },
+            Poll::Pending => match self.deadline.as_mut().poll(cx) {
+                Poll::Ready(()) => Poll::Ready(Err(io::ErrorKind::TimedOut.into())),
+                Poll::Pending => Poll::Pending,
+            },
+        }
+    }
+}
+
 impl AsyncWrite for IdleStream {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let result = Pin::new(&mut self.inner).poll_write(cx, buf);
-        if result.is_ready() {
-            self.touch();
-        }
-        result
+        let polled = Pin::new(&mut self.inner).poll_write(cx, buf);
+        self.bounded(cx, polled)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
+        let polled = Pin::new(&mut self.inner).poll_flush(cx);
+        self.bounded(cx, polled)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
