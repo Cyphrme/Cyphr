@@ -1,6 +1,6 @@
 //! Principal lifecycle state derivation (SPEC.md §11).
 
-/// The six base lifecycle states a principal may occupy (SPEC.md:1946-1978,
+/// The six base lifecycle states a principal may occupy (SPEC §11.2,
 /// §11.2 States).
 ///
 /// `Errored` (SPEC.md §11.1) is not a variant here: it is an orthogonal flag
@@ -26,7 +26,7 @@ pub enum LifecycleState {
 /// Derive the base lifecycle state from the four independent SPEC §11.1
 /// conditions relevant below Level 5.
 ///
-/// `CanMutateAR` is not a parameter: SPEC.md:1990-1992 states it is
+/// `CanMutateAR` is not a parameter: SPEC §11.3 states it is
 /// non-monotonic in key count only at Level 5+, so below Level 5 it always
 /// equals `has_active_keys` — it is computed here rather than accepted as a
 /// possibly-inconsistent input, which also makes `CanMutateAR != HasActiveKeys`
@@ -34,7 +34,7 @@ pub enum LifecycleState {
 ///
 /// Resolves SPEC §11.2's row overlaps by first-match precedence — Nuked,
 /// Deleted, Dead, Zombie, Frozen, Active (the R5 ruling) — which is SPEC's
-/// own severity/containment ordering made explicit (SPEC.md:1971-1978: Nuked
+/// own severity/containment ordering made explicit (SPEC §11.2: Nuked
 /// is "the most terminal state," a strict sub-case of both Deleted and Dead).
 ///
 /// The same precedence also resolves the one cell SPEC's literal row
@@ -71,7 +71,7 @@ pub fn derive_lifecycle_state(
 mod tests {
     use super::*;
 
-    /// Independent reference oracle built directly from SPEC.md:1950-1957's
+    /// Independent reference oracle built directly from SPEC §11.2's
     /// literal row predicates (NOT sharing logic with `derive_lifecycle_state`),
     /// resolved by R5 first-match precedence. Deliberately re-derives the
     /// matrix from the SPEC text rather than mirroring the implementation, so
@@ -79,7 +79,7 @@ mod tests {
     /// in the implementation.
     ///
     /// `is_deleted && is_frozen` is SPEC-asserted unreachable
-    /// (SPEC.md:1976-1978) and is excluded from this oracle; it is covered
+    /// (SPEC §11.2) and is excluded from this oracle; it is covered
     /// separately by `d_and_f_resolves_by_precedence` below.
     fn spec_row_oracle(d: bool, f: bool, k: bool, c: bool) -> Option<LifecycleState> {
         let m = k; // CanMutateAR == HasActiveKeys below Level 5.
@@ -128,7 +128,7 @@ mod tests {
     /// The SPEC-undefined `is_deleted && is_frozen` cell resolves via the
     /// same R5 precedence used for every other overlap: Deleted (rank 2)
     /// before Frozen (rank 5). This cell is unreachable through
-    /// `Principal::lifecycle_state` (SPEC.md:1976-1978 asserts Deleted and
+    /// `Principal::lifecycle_state` (SPEC §11.2 asserts Deleted and
     /// Frozen mutually exclusive) but the pure function is still exercised
     /// directly here to prove totality.
     #[test]

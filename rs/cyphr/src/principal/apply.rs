@@ -596,7 +596,7 @@ impl PrincipalState {
                 let core = self.core_unjudged_mut();
                 core.deleted = true;
                 core.deleted_pending = true;
-                // Deleted subsumes Frozen (SPEC.md:1974-1978 mutual
+                // Deleted subsumes Frozen (SPEC §11.2 mutual
                 // exclusivity; R1/F5): unconditionally clear frozen even if
                 // it was set going in.
                 core.frozen = false;
