@@ -965,9 +965,15 @@ async fn load_reads_b_once_for_every_pinned_state() {
     );
     let read = gets.load(std::sync::atomic::Ordering::SeqCst);
     let b_blobs = blobs_of(&b.bundles);
+    // A commit's frame is read from its manifest when a load needs it (one
+    // read per commit of A, and per commit of B's pass), so a load costs
+    // the blobs once, plus one manifest per commit: linear, and B is not
+    // re-read for each of A's pinned states.
+    let manifests = a.bundles.len() + b.bundles.len();
     assert!(
-        read <= a_blobs + b_blobs,
-        "{read} reads for A's {a_blobs} blobs and one pass over B's {b_blobs}"
+        read <= a_blobs + b_blobs + manifests,
+        "{read} reads for A's {a_blobs} blobs and one pass over B's {b_blobs}, plus {manifests} \
+         manifests"
     );
 }
 

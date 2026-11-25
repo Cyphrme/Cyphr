@@ -54,9 +54,9 @@ use kept::{
     Verified, VerifiedFuture,
 };
 use read::{
-    ActionBundle, ActionHistory, ActionStore, EMBED_DEPTH, Frame, Frames, HeldCache, HeldRead,
-    HeldTips, NoTips, PinSource, Signed, StoredChain, action_bundle, bundle_czds, replay_first,
-    replay_order, signed_of,
+    ActionBundle, ActionHistory, ActionStore, EMBED_DEPTH, Frame, HeldCache, HeldRead, HeldTips,
+    NoTips, PinSource, Signed, StoredChain, action_bundle, bundle_czds, replay_first, replay_order,
+    signed_of,
 };
 pub use read::{DerivedRoots, PatchActions, PatchFork, PatchResponse, StoredEntry};
 use rebuild::HealGate;
@@ -237,7 +237,6 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// keys it introduced, by principal id and commit id: a cache of the
     /// commit manifests in the blob store (I1), filled by the rebuild scan
     /// and by ingest. The index's commit records name blobs only.
-    frames: Frames,
     /// Revocations in force: a cache of the revoke records in the blob
     /// store (I1), filled by the rebuild scan and by
     /// [`Self::record_revoke`].
@@ -255,6 +254,11 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     logs_durable: bool,
     /// The engine's cost counters, which tests pin.
     counters: Counters,
+    /// Bytes the blob store holds, as this engine counts them: set by the
+    /// rebuild scan, grown by each new blob it writes.
+    stored_bytes: std::sync::atomic::AtomicU64,
+    /// The most bytes a write may leave stored; `None` is no ceiling.
+    storage_ceiling: Option<u64>,
     /// The four roots at each commit this engine admitted or derived,
     /// by principal id and commit id: a commit's roots depend on its
     /// history alone, so an entry is exact for the commit that names it.
@@ -305,7 +309,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             healed: HealGate::new(),
             branches: BranchStore::new(DEFAULT_KEPT_CAPACITY),
             actions: ActionStore::new(),
-            frames: Frames::new(),
             deaths: DeathSet::new(),
             resyncs: ResyncStore::new(),
             kept: KeptStates::new(
@@ -318,9 +321,59 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             ),
             logs_durable,
             counters: Counters::default(),
+            stored_bytes: std::sync::atomic::AtomicU64::new(0),
+            storage_ceiling: None,
             roots_at: BoundedCache::new(ROOTS_MEMO_CAPACITY),
             durability: Durability::new(),
         }
+    }
+
+    /// Refuse a write that would take the stored bytes past `ceiling`
+    /// ([`EngineError::StorageFull`]); `None`, the default, sets no ceiling.
+    /// The count is the blob store's bytes, as the rebuild scan found them
+    /// plus what this engine has written since, so concurrent writes can
+    /// overshoot it by what they add together.
+    #[must_use]
+    pub fn with_storage_ceiling(mut self, ceiling: Option<u64>) -> Self {
+        self.storage_ceiling = ceiling;
+        self
+    }
+
+    /// Bytes the blob store holds, as this engine counts them.
+    pub fn stored_bytes(&self) -> u64 {
+        self.stored_bytes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Refuse before anything is written when `incoming` more bytes would
+    /// pass the ceiling. An upper bound: a blob already held adds nothing,
+    /// which this does not credit.
+    pub(super) fn ensure_room(&self, incoming: u64) -> Result<(), EngineError> {
+        let Some(ceiling) = self.storage_ceiling else {
+            return Ok(());
+        };
+        let stored = self.stored_bytes();
+        if stored.saturating_add(incoming) > ceiling {
+            return Err(EngineError::StorageFull {
+                ceiling,
+                stored,
+                incoming,
+            });
+        }
+        Ok(())
+    }
+
+    /// `put`, counting the bytes of a blob the store did not hold.
+    pub(super) async fn put_counted(&self, bytes: &[u8]) -> Result<Blake3Hash, EngineError> {
+        let expected = Blake3Hash::from_bytes(*blake3::hash(bytes).as_bytes());
+        let known = self.blob_store.exists(&expected).await?;
+        let hash = self.blob_store.put(bytes).await?;
+        if !known {
+            self.stored_bytes.fetch_add(
+                u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }
+        Ok(hash)
     }
 
     /// Keep at most `capacity` principals' verified states between their

@@ -44,7 +44,7 @@ pub const BRANCH_DEPTH: usize = 2;
 /// `from` to the tip of `count` commits. Commits are immutable and a commit
 /// names its predecessor by Principal Root, so a cached prefix is still the
 /// chain's whenever the next commit read links to its last, and a cache is
-/// never trusted past that check. A cache of the index and the frames (I1):
+/// never trusted past that check. A cache of the index and the stored manifests (I1):
 /// a rebuild clears it.
 struct ForkCache {
     from: u64,
@@ -115,6 +115,8 @@ pub(super) struct Retained {
     pub(super) pr: String,
     pub(super) signer: String,
     pub(super) blobs: Vec<Blake3Hash>,
+    /// The manifest blob that records the commit, where its frame is read.
+    pub(super) manifest: Blake3Hash,
     pub(super) shape: Shape,
     pub(super) keys: Vec<KeyEntry>,
     pub(super) signed: Signed,
@@ -1057,6 +1059,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // The line's blobs are already stored behind its branch manifests;
         // only the chain index needs them named.
         for (r, commit) in line.iter().zip(line_commits.iter_mut()) {
+            commit.manifest = Some(r.manifest);
             commit.blob_hashes = r.blobs.clone();
             for (coz, hash) in commit.cozies.iter_mut().zip(&r.blobs) {
                 coz.blob_hash = *hash;
@@ -1077,19 +1080,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
         let mut displaced = Vec::with_capacity(displaced_chain.len());
         for c in displaced_chain {
-            let bundle = self.commit_bundle(principal_id, &c).await?;
-            let Frame {
-                shape,
-                keys,
-                signed,
-                seen,
-                embedded,
-            } = self.frame(principal_id, &c).ok_or_else(|| {
-                EngineError::Indexer(crate::index::IndexerError::Consistency(format!(
-                    "index commit {} of {principal_id} has no commit manifest",
-                    c.commit_id
-                )))
-            })?;
+            let (
+                bundle,
+                Frame {
+                    shape,
+                    keys,
+                    signed,
+                    seen,
+                    embedded,
+                },
+            ) = self.commit_bundle_framed(principal_id, &c).await?;
             displaced.push(Retained {
                 pr: c.pr.clone(),
                 tip: BranchTip {
@@ -1101,6 +1101,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 },
                 signer: bundle_signer(&bundle)?,
                 blobs: c.blob_hashes.clone(),
+                manifest: c.manifest.ok_or_else(|| {
+                    EngineError::Indexer(crate::index::IndexerError::Consistency(format!(
+                        "index commit {} of {principal_id} has no commit manifest",
+                        c.commit_id
+                    )))
+                })?,
                 shape,
                 keys,
                 signed,
@@ -1149,12 +1155,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.indexer
             .replace_chain_from(principal_id, base, &chain, &token)
             .await?;
-        for (r, commit) in line.iter().zip(line_commits.iter()) {
-            self.record_frame(commit, &r.shape, r.tip.seen, &r.embedded);
-        }
-        if let Some((bundle, next, _, embedded)) = &next {
-            self.record_frame(next, &Shape::of(bundle), next_seen, embedded);
-        }
 
         self.branches.update(principal_id, |of_principal| {
             of_principal.retain(|b| {
@@ -1379,10 +1379,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
         for at in positions {
             let there = self.chain(principal_id, Some(at), Some(at)).await?;
-            if there.iter().any(|c| {
-                c.blob_hashes == hashes && self.frames.has_shape(principal_id, &c.commit_id, &shape)
-            }) {
-                return Ok(true);
+            for c in &there {
+                if c.blob_hashes == hashes && self.frame(c).await?.is_some_and(|f| f.shape == shape)
+                {
+                    return Ok(true);
+                }
             }
         }
         Ok(false)
@@ -1483,7 +1484,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let principal_id = commit.principal_id.clone();
         let pr = commit.prs.first().cloned().unwrap_or_default();
         let signed = signed_of(&commit);
-        let (stored, _) = self
+        let (stored, manifest) = self
             .store_manifest(
                 bundle,
                 commit,
@@ -1505,6 +1506,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 pr,
                 signer,
                 keys: key_entries(&stored.keys),
+                manifest,
                 blobs: stored.blob_hashes,
                 shape: Shape::of(bundle),
                 signed,
@@ -1559,7 +1561,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .into_iter()
             .next()
             .ok_or_else(not_stored)?;
-        let seen = self.frame(&principal_id, &head).and_then(|f| f.seen);
+        let seen = self.frame(&head).await?.and_then(|f| f.seen);
         let mut branches = vec![BranchTip {
             tip: head.commit_id,
             pre: head.pre,
@@ -1690,11 +1692,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 Some(r) => r.tip.seen,
                 None => {
                     let at = head.sequence;
-                    self.chain(principal_id, Some(at), Some(at))
-                        .await?
-                        .first()
-                        .and_then(|c| self.frame(principal_id, c))
-                        .and_then(|f| f.seen)
+                    let there = self.chain(principal_id, Some(at), Some(at)).await?;
+                    match there.first() {
+                        Some(c) => self.frame(c).await?.and_then(|f| f.seen),
+                        None => None,
+                    }
                 },
             };
             heads.push(HeldHead {
@@ -1912,7 +1914,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let chain = self.chain(principal_id, Some(from), None).await?;
         let mut held = Vec::with_capacity(chain.len());
         for c in chain {
-            let frame = self.frame(principal_id, &c).ok_or_else(|| {
+            let frame = self.frame(&c).await?.ok_or_else(|| {
                 EngineError::Indexer(crate::index::IndexerError::Consistency(format!(
                     "index commit {} of {principal_id} has no commit manifest",
                     c.commit_id
@@ -1978,7 +1980,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 pre: rival.tip.pre.clone(),
                 canonical: self.commit_bundle(&principal_id, canonical).await?,
                 rival: rival_bundle,
-                canonical_seen: self.frame(&principal_id, canonical).and_then(|f| f.seen),
+                canonical_seen: self.frame(canonical).await?.and_then(|f| f.seen),
                 rival_seen: rival.tip.seen,
             });
         }

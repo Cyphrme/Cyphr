@@ -231,6 +231,7 @@ async fn legacy_store_shared_manifest_is_refused_naming_reingest() {
         timestamp: 1,
         keys: Vec::new(),
         pg: Vec::new(),
+        manifest: None,
     };
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     let legacy = serde_json::json!({"kind": "cyphr-storage/commit-manifest/v1", "commit": commit});

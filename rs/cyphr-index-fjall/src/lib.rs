@@ -901,6 +901,7 @@ impl Staged {
                 ar: commit.ars.first().cloned(),
                 cr: commit.crs.first().cloned().unwrap_or_default(),
                 blob_hashes: commit.blob_hashes.clone(),
+                manifest: commit.manifest,
             },
             entries,
             pg,

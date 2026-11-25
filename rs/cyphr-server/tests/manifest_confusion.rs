@@ -73,6 +73,7 @@ impl Forge {
         let tag = fake_digest(0xF0);
         IndexableCommit {
             pg: self.pg.clone(),
+            manifest: None,
             principal_id: self.principal_id.clone(),
             commit_ids: vec![self.commit_id.clone()],
             sequence: self.sequence,

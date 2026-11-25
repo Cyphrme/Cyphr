@@ -143,6 +143,7 @@ fn forged(principal_id: &str, sequence: u64, tag: u8) -> IndexableCommit {
     let hash = Blake3Hash::from_bytes([tag; 32]);
     IndexableCommit {
         pg: Vec::new(),
+        manifest: None,
         principal_id: principal_id.to_string(),
         commit_ids: vec![fake_digest(tag)],
         sequence,

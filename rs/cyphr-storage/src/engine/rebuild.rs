@@ -349,10 +349,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut action_manifests: Vec<(Blake3Hash, ActionManifest)> = Vec::new();
         let mut revoked = Revoked::default();
         let mut resyncs = Resyncs::default();
+        let mut stored_bytes: u64 = 0;
         for hash in hashes {
             let Some(data) = self.blob_store.get(&hash).await? else {
                 continue;
             };
+            stored_bytes =
+                stored_bytes.saturating_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
             if let Some(json) = data.strip_prefix(RESYNC_RECORD_PREFIX) {
                 // A record that does not verify costs only itself: its tip
                 // is not asserted.
@@ -447,7 +450,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // Retained branches never reach the index, so a bad one
                 // costs only its own listing, never a chain position.
                 match serde_json::from_slice::<CommitManifest>(json) {
-                    Ok(m) if m.kind == BRANCH_MANIFEST_KIND => {
+                    Ok(mut m) if m.kind == BRANCH_MANIFEST_KIND => {
+                        m.commit.manifest = Some(hash);
                         match self.check_manifest_supported(&hash, &m).await? {
                             Ok(()) => branch_manifests.push((hash, m)),
                             Err(reason) => quarantined.push(QuarantinedManifest {
@@ -496,7 +500,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 }
                 continue;
             };
-            let manifest: CommitManifest = match serde_json::from_slice(json) {
+            let mut manifest: CommitManifest = match serde_json::from_slice(json) {
                 Ok(m) => m,
                 Err(e) => {
                     quarantined.push(QuarantinedManifest {
@@ -507,6 +511,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     continue;
                 },
             };
+            // Where a later read finds this commit's frame.
+            manifest.commit.manifest = Some(hash);
             if let Err(reason) = self.check_manifest_supported(&hash, &manifest).await? {
                 broken_from
                     .entry(manifest.commit.principal_id.clone())
@@ -637,7 +643,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
             match written {
                 Ok(()) => {
-                    self.record_frame(commit, &manifest.shape, manifest.seen, &manifest.embedded);
                     indexed += 1;
                 },
                 Err(crate::index::IndexerError::Conflict(why)) => {
@@ -728,6 +733,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.branches.replace(branches);
         self.deaths.replace(revoked);
         self.resyncs.replace(resyncs);
+        self.stored_bytes
+            .store(stored_bytes, std::sync::atomic::Ordering::SeqCst);
 
         quarantined.sort_by_key(|q| *q.manifest.as_bytes());
         Ok(RebuildReport {
@@ -910,6 +917,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 signer,
                 keys: key_entries(&commit.keys),
                 blobs: commit.blob_hashes,
+                manifest: hash,
                 shape,
                 embedded,
             });
@@ -1048,6 +1056,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Ok(Err(format!("its blobs do not replay: {e}")));
         }
         // `store_manifest` fills these in at ingest.
+        replayed.manifest = commit.manifest;
         replayed.blob_hashes.clone_from(&commit.blob_hashes);
         for (coz, hash) in replayed.cozies.iter_mut().zip(&commit.blob_hashes) {
             coz.blob_hash = *hash;

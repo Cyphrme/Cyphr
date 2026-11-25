@@ -72,6 +72,12 @@ pub struct IndexableCommit {
     /// manifest written before this field existed still deserializes.
     #[serde(default)]
     pub pg: Vec<String>,
+    /// The hash of the manifest blob that records this commit: where its
+    /// grouping, signers and first-seen time are read from when needed.
+    /// Set once the manifest is stored; `None` inside the manifest itself,
+    /// which cannot name its own hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<Blake3Hash>,
 }
 
 /// Public key metadata.
@@ -133,6 +139,10 @@ pub struct CommitRef {
     pub cr: String,
     /// BLAKE3 hashes of blobs belonging to this commit.
     pub blob_hashes: Vec<Blake3Hash>,
+    /// The manifest blob that records the commit ([`IndexableCommit::manifest`]).
+    /// `None` in an index built before it was kept; a rebuild fills it.
+    #[serde(default)]
+    pub manifest: Option<Blake3Hash>,
 }
 
 /// Reference to an entity resolved by digest.

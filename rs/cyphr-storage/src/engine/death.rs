@@ -272,7 +272,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         )
         .map_err(|e| EngineError::MalformedBlob(format!("revoke record serialize: {e}")))?;
         let death = Death::new(wrt, *blake3::hash(&bytes).as_bytes());
-        self.blob_store.put(&bytes).await?;
+        self.put_counted(&bytes).await?;
         // The caller is told the key was durably recorded dead (the
         // /revoke response), and a death-set a power cut can revert would
         // let a dead key's commits back in: durable before it is visible.

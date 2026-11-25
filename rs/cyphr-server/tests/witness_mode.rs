@@ -254,6 +254,7 @@ async fn rejects_unverifiable_delta() {
 
     let corrupt_commit = IndexableCommit {
         pg: Vec::new(),
+        manifest: None,
         principal_id: principal_id.to_string(),
         commit_ids: vec!["SHA-256:CORRUPTED_COMMIT_999999999999999999999999".to_string()],
         sequence: 99,

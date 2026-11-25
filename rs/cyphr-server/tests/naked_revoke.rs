@@ -1171,6 +1171,7 @@ async fn poison_index_directly(
     let attacker = pool.get(attacker_key_name).expect("attacker key in pool");
     let poison = IndexableCommit {
         pg: Vec::new(),
+        manifest: None,
         principal_id: "SHA-256:nr-poisoned-index".to_string(),
         commit_ids: vec!["SHA-256:POISON_COMMIT".to_string()],
         sequence: 0,
