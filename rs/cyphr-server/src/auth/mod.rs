@@ -1,15 +1,14 @@
 //! Server authentication and signing identity.
 //!
 //! This module root holds the server's own signing key
-//! ([`ServerIdentity`]) and is the home later campaign nodes extend with
-//! bearer-token issuance, login flows, and route protection (SPEC.md
-//! 17.4). This node only establishes the identity.
+//! ([`ServerIdentity`]) and is the home of bearer-token issuance, login
+//! flows, and route protection (SPEC 17.4).
 //!
 //! The server holds one signing key, loaded from a file at startup, and
-//! uses it to sign and verify its own Coz payloads (SPEC.md 17.4 bearer
+//! uses it to sign and verify its own Coz payloads (SPEC 17.4 bearer
 //! token issuance signs with this key). Consumers hold a [`ServerIdentity`]
-//! rather than raw key bytes, so a later campaign can back the same
-//! abstraction with a full Cyphr principal without rewriting call sites.
+//! rather than raw key bytes, so the same abstraction can later be backed
+//! by a full Cyphr principal without rewriting call sites.
 
 pub mod login;
 pub mod middleware;

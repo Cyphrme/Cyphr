@@ -1,5 +1,5 @@
-//! Backup and restore as an operator runs them (S06's server half,
-//! GOSSIP-MIN: no watermark; a restored peer catches up).
+//! Backup and restore as an operator runs them (no watermark: a restored
+//! peer catches up).
 
 use std::process::Output;
 

@@ -1,7 +1,7 @@
-//! `POST /push` identity binding (security sweep D1 storage path, D2).
+//! `POST /push` identity binding.
 //!
 //! A principal's identifier is derived from its genesis (SPEC 3.1: for a
-//! single-key genesis, `tmb` is promoted to PR; SPEC.md:323). The server must
+//! single-key genesis, `tmb` is promoted to PR). The server must
 //! not store a genesis under any other `principal_id`, and must not
 //! accept a key whose unsigned `pub` sidecar was swapped out from under
 //! its signed `tmb`.

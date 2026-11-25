@@ -315,7 +315,7 @@ pub fn field(v: &Value, name: &str) -> ActionResult<String> {
 // The keystore file is the CLI's own format (a flat map of thumbprint to
 // `{alg, pub_key, prv_key, tag}` plus a version `v`). The harness edits it
 // only to carry a PUBLIC key between devices, the step a pairing channel
-// performs (N22 will own that channel); a private key is copied only by
+// performs; a private key is copied only by
 // `steal_key`, which is a theft on purpose.
 
 fn read_keystore(path: &Path) -> ActionResult<Map<String, Value>> {

@@ -1,5 +1,5 @@
 //! Peer-side anti-entropy: a configured timer that runs the verifier's pull
-//! step against the peers the operator chose (GOSSIP-MIN section 2).
+//! step against the peers the operator chose.
 //!
 //! The timer is not a second protocol. Each round, for every principal the
 //! server holds, it opens a [`cyphr_client::Record`] over the engine's
@@ -14,7 +14,7 @@
 //!   from the store then;
 //! - commits past the stored tip go through the engine, which verifies them again before
 //!   persisting;
-//! - a rival branch the pull proved is handed to the engine, which keeps it (G1) so `/branches` and
+//! - a rival branch the pull proved is handed to the engine, which keeps it so `/branches` and
 //!   `/evidence` serve it on;
 //! - a naked revoke that verified is recorded in the death set, so it travels on to the peers that
 //!   ask this server;

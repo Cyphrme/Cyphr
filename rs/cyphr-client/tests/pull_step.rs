@@ -1,6 +1,6 @@
 //! The pull step: a verifier pulls branch heads, the patch from its own tip
 //! and naked revokes from the peers it chose, replays everything from its
-//! own record and classifies it (GOSSIP-MIN section 2). Peers are mirrors of
+//! own record and classifies it. Peers are mirrors of
 //! principal-signed objects: nothing here believes a peer's word, so every
 //! scenario serves real chains built with `cyphr` from a carrier that plays
 //! the peer, honest or hostile.

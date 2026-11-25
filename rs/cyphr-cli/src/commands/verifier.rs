@@ -1,6 +1,6 @@
 //! The verifier: `verify`, `watch`, `audit` and `gossip export|import`.
 //!
-//! All of them are one round of the G2 pull step ([`cyphr_client::pull`])
+//! All of them are one round of the pull step ([`cyphr_client::pull`])
 //! over a peer set (HTTP peers, or a bundle file served as peers), against
 //! a record rebuilt from the local store. What the pull returns is what is
 //! persisted (new commits, rival branches and naked revokes into the store;

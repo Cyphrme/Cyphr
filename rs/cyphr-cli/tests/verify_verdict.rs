@@ -142,7 +142,7 @@ fn watch_prints_the_verify_verdict_each_round() {
     }
 }
 
-/// Claim (SPEC 4.5, GOSSIP-MIN anchor rule): the anchor is the genesis key
+/// Claim (SPEC 4.5, the anchor rule): the anchor is the genesis key
 /// or the genesis commit id, never the PG alone, because one key set
 /// under different openers derives one PG; a PG-only anchor is refused with
 /// a message naming the rule. Defect that turns it red: a PG anchor

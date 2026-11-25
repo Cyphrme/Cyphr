@@ -188,7 +188,7 @@ async fn connector_without_binding_refused_when_required() {
 }
 
 /// Claim: a carrier that does expose the required binding syncs, and the
-/// binding reaches the caller (SO3/TR1 consume it). Red if the binding is
+/// binding reaches the caller (the sign-on and transport layers consume it). Red if the binding is
 /// dropped or the requirement refuses everything.
 #[tokio::test]
 async fn connector_binding_is_exposed_to_caller() {

@@ -252,7 +252,7 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
             record_blobs_db.keyspace_exists(name),
             "principal {principal_id}'s EML keyspace {name} must live inside record/blobs -- \
              ADR-0002 Decision 6: the commit tree is record data (its root is signed into every \
-             commit's Arrow, SPEC.md:114,333-339,587-588), not a derived projection, so it \
+             commit's Arrow, SPEC 3.7.6 and 4.2), not a derived projection, so it \
              belongs in the record/ tree the same as any other told store. Found no such keyspace \
              there."
         );

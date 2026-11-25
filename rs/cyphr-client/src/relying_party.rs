@@ -6,7 +6,7 @@
 //! because one key set under different openers derives one PG, so a PG
 //! cannot tell the principal the relying party was pinned to from another
 //! opener's chain. It keeps the record current with [`RelyingParty::refresh`]
-//! (the G2 pull step over peers it chose) and decides a login only from the
+//! (the pull step over peers it chose) and decides a login only from the
 //! key set that replay produced. No peer's statement is believed.
 //!
 //! Currency is the relying party's own: the **pull age**, how long ago its
