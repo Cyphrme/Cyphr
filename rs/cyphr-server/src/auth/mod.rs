@@ -499,7 +499,7 @@ mod tests {
         let path = dir.path().join("signing-key.json");
         std::fs::write(
             &path,
-            br#"{"alg":"Ed25519","pub_key":"AAAA","prv_key":424242424242}"#,
+            br#"{"v":1,"alg":"Ed25519","pub_key":"AAAA","prv_key":424242424242}"#,
         )
         .unwrap();
         let err =
