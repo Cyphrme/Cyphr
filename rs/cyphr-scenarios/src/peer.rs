@@ -122,7 +122,7 @@ impl Launch {
                     .args(["--transport-listen", "127.0.0.1:0"]);
             },
             Role::Witness { authority } => {
-                cmd.args(["--mode", "witness", "--authority-url"])
+                cmd.args(["--mode", "witness", "--gossip-peer"])
                     .arg(format!("http://{authority}"));
             },
         }

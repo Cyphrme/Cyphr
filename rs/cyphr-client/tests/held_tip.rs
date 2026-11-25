@@ -5,7 +5,7 @@
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_client::{
-    AuthorityKey, HELD_REPORT_TYP, PatchFailure, TipAnswer, verify_authenticated_envelope,
+    HELD_REPORT_TYP, PatchFailure, PeerKey, TipAnswer, verify_authenticated_envelope,
     verify_held_envelope, verify_patch_body,
 };
 use serde_json::{Value, json};
@@ -19,14 +19,14 @@ fn digest(b: u8) -> String {
 }
 
 struct Authority {
-    key: AuthorityKey,
+    key: PeerKey,
     kp: coz::KeyPair,
 }
 
 fn authority() -> Authority {
     let kp = coz::Alg::Ed25519.generate_keypair();
     Authority {
-        key: AuthorityKey {
+        key: PeerKey {
             alg: kp.alg.name().to_string(),
             pub_key: kp.pub_bytes.clone(),
         },

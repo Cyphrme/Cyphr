@@ -428,7 +428,8 @@ proptest! {
             malformed_field, malformed_value
         );
 
-        let verdict = receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key());
+        let verdict =
+            receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key(), &[]);
         prop_assert!(
             !is_an_honest_pair_verdict(verdict),
             "a malformed {}={:?} MUST NOT be silently compared into any 'no equivocation \
@@ -497,7 +498,8 @@ proptest! {
             b = resign_with_field(&identity, b, "sequence", serde_json::json!(seq.to_string()));
         }
 
-        let verdict = receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key());
+        let verdict =
+            receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key(), &[]);
         let expected = if same_commit && same_roots {
             EquivocationVerdict::IdenticalClaims
         } else {
@@ -595,7 +597,8 @@ proptest! {
             malformed_field, malformed_value, shape
         );
 
-        let verdict = receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key());
+        let verdict =
+            receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key(), &[]);
         prop_assert!(
             !is_an_honest_pair_verdict(verdict),
             "{}={:?} (shape={:?}) MUST NOT be silently unwrapped/compared into any honest-pair \

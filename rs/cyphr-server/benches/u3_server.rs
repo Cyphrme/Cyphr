@@ -20,7 +20,7 @@ use std::time::Instant;
 use axum::http::StatusCode;
 use common::{Chain, bad_signature, median};
 use cyphr_client::HttpConnector;
-use cyphr_server::gossip::Gossip;
+use cyphr_server::gossip::{Gossip, Peer};
 use cyphr_server::{AppState, build_router};
 use support::*;
 
@@ -104,7 +104,7 @@ async fn rounds(
     a: &Arc<AppState>,
     wire: &Wire,
     gossip: &mut Gossip,
-    peers: &[(String, HttpConnector)],
+    peers: &[Peer],
     reps: usize,
 ) -> Cost {
     let (mut times, mut last) = (Vec::new(), Cost::default());
@@ -268,7 +268,7 @@ async fn run(n: usize) {
 
     // gossip: A pulls from B
     let (url, wire) = serve_counting(app_b.clone()).await;
-    let peers = [(
+    let peers = [Peer::new(
         url.clone(),
         HttpConnector::with_client(a.http_client.clone(), &url, true).expect("connector"),
     )];

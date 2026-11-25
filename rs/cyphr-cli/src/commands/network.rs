@@ -786,7 +786,7 @@ fn adopt_remote(
 
 #[cfg(test)]
 mod tests {
-    use cyphr_client::{ForkPoint, HeldHead};
+    use cyphr_client::{ReportedForkPoint, ReportedHead};
 
     use super::*;
 
@@ -807,13 +807,13 @@ mod tests {
 
     fn error(heads: &[u8]) -> TipAnswer {
         TipAnswer::Error {
-            fork_point: ForkPoint {
+            fork_point: ReportedForkPoint {
                 height: 1,
                 pre: None,
             },
             heads: heads
                 .iter()
-                .map(|b| HeldHead {
+                .map(|b| ReportedHead {
                     commit_id: digest(*b),
                     sequence: 2,
                     held_since: None,

@@ -1056,8 +1056,18 @@ async fn login_and_challenge_refuse_alike_without_audience() {
         challenge_status, login_status,
         "challenge must refuse with login's status: {challenge_json:?}"
     );
+    // The two answers are built a moment apart and each carries its own
+    // `now`, so they are compared without it.
+    let alike = |mut body: serde_json::Value| {
+        body["payload"]
+            .as_object_mut()
+            .expect("payload object")
+            .remove("now");
+        body
+    };
     assert_eq!(
-        challenge_json, login_json,
+        alike(challenge_json),
+        alike(login_json),
         "challenge must refuse with login's body"
     );
 }

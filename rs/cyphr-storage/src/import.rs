@@ -266,12 +266,6 @@ fn wire_error(e: cyphr::replay::WireError, commit: usize, coz: Option<usize>) ->
     }
 }
 
-/// Returns true if a coz type introduces new key material.
-///
-/// Canonical implementation lives in `cyphr::parsed_coz::typ` -- this is a
-/// thin re-export so existing call sites don't need to change.
-pub(crate) use cyphr::parsed_coz::typ::is_key_introducing as is_key_introducing_typ;
-
 /// Convert a commit-level KeyEntry to a Principal Key.
 pub(crate) fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
     use cyphr::replay::WireError;

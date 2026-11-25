@@ -1,5 +1,5 @@
 //! A tip report cannot be rewritten in transit by default: the server's
-//! upstream paths (witness sync from an authority, and gossip to peers)
+//! upstream paths (the gossip peers a witness or a service follows)
 //! refuse plain `http://` to a host that is not loopback, with a typed
 //! error naming the one switch that allows it.
 
@@ -8,7 +8,6 @@ use std::sync::Arc;
 use clap::Parser as _;
 use cyphr_server::AppState;
 use cyphr_server::config::{Cli, ConfigError, ServerConfig, ServerMode, resolve_config};
-use cyphr_server::sync::{SyncFailure, SyncOutcome, sync_from_authority};
 
 /// Resolve the operator's config: a real TOML file through the real flag
 /// parser, as `cyphr-server serve` does.
@@ -27,7 +26,7 @@ fn resolve(toml: &str) -> Result<ServerConfig, ConfigError> {
 }
 
 /// Claim: an operator who points the server at a non-loopback `http://`
-/// upstream (the witness authority, or a gossip peer) is refused at
+/// upstream (a gossip peer) is refused at
 /// startup with an error that names `allow_cleartext_upstream`; loopback
 /// and `https://` need no switch; the switch allows the rest.
 ///
@@ -40,7 +39,7 @@ fn resolve(toml: &str) -> Result<ServerConfig, ConfigError> {
 fn config_refuses_cleartext_non_loopback_upstreams_without_the_switch() {
     let witness = |url: &str, extra: &str| {
         resolve(&format!(
-            "mode = \"witness\"\nauthority_url = \"{url}\"\n{extra}"
+            "mode = \"witness\"\n{extra}[gossip]\npeers = [\"{url}\"]\n"
         ))
     };
     let refused = witness("http://authority.example:3000", "").expect_err("cleartext refused");
@@ -67,32 +66,27 @@ fn config_refuses_cleartext_non_loopback_upstreams_without_the_switch() {
 }
 
 /// Claim: a server that never went through `resolve_config` (an embedder,
-/// a test) is still refused at the sync itself: the witness fetches
-/// nothing from a non-loopback `http://` authority, and reports the typed
-/// `CleartextRefused` that names the switch.
+/// a test) still dials nothing in cleartext: a non-loopback `http://` peer
+/// does not become a connector, so no fetch or round reaches it.
 ///
-/// Turns red if: the sync dials the cleartext authority, or reports the
-/// refusal as an unreachable upstream.
-/// End-to-end scenario: yes (a witness AppState syncing a principal).
+/// Turns red if: the peer list of such a state includes the cleartext peer.
+/// End-to-end scenario: yes (a witness AppState building its peers).
 #[tokio::test]
-async fn sync_refuses_a_cleartext_non_loopback_authority() {
+async fn a_cleartext_non_loopback_peer_is_not_dialled() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: dir.path().join("data"),
         // TEST-NET-1 (RFC 5737): never routable, so a request that left
         // the refusal behind would hang or fail as unreachable.
-        authority_url: Some("http://192.0.2.1:3000".into()),
+        gossip: cyphr_server::config::GossipConfig {
+            peers: vec![cyphr_server::config::PeerEntry::Url(
+                "http://192.0.2.1:3000".into(),
+            )],
+            ..Default::default()
+        },
         ..Default::default()
     };
     let state = Arc::new(AppState::new(config).expect("witness state"));
-    match sync_from_authority(&state, "AAAA").await {
-        SyncOutcome::Failed {
-            reason: SyncFailure::CleartextRefused { host, switch },
-        } => {
-            assert_eq!(host, "192.0.2.1");
-            assert_eq!(switch, "allow_cleartext_upstream");
-        },
-        other => panic!("expected the typed cleartext refusal, got {other:?}"),
-    }
+    assert!(cyphr_server::gossip::peers_of(&state).is_empty());
 }

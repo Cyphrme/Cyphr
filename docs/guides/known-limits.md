@@ -26,8 +26,11 @@ A revoke stops a key from now on. It does not reach back.
   verifier that follows a peer, cut a revoked key off at the moment that
   node first received the revoke, never at the revoke's `now` or `rvk`
   (SPEC 14.12; forge #203). From then on a message the key signs is
-  refused if its own `now` is at or after the cutoff. A later revoke of
-  the same key changes nothing.
+  refused if its own `now` is at or after the cutoff. That holds for a
+  revoke sent alone and for one a commit carries: a key revoked inside a
+  commit has the cutoff of that commit's receipt, on every branch of the
+  principal, and its data actions follow the same cutoff. A later revoke
+  of the same key changes nothing.
 - **A held commit is never re-judged.** A commit the node already holds
   stays, whatever a later revoke says. A thief's commit that was accepted
   before the revoke arrived stays counted.
@@ -39,7 +42,9 @@ A revoke stops a key from now on. It does not reach back.
   specification gives is recovery, not prevention: the owner removes the
   key and mutates the principal forward (SPEC 6.4, 14.12). A server also
   records when it first saw each commit, so a backdated commit shows a gap
-  between its `now` and its first-seen time.
+  between its `now` and its first-seen time: the spec author's answer is
+  that backdating "should be obvious to a durable network of witnesses"
+  (forge #203).
 - **Nodes can disagree about a late revoke.** Two nodes receive a revoke
   at different times. A message the dead key signed, dated between the two
   receipt times, is accepted by one and refused by the other, and nothing

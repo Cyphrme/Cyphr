@@ -24,13 +24,14 @@ use cyphr::Key;
 use cyphr::principal::system_clock;
 use cyphr::replay::WireBundle;
 use cyphr_client::{
-    Anchor, BindingPolicy, Bundle, BundleError, Connector, HttpConnector, HttpOptions,
+    Anchor, BindingPolicy, BundleError, Connector, ExchangeBundle, HttpConnector, HttpOptions,
     PatchFailure, PatchRequest, PeerFailure, PeerStanding, PullPeer, PullReport, Record,
     branch_bundles, fetch_patch, fetch_resyncs, opener_of, pull,
 };
 use cyphr_storage::Genesis;
 use cyphr_storage::engine::{
-    Assessment, Consensus, EngineError, ForkView, Recovery, Review, bare_digest,
+    Assessment, Consensus, EngineError, ForkView, PulledOffer, Recovery, ResyncOffer, Review,
+    bare_digest,
 };
 use serde_json::{Value, json};
 
@@ -223,61 +224,51 @@ impl<'a> Round<'a> {
         })
     }
 
-    /// Hand `bundles` to the store, which replays each again and admits it,
-    /// retains it as a branch, or refuses it, as a peer's store does. A
-    /// refusal is the store's answer, not a failure of this round (a commit
-    /// it holds, or one refused in Error and kept as evidence); a storage
-    /// fault is.
-    async fn keep(&self, record: &Record, bundles: &[WireBundle]) -> crate::Result<()> {
-        let Some(first) = record.bundles_since(0).first() else {
-            return Ok(());
-        };
-        let genesis = match &self.anchor {
-            Anchor::GenesisKey(key) => Genesis::Implicit(key.clone()),
-            Anchor::GenesisCommit(_) => Genesis::Implicit(
+    /// Hand what the pull gathered to the store, which replays each bundle
+    /// again and admits it, retains it as a branch, or refuses it, as a
+    /// peer's store does ([`StorageEngine::ingest_pulled`]). A refusal is the
+    /// store's answer, not a failure of this round (a commit it holds, or one
+    /// refused in Error and kept as evidence); a storage fault is.
+    async fn keep(
+        &self,
+        record: &Record,
+        commits: &[WireBundle],
+        branches: &[WireBundle],
+        resyncs: &[ResyncOffer<'_>],
+    ) -> crate::Result<()> {
+        let genesis = match (&self.anchor, record.bundles_since(0).first()) {
+            (_, None) => None,
+            (Anchor::GenesisKey(key), Some(_)) => Some(Genesis::Implicit(key.clone())),
+            (Anchor::GenesisCommit(_), Some(first)) => Some(Genesis::Implicit(
                 opener_of(first).map_err(|e| Error::InvalidArgument(e.to_owned()))?,
-            ),
+            )),
         };
-        for (i, bundle) in bundles.iter().enumerate() {
-            let answer = self
-                .store
-                .submit_commit(&self.principal_id, Some(genesis.clone()), bundle)
-                .await;
-            // A cap refused the entry alone, but it may be a line root whose
-            // extension changes the verdict: offer the two together.
-            let answer = match (answer, bundles.get(i + 1)) {
-                (
-                    Err(EngineError::BranchLimit { .. } | EngineError::Errored { .. }),
-                    Some(next),
-                ) => {
-                    self.store
-                        .submit_pair(&self.principal_id, Some(genesis.clone()), bundle, next)
-                        .await
+        let held = genesis.is_some();
+        let answers = self
+            .store
+            .ingest_pulled(
+                &self.principal_id,
+                &PulledOffer {
+                    genesis: genesis.as_ref(),
+                    commits: if held { commits } else { &[] },
+                    branches: if held { branches } else { &[] },
+                    resyncs,
                 },
-                (other, _) => other,
-            };
-            if let Err(err) = answer
-                && is_store_fault(&err)
-            {
-                return Err(err.into());
-            }
+            )
+            .await;
+        let faults = answers
+            .commits
+            .into_iter()
+            .chain(answers.branches)
+            .filter_map(|a| a.result.err())
+            .chain(answers.resyncs.into_iter().filter_map(Result::err));
+        // A proof the store refuses, a peer's bad one included, changes
+        // nothing; only a store fault ends the round.
+        match faults.into_iter().find(EngineError::is_store_fault) {
+            Some(fault) => Err(fault.into()),
+            None => Ok(()),
         }
-        Ok(())
     }
-}
-
-/// Whether the store's answer to a bundle is a fault of the store rather
-/// than its verdict on the bundle. A refusal is an answer (a held commit, a
-/// fork kept as evidence); a fault, a failed sync included, means nothing
-/// the round reports as kept is durable.
-fn is_store_fault(err: &EngineError) -> bool {
-    matches!(
-        err,
-        EngineError::BlobStore(_)
-            | EngineError::Indexer(_)
-            | EngineError::Storage(_)
-            | EngineError::DurabilityLost(_)
-    )
 }
 
 fn standing_of(s: &PeerStanding) -> (&'static str, Option<String>) {
@@ -361,12 +352,12 @@ async fn run_round<C: Connector>(
             .record_revoke(&found.envelope, system_clock())
             .await?;
     }
-    let mut handed = pulled.bundles_since(mark).to_vec();
-    handed.extend(branch_bundles(&pulled, &report, peers).await);
-    round.keep(&pulled, &handed).await?;
+    let commits = pulled.bundles_since(mark).to_vec();
+    let branches = branch_bundles(&pulled, &report, peers).await;
     // Resync proofs (SPEC 15.8 item 2) move no head, so a pull never shows
     // one: the peers' are fetched and offered to the store with the peer's
     // chain, which verifies each, and the verdict below reads them.
+    let mut served: Vec<(Vec<Value>, Vec<WireBundle>)> = Vec::new();
     for peer in peers {
         let Ok(pops) = fetch_resyncs(peer.connector, &round.wire).await else {
             continue;
@@ -388,28 +379,13 @@ async fn run_round<C: Connector>(
             .into_iter()
             .map_while(|e| e.bundle.ok())
             .collect();
-        let start = round.store.held_prefix(&round.principal_id, &chain).await?;
-        for pop in &pops {
-            match round
-                .store
-                .submit_resync(&round.principal_id, pop, &chain[start..])
-                .await
-            {
-                // A proof the store refuses, a peer's bad one included,
-                // changes nothing; only a store fault ends the round.
-                Ok(_)
-                | Err(
-                    EngineError::NotFound(_)
-                    | EngineError::InvalidInput(_)
-                    | EngineError::Protocol(_)
-                    | EngineError::DeadKey { .. }
-                    | EngineError::BranchLimit { .. }
-                    | EngineError::Errored { .. },
-                ) => {},
-                Err(fault) => return Err(fault.into()),
-            }
-        }
+        served.push((pops, chain));
     }
+    let resyncs: Vec<ResyncOffer<'_>> = served
+        .iter()
+        .map(|(pops, chain)| ResyncOffer { pops, chain })
+        .collect();
+    round.keep(&pulled, &commits, &branches, &resyncs).await?;
 
     let answered: Vec<&str> = report
         .peers
@@ -925,7 +901,7 @@ pub fn export(cli: &Cli, identity: &str, file: &std::path::Path) -> crate::Resul
         .into_iter()
         .flat_map(|h| h.revoked.iter().map(|r| r.envelope.clone()))
         .collect();
-    let bundle = Bundle::export(&record, &forks, revoked);
+    let bundle = ExchangeBundle::export(&record, &forks, revoked);
     std::fs::write(file, serde_json::to_vec_pretty(&bundle)?)?;
     let out = json!({"identity": identity, "file": file.display().to_string(),
         "chains": bundle.chains.len(), "revoked": bundle.revoked.len()});
@@ -946,7 +922,7 @@ pub fn import(
     file: &std::path::Path,
     anchor: Option<&str>,
 ) -> crate::Result<()> {
-    let bundle = Bundle::parse(&std::fs::read(file)?).map_err(|e| match e {
+    let bundle = ExchangeBundle::parse(&std::fs::read(file)?).map_err(|e| match e {
         BundleError::UnsupportedVersion { found, supported } => {
             Error::BundleVersion { found, supported }
         },
@@ -986,15 +962,9 @@ mod tests {
     /// if `DurabilityLost` is read as a refusal.
     #[test]
     fn a_failed_sync_is_a_fault_and_a_refusal_is_not() {
-        assert!(is_store_fault(&EngineError::DurabilityLost("eio".into())));
-        assert!(is_store_fault(&EngineError::BlobStore(
-            BlobStoreError::Backend("x".into())
-        )));
-        assert!(!is_store_fault(&EngineError::BranchLimit {
-            key: "k".into()
-        }));
-        assert!(!is_store_fault(&EngineError::Protocol(
-            cyphr::Error::CommitMismatch
-        )));
+        assert!(EngineError::DurabilityLost("eio".into()).is_store_fault());
+        assert!(EngineError::BlobStore(BlobStoreError::Backend("x".into())).is_store_fault());
+        assert!(!EngineError::BranchLimit { key: "k".into() }.is_store_fault());
+        assert!(!EngineError::Protocol(cyphr::Error::CommitMismatch).is_store_fault());
     }
 }

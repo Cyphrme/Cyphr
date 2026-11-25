@@ -11,7 +11,7 @@ use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
 use cyphr_client::HttpConnector;
 use cyphr_server::build_router;
-use cyphr_server::gossip::Gossip;
+use cyphr_server::gossip::{Gossip, Peer};
 
 mod common;
 
@@ -123,7 +123,7 @@ async fn a_removed_keys_naked_revoke_is_still_heard() {
     }
 
     let url = serve(app2.clone()).await;
-    let peers = [(
+    let peers = [Peer::new(
         url.clone(),
         HttpConnector::with_client(p1.http_client.clone(), &url, true).expect("connector"),
     )];

@@ -1,4 +1,4 @@
-//! Extension certificates (SPEC 4.4: CR is the append-only Merkle root of
+//! ExtensionOffer certificates (SPEC 4.4: CR is the append-only Merkle root of
 //! all commits, and clients obtain consistency proofs over it): "the
 //! offered head extends the log I hold" is checked against the held,
 //! already verified chain, and the head is the peer's claim, never read
@@ -13,7 +13,7 @@ use common::*;
 use cyphr::Principal;
 use cyphr::eml::MemoryStorage;
 use cyphr::proof::Claim;
-use cyphr_client::{Extension, ExtensionFailure, confirm_extension, verify_extension};
+use cyphr_client::{ExtensionFailure, ExtensionOffer, confirm_extension, verify_extension};
 use serde_json::json;
 
 const T0: i64 = 1_700_000_000;
@@ -44,9 +44,9 @@ fn size_of(p: &Principal<MemoryStorage>) -> u64 {
 
 /// What a peer serving `p` offers a holder of `from` commits: its head and
 /// the certificate that it extends them.
-async fn offer(p: &Principal<MemoryStorage>, from: u64) -> Extension {
+async fn offer(p: &Principal<MemoryStorage>, from: u64) -> ExtensionOffer {
     let to = size_of(p);
-    Extension::new(
+    ExtensionOffer::new(
         p.root_at(to).expect("a head"),
         p.prove(
             to,
@@ -62,7 +62,7 @@ async fn offer(p: &Principal<MemoryStorage>, from: u64) -> Extension {
 
 /// The hashes of the certificate's terminal consistency proof: the
 /// boundary peak, the path lifting it, and the new frontier.
-fn hashes(ext: &Extension) -> usize {
+fn hashes(ext: &ExtensionOffer) -> usize {
     let t = &serde_json::to_value(&ext.certificate).expect("certificate")["terminal"];
     let len = |v: &serde_json::Value| v.as_array().map_or(0, Vec::len);
     1 + t["peak_path"]
@@ -146,7 +146,7 @@ async fn heads_come_from_outside_the_certificate() {
     let ext = offer(&chain.principal, size_of(held)).await;
     assert_eq!(verify_extension(held, &ext), Ok(()));
 
-    let mut wrong_shape = Extension::new(
+    let mut wrong_shape = ExtensionOffer::new(
         ext.head.clone(),
         offer(&chain.principal, 4).await.certificate,
     );
@@ -156,7 +156,7 @@ async fn heads_come_from_outside_the_certificate() {
         Err(ExtensionFailure::NotAnExtension)
     );
 
-    let mut same_shape = Extension::new(
+    let mut same_shape = ExtensionOffer::new(
         ext.head.clone(),
         offer(&chain.principal, 4).await.certificate,
     );
@@ -171,7 +171,7 @@ async fn heads_come_from_outside_the_certificate() {
 
     // Another root (the held principal's own, a real one, only not the
     // offer's).
-    let mut wrong_root = Extension::new(
+    let mut wrong_root = ExtensionOffer::new(
         ext.head.clone(),
         offer(&chain.principal, 4).await.certificate,
     );
@@ -185,7 +185,7 @@ async fn heads_come_from_outside_the_certificate() {
     );
 
     // An offer no longer than the held log proves nothing.
-    let mut not_longer = Extension::new(
+    let mut not_longer = ExtensionOffer::new(
         ext.head.clone(),
         offer(&chain.principal, 4).await.certificate,
     );
@@ -206,7 +206,7 @@ async fn a_malformed_wire_certificate_fails_closed() {
     let (chain, at_size) = grown(&g, &keys, &[], 8).await;
     let ext = offer(&chain.principal, size_of(&at_size[3])).await;
     let good = json!({ "certificate": ext.certificate });
-    assert!(Extension::certificate_from_payload(&good).is_ok());
+    assert!(ExtensionOffer::certificate_from_payload(&good).is_ok());
 
     let mut cases = Vec::new();
     let mut missing = good.clone();
@@ -240,14 +240,14 @@ async fn a_malformed_wire_certificate_fails_closed() {
     for case in cases {
         assert!(
             matches!(
-                Extension::certificate_from_payload(&case),
+                ExtensionOffer::certificate_from_payload(&case),
                 Err(ExtensionFailure::Malformed(_))
             ),
             "{case}"
         );
     }
     assert!(matches!(
-        Extension::head_from_payload(&json!({"size": "many"})),
+        ExtensionOffer::head_from_payload(&json!({"size": "many"})),
         Err(ExtensionFailure::Malformed(_))
     ));
 }

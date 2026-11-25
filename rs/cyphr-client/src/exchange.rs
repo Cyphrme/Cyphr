@@ -1,6 +1,6 @@
 //! Bundle exchange: carrying verified history between clients with no peer.
 //!
-//! A [`Bundle`] is a file's worth of what a peer would serve about one
+//! A [`ExchangeBundle`] is a file's worth of what a peer would serve about one
 //! principal: its chain or chains (a chain per branch the exporter holds),
 //! and the naked revokes it holds. [`BundleConnector`] serves one chain as
 //! a [`Connector`], so an import is the ordinary [`pull`](crate::pull)
@@ -59,7 +59,7 @@ pub struct BundleChain {
 
 /// Everything one client carries to another about one principal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Bundle {
+pub struct ExchangeBundle {
     /// The file version.
     pub v: u64,
     /// The principal's id as the exporter knew it.
@@ -71,7 +71,7 @@ pub struct Bundle {
     pub revoked: Vec<Value>,
 }
 
-impl Bundle {
+impl ExchangeBundle {
     /// The bundle of `record`: its chain, the other branch of each of
     /// `forks`, and `revoked` envelopes.
     #[must_use]

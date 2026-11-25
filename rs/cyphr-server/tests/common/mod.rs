@@ -562,3 +562,34 @@ pub fn eve_revoke(rvk: i64) -> serde_json::Value {
         "key": {"alg": e.alg, "pub": e.pub_key},
     })
 }
+
+/// A gossip table naming one peer by URL alone: its reports are not
+/// checked.
+pub fn plain_gossip(url: impl Into<String>) -> cyphr_server::config::GossipConfig {
+    cyphr_server::config::GossipConfig {
+        peers: vec![cyphr_server::config::PeerEntry::Url(url.into())],
+        ..Default::default()
+    }
+}
+
+/// A gossip table naming `authority` as the one peer, with the PG of its
+/// server principal: its signed tip reports are checked against that
+/// principal's chain.
+pub fn pinned_gossip(
+    url: impl Into<String>,
+    authority: &AppState,
+) -> cyphr_server::config::GossipConfig {
+    let pg = authority
+        .principal
+        .as_ref()
+        .expect("the authority holds a server principal")
+        .pg()
+        .to_string();
+    cyphr_server::config::GossipConfig {
+        peers: vec![cyphr_server::config::PeerEntry::Pinned {
+            url: url.into(),
+            pg,
+        }],
+        ..Default::default()
+    }
+}

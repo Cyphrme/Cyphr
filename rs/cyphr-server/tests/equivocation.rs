@@ -267,7 +267,13 @@ async fn same_key_pair_proves_equivocation() {
     .expect("compose a conflicting tip report under the same key");
 
     assert_eq!(
-        receipt::check_equivocation(&real, identity.pub_key(), &conflicting, identity.pub_key()),
+        receipt::check_equivocation(
+            &real,
+            identity.pub_key(),
+            &conflicting,
+            identity.pub_key(),
+            &[]
+        ),
         EquivocationVerdict::Proven
     );
 }
@@ -328,7 +334,8 @@ async fn cross_key_pair_proves_equivocation() {
             &real,
             identity.pub_key(),
             &conflicting,
-            rotated_identity.pub_key()
+            rotated_identity.pub_key(),
+            &[]
         ),
         EquivocationVerdict::Proven
     );
@@ -371,7 +378,7 @@ async fn different_principal_pair_is_not_equivocation() {
     .expect("compose report b");
 
     assert_eq!(
-        receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key()),
+        receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key(), &[]),
         EquivocationVerdict::DifferentPrincipal
     );
 }
@@ -407,7 +414,7 @@ async fn different_sequence_pair_is_not_equivocation() {
     .expect("compose report b");
 
     assert_eq!(
-        receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key()),
+        receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key(), &[]),
         EquivocationVerdict::DifferentSequence
     );
 }
@@ -444,7 +451,7 @@ async fn bad_signature_pair_is_not_equivocation() {
     .expect("compose report b");
 
     assert_eq!(
-        receipt::check_equivocation(&a, identity.pub_key(), &b, wrong_identity.pub_key()),
+        receipt::check_equivocation(&a, identity.pub_key(), &b, wrong_identity.pub_key(), &[]),
         EquivocationVerdict::InvalidSignature
     );
 }
@@ -478,7 +485,7 @@ async fn wrong_typ_pair_is_not_equivocation() {
     .expect("compose commit receipt");
 
     assert_eq!(
-        receipt::check_equivocation(&tip, identity.pub_key(), &commit, identity.pub_key()),
+        receipt::check_equivocation(&tip, identity.pub_key(), &commit, identity.pub_key(), &[]),
         EquivocationVerdict::WrongTyp
     );
 }
@@ -571,7 +578,8 @@ proptest! {
             restamp_sequence(a, &identity, malformed_value.clone())
         };
 
-        let verdict = receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key());
+        let verdict =
+            receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key(), &[]);
         prop_assert_eq!(
             verdict,
             EquivocationVerdict::Malformed,

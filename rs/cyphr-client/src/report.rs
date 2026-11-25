@@ -257,14 +257,14 @@ pub const HELD_REPORT_TYP: &str = "cyphr-server/receipt/held";
 /// Where branches part: the commits below `height` are common, and
 /// `pre` is their Principal Root (`None` at position 0).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ForkPoint {
+pub struct ReportedForkPoint {
     pub height: u64,
     pub pre: Option<TaggedDigest>,
 }
 
 /// One head a held statement or an Error `/tip` names.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeldHead {
+pub struct ReportedHead {
     pub commit_id: TaggedDigest,
     pub sequence: u64,
     /// When the server first stored the commit (Unix seconds), as it
@@ -278,8 +278,8 @@ pub struct HeldHead {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldReport {
     pub pg: coz::Thumbprint,
-    pub fork_point: ForkPoint,
-    pub heads: Vec<HeldHead>,
+    pub fork_point: ReportedForkPoint,
+    pub heads: Vec<ReportedHead>,
 }
 
 /// Why a held statement or an Error `/tip` payload did not parse.
@@ -324,18 +324,18 @@ impl HeldReport {
 /// patch's branches name their heads themselves.
 pub(crate) fn parse_fork_point(
     v: &Value,
-) -> Result<(ForkPoint, Vec<HeldHead>), HeldReportParseError> {
+) -> Result<(ReportedForkPoint, Vec<ReportedHead>), HeldReportParseError> {
     parse_fork_with(v, false)
 }
 
-fn parse_fork(v: &Value) -> Result<(ForkPoint, Vec<HeldHead>), HeldReportParseError> {
+fn parse_fork(v: &Value) -> Result<(ReportedForkPoint, Vec<ReportedHead>), HeldReportParseError> {
     parse_fork_with(v, true)
 }
 
 fn parse_fork_with(
     v: &Value,
     heads_required: bool,
-) -> Result<(ForkPoint, Vec<HeldHead>), HeldReportParseError> {
+) -> Result<(ReportedForkPoint, Vec<ReportedHead>), HeldReportParseError> {
     let point = &v["fork_point"];
     let height = point["height"]
         .as_u64()
@@ -343,7 +343,7 @@ fn parse_fork_with(
     let pre = parse_optional_digest_field(&point["pre"])
         .map_err(|e| HeldReportParseError::ForkPoint(e.to_string()))?;
     if !heads_required {
-        return Ok((ForkPoint { height, pre }, Vec::new()));
+        return Ok((ReportedForkPoint { height, pre }, Vec::new()));
     }
     let heads = v["heads"]
         .as_array()
@@ -351,7 +351,7 @@ fn parse_fork_with(
         .ok_or_else(|| HeldReportParseError::Heads("not a non-empty array".into()))?
         .iter()
         .map(|h| {
-            Ok(HeldHead {
+            Ok(ReportedHead {
                 commit_id: parse_digest_field(&h["commit_id"])
                     .map_err(|e| HeldReportParseError::Heads(format!("commit_id: {e}")))?,
                 sequence: h["sequence"]
@@ -366,7 +366,7 @@ fn parse_fork_with(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((ForkPoint { height, pre }, heads))
+    Ok((ReportedForkPoint { height, pre }, heads))
 }
 
 /// What a `/tip` answer says, whichever shape: one tip while the principal
@@ -378,8 +378,8 @@ pub enum TipAnswer {
     Active { commit_id: TaggedDigest },
     /// Error (SPEC 15.5): no single tip.
     Error {
-        fork_point: ForkPoint,
-        heads: Vec<HeldHead>,
+        fork_point: ReportedForkPoint,
+        heads: Vec<ReportedHead>,
     },
 }
 

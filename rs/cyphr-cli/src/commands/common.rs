@@ -109,48 +109,38 @@ pub fn extract_genesis_from_commits(
 ) -> crate::Result<Genesis> {
     let first_commit = commits.first().ok_or(Error::MissingField("commits"))?;
     let named = |tmb: &str| first_commit.keys.iter().find(|k| k.tmb == tmb);
+    let decoded = first_commit
+        .bundle()
+        .map_err(|e| Error::InvalidArgument(format!("the first commit does not serialize: {e}")))?
+        .decode()
+        .map_err(|e| Error::InvalidArgument(format!("the first commit does not decode: {e}")))?;
 
     // When keystore is available, prefer signer-based lookup.
     // The signer of the first coz IS the genesis key.
     if let Some(ks) = keystore
-        && let Some(signer_tmb) = first_commit
-            .txs
-            .first()
-            .and_then(|tx| tx.first())
-            .and_then(|coz| coz.pointer("/pay/tmb"))
-            .and_then(|v| v.as_str())
+        && let Some(first) = decoded.cozies().next()
     {
+        let signer_tmb = first.header().tmb.to_b64();
         // The keystore is the local authority: a key in the
         // (untrusted) bundle never overrides it.
-        if let Ok(key) = load_key_from_keystore(ks, signer_tmb) {
+        if let Ok(key) = load_key_from_keystore(ks, &signer_tmb) {
             return Ok(Genesis::Implicit(key));
         }
 
         // Not in the keystore: fall back to the self-signed genesis
         // key the bundle discloses.
-        if let Some(entry) = named(signer_tmb) {
+        if let Some(entry) = named(&signer_tmb) {
             return entry_key(entry).map(Genesis::Implicit);
         }
     }
 
-    // No keystore or signer lookup failed — the keys the key/creates name.
-    let mut genesis_keys = Vec::new();
-    for coz in first_commit.txs.iter().flatten() {
-        let typ = coz
-            .pointer("/pay/typ")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if !cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_CREATE) {
-            continue;
-        }
-        if let Some(entry) = coz
-            .pointer("/pay/id")
-            .and_then(|v| v.as_str())
-            .and_then(named)
-        {
-            genesis_keys.push(entry_key(entry)?);
-        }
-    }
+    // No keystore or signer lookup failed: the keys the genesis commit
+    // discloses.
+    let mut genesis_keys: Vec<Key> = match decoded.genesis_keys() {
+        Some(Ok(keys)) => keys.into_iter().cloned().collect(),
+        Some(Err(e)) => return Err(Error::InvalidArgument(format!("the first commit: {e}"))),
+        None => Vec::new(),
+    };
 
     if genesis_keys.is_empty() {
         return Err(Error::MissingField("genesis key in the first commit"));

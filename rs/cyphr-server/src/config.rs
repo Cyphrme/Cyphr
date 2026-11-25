@@ -16,7 +16,7 @@ use serde::Deserialize;
 // CLI (clap)
 // ========================================================================
 
-/// Cyphr Protocol server — self-sovereign identity authority.
+/// Cyphr Protocol server.
 #[derive(Parser, Debug)]
 #[command(name = "cyphr-server", version, about)]
 pub struct Cli {
@@ -174,10 +174,6 @@ pub struct ServeArgs {
     #[arg(long, env = "CYPHR_SESSION_TTL_SECS")]
     pub session_ttl_secs: Option<i64>,
 
-    /// Target authority URL for witness mode sync.
-    #[arg(long, env = "CYPHR_AUTHORITY_URL")]
-    pub authority_url: Option<String>,
-
     /// A peer to gossip with (repeatable, or comma-separated): its base
     /// URL, dialled exactly as given. Replaces the `[gossip] peers` list.
     #[arg(
@@ -190,6 +186,12 @@ pub struct ServeArgs {
     /// Seconds between gossip rounds (`[gossip] interval_secs`).
     #[arg(long, env = "CYPHR_GOSSIP_INTERVAL_SECS")]
     pub gossip_interval_secs: Option<u64>,
+
+    /// Fetch a principal from the peers when a read asks for one this
+    /// server does not hold (`[gossip] fetch_on_read`). Unset, the mode
+    /// decides: on for `witness`, off for `service`.
+    #[arg(long, env = "CYPHR_GOSSIP_FETCH_ON_READ")]
+    pub gossip_fetch_on_read: Option<bool>,
 
     /// Allow plain `http://` to a non-loopback upstream (the witness
     /// authority and gossip peers). Off by default: every byte would cross
@@ -240,11 +242,7 @@ pub struct ServerConfig {
     #[serde(default = "default_session_ttl_secs")]
     pub session_ttl_secs: i64,
 
-    /// Target authority URL for witness mode sync.
-    #[serde(default)]
-    pub authority_url: Option<String>,
-
-    /// Whether upstream calls (the witness authority and gossip peers) may
+    /// Whether upstream calls (the gossip peers) may
     /// use plain `http://` to a host that is not loopback. Off by default:
     /// a tip report or a patch could be rewritten in transit. `https://`
     /// and loopback never need it.
@@ -254,19 +252,6 @@ pub struct ServerConfig {
     /// Peer-side anti-entropy (the `[gossip]` TOML table).
     #[serde(default)]
     pub gossip: GossipConfig,
-
-    /// The expected upstream-authority signing identity a witness verifies
-    /// a `GET /patch` envelope's signature against before consuming any
-    /// entry (the authenticated-channel identity, K10). `None` preserves the
-    /// legacy unauthenticated sync path; when set, an unsigned, mis-signed,
-    /// or entry-unbound patch response is a sync failure, never applied.
-    ///
-    /// Carries verifiable KEY MATERIAL (alg + public-key bytes), not a bare
-    /// thumbprint: `coz::verify_json` needs the actual public key, and a
-    /// thumbprint verifies nothing. Mirrors the disclosed-key `alg`/`pub`
-    /// pattern (`crate::revoke::DisclosedKey`).
-    #[serde(default)]
-    pub authority_identity: Option<AuthorityIdentity>,
 
     /// Server-side admission policy (the `[admission]` TOML table). Gates
     /// new-principal residency only; defaults to `Open` (permissionless).
@@ -293,9 +278,13 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GossipConfig {
-    /// Base URLs of the peers to pull from. Empty (the default) keeps
-    /// gossip off.
-    pub peers: Vec<String>,
+    /// The peers to pull from, each a base URL or a `{ url, pg }` table.
+    /// Empty (the default) keeps gossip off.
+    pub peers: Vec<PeerEntry>,
+
+    /// Whether a read of a principal this server does not hold fetches it
+    /// from the peers. Unset, the mode decides ([`ServerConfig::fetches_on_read`]).
+    pub fetch_on_read: Option<bool>,
 
     /// Seconds between rounds. A round resumes each held principal from the
     /// engine's kept state and skips one every peer reports idle, so a round
@@ -309,7 +298,47 @@ impl Default for GossipConfig {
     fn default() -> Self {
         Self {
             peers: Vec::new(),
+            fetch_on_read: None,
             interval_secs: 60,
+        }
+    }
+}
+
+/// One configured gossip peer: a base URL dialled exactly as given, or a
+/// table that also names the Principal Genesis of the peer's server
+/// principal (the value its `GET /server` publishes). With a `pg` the peer's
+/// signed tip reports are checked against the keys of that principal's
+/// chain; without one they are not checked (R4: a verifier decides whose
+/// claims to accept).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PeerEntry {
+    /// A base URL.
+    Url(String),
+    /// A base URL and the PG of the peer's server principal.
+    Pinned {
+        /// The base URL.
+        url: String,
+        /// The Principal Genesis of the peer's server principal.
+        pg: String,
+    },
+}
+
+impl PeerEntry {
+    /// The base URL.
+    #[must_use]
+    pub fn url(&self) -> &str {
+        match self {
+            Self::Url(url) | Self::Pinned { url, .. } => url,
+        }
+    }
+
+    /// The PG of the peer's server principal, when configured.
+    #[must_use]
+    pub fn pg(&self) -> Option<&str> {
+        match self {
+            Self::Url(_) => None,
+            Self::Pinned { pg, .. } => Some(pg),
         }
     }
 }
@@ -368,24 +397,6 @@ pub struct LimitsConfig {
     /// needs no prior knowledge of its key, so this quota (with the rate
     /// buckets) is what bounds the set; a revoke past it is refused `507`.
     pub max_dead_keys: NonZeroU64,
-}
-
-/// The expected upstream-authority signing identity for witness-mode sync
-/// (`ServerConfig::authority_identity`).
-///
-/// Verifiable key material -- `alg` names the signature algorithm and
-/// `pub_key` is the raw public key `coz::verify_json` checks the patch
-/// envelope's signature against. A bare thumbprint is deliberately NOT
-/// sufficient: it identifies a key but cannot verify a signature. Mirrors
-/// the `alg`/`pub` wire shape of [`crate::revoke::DisclosedKey`].
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AuthorityIdentity {
-    /// The authority's signature algorithm (e.g. `Ed25519`).
-    pub alg: String,
-    /// The authority's public key bytes (base64url in JSON, wire field `pub`).
-    #[serde(rename = "pub", with = "coz::b64")]
-    pub pub_key: Vec<u8>,
 }
 
 /// A token-bucket rate: `per_second` cells replenished each second, up to a
@@ -486,19 +497,14 @@ impl From<AdmissionWire> for AdmissionConfig {
 }
 
 impl ServerConfig {
-    /// True when this config is a witness pointed at an authority but has no
-    /// [`AuthorityIdentity`] to verify its `/patch` responses against -- the
-    /// sync channel is fully unauthenticated (K10 disabled). Not
-    /// attacker-influenced (deployment configuration only, and
-    /// `authority_identity` has no CLI/env override -- TOML only), so this
-    /// is a deployment-safety gap rather than an attack: the fully
-    /// unauthenticated path is a deliberate, documented backward-compatible
-    /// mode (see `crate::sync`), not one this refuses to start -- it is
-    /// surfaced as a loud, explicit warning instead.
-    pub fn witness_authenticated_channel_unconfigured(&self) -> bool {
-        self.mode == ServerMode::Witness
-            && self.authority_url.is_some()
-            && self.authority_identity.is_none()
+    /// Whether a read of a principal this server does not hold fetches it
+    /// from the peers: the setting when given, else the mode's default
+    /// (a witness does, a service does not).
+    #[must_use]
+    pub fn fetches_on_read(&self) -> bool {
+        self.gossip
+            .fetch_on_read
+            .unwrap_or(self.mode == ServerMode::Witness)
     }
 
     /// The `record/` subtree: every store the server was told and cannot
@@ -551,12 +557,10 @@ impl Default for ServerConfig {
             transport_listen: None,
             data_dir: PathBuf::from("./data"),
             log_format: LogFormat::Pretty,
-            mode: ServerMode::Authority,
+            mode: ServerMode::Service,
             signing_key_path: None,
             audience: None,
             session_ttl_secs: default_session_ttl_secs(),
-            authority_url: None,
-            authority_identity: None,
             allow_cleartext_upstream: false,
             gossip: GossipConfig::default(),
             admission: AdmissionConfig::default(),
@@ -579,9 +583,11 @@ pub enum LogFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ServerMode {
-    /// Accept and validate writes (`/push`).
-    Authority,
-    /// Read-only API; sync from a configured authority.
+    /// Accept and validate principals' writes (`/push`): third-party
+    /// service storage (SPEC 16.2). The default.
+    Service,
+    /// Refuse writes; keep copies of principals' state and follow the
+    /// configured peers through gossip (SPEC 2.2.14).
     Witness,
 }
 
@@ -656,11 +662,16 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         if let Some(ttl) = args.session_ttl_secs {
             config.session_ttl_secs = ttl;
         }
-        if let Some(ref authority_url) = args.authority_url {
-            config.authority_url = Some(authority_url.clone());
-        }
         if !args.gossip_peers.is_empty() {
-            config.gossip.peers = args.gossip_peers.clone();
+            config.gossip.peers = args
+                .gossip_peers
+                .iter()
+                .cloned()
+                .map(PeerEntry::Url)
+                .collect();
+        }
+        if let Some(on) = args.gossip_fetch_on_read {
+            config.gossip.fetch_on_read = Some(on);
         }
         if let Some(interval) = args.gossip_interval_secs {
             config.gossip.interval_secs = interval;
@@ -675,37 +686,21 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
     if config.gossip.interval_secs == 0 {
         return Err(ConfigError::GossipIntervalZero);
     }
-    for url in config.authority_url.iter().chain(&config.gossip.peers) {
+    for url in config.gossip.peers.iter().map(PeerEntry::url) {
         cyphr_client::HttpConnector::check_url(url, config.allow_cleartext_upstream).map_err(
             |source| match source {
                 cyphr_client::ConnectError::CleartextRefused { host } => {
                     ConfigError::CleartextUpstream {
-                        url: url.clone(),
+                        url: url.to_owned(),
                         host,
                     }
                 },
                 other => ConfigError::UpstreamUrl {
-                    url: url.clone(),
+                    url: url.to_owned(),
                     reason: other.to_string(),
                 },
             },
         )?;
-    }
-
-    // Deployment-safety warning, not a refusal to start (see
-    // `witness_authenticated_channel_unconfigured`'s doc): `eprintln!`
-    // rather than `tracing::warn!` because this runs before
-    // `logging::init_tracing` (see `main.rs`), so a tracing event here could
-    // be silently dropped by the default no-op subscriber -- this must reach
-    // an operator regardless of log configuration.
-    if config.witness_authenticated_channel_unconfigured() {
-        eprintln!(
-            "WARNING: witness mode is configured with an authority_url but no \
-             [authority_identity] -- the sync channel is UNAUTHENTICATED (K10 disabled). An \
-             on-path party can forge, withhold, or substitute /patch entries with no \
-             verification. Configure an [authority_identity] table (alg + pub) in the TOML config \
-             file to enable the authenticated channel."
-        );
     }
 
     Ok(config)
@@ -718,16 +713,7 @@ pub enum ConfigError {
     #[error("configuration: {0}")]
     Figment(Box<figment::Error>),
 
-    /// `mode = "witness"` was configured for `serve`, but witness mode has
-    /// no enforcement anywhere in the server yet.
-    #[allow(dead_code)]
-    #[error(
-        "witness mode is not yet implemented -- no route or handler enforces \
-         read-only/sync-from-authority behavior; use mode = \"authority\" (the default)"
-    )]
-    WitnessModeUnimplemented,
-
-    /// An upstream (the witness authority or a gossip peer) is plain
+    /// A gossip peer is plain
     /// `http://` to a host that is not loopback.
     #[error(
         "upstream {url} is plain http to non-loopback host `{host}`: a tip report or patch could \
@@ -816,9 +802,9 @@ mod tests {
                 signing_key_path: None,
                 audience: None,
                 session_ttl_secs: None,
-                authority_url: None,
                 gossip_peers: Vec::new(),
                 gossip_interval_secs: None,
+                gossip_fetch_on_read: None,
                 allow_cleartext_upstream: false,
             }),
         }
@@ -842,54 +828,27 @@ mod tests {
         );
     }
 
-    /// A witness pointed at an authority with no `[authority_identity]` is
-    /// the fully unauthenticated (K10-disabled) sync path -- a deliberate,
-    /// documented backward-compatible mode, so `resolve_config` must still
-    /// succeed (this is a warning, not a refusal to start), but the gap
-    /// must be DETECTED so `main` can surface it loudly.
+    /// The `[gossip]` table takes a peer as a URL or as `{ url, pg }`, and
+    /// the mode sets whether a read fetches (on for a witness, off for a
+    /// service) unless `fetch_on_read` says otherwise. Scenario: an
+    /// operator's TOML file resolved against each mode.
     #[test]
-    fn witness_with_authority_url_and_no_identity_resolves_but_is_flagged() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-            "--mode",
-            "witness",
-            "--authority-url",
-            "http://127.0.0.1:1",
-        ]);
-        let config = resolve_config(&cli)
-            .expect("an unauthenticated witness sync path must not be refused at startup");
-        assert!(
-            config.witness_authenticated_channel_unconfigured(),
-            "a witness with authority_url set and no authority_identity must be flagged"
-        );
-    }
-
-    /// GUARD: a witness with a correctly configured `authority_identity`
-    /// must NOT be flagged -- nothing else pinned that a correctly
-    /// configured K10 witness avoids the `UNAUTHENTICATED` startup warning
-    /// (`resolve_config`'s `eprintln!`); the other three tests each hold
-    /// `authority_identity` at its default `None`, so clause 3
-    /// (`authority_identity.is_none()`) was unexercised by every one of
-    /// them. `authority_identity` has no CLI/env override (TOML only), so
-    /// this constructs the resolved config directly rather than via `parse`.
-    #[test]
-    fn witness_with_configured_identity_is_not_flagged() {
-        let config = ServerConfig {
-            mode: ServerMode::Witness,
-            authority_url: Some("http://127.0.0.1:1".to_string()),
-            authority_identity: Some(AuthorityIdentity {
-                alg: "Ed25519".to_string(),
-                pub_key: vec![0u8; 32],
-            }),
-            ..Default::default()
+    fn peers_are_urls_or_pinned_tables_and_the_mode_sets_fetch_on_read() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let peers = "peers = [\"http://127.0.0.1:1\", { url = \"http://127.0.0.1:2\", pg = \
+                     \"SHA-512:abc\" }]";
+        let resolve = |top: &str, gossip: &str| {
+            let toml = format!("{top}\n[gossip]\n{gossip}\n{peers}\n");
+            resolve_config(&parse_with_admission_table(tmp.path(), &toml)).expect("resolves")
         };
-        assert!(
-            !config.witness_authenticated_channel_unconfigured(),
-            "a witness with a configured authority_identity has an authenticated channel and must \
-             not be flagged as unauthenticated"
-        );
+
+        let service = resolve("", "");
+        assert_eq!(service.gossip.peers[0].pg(), None);
+        assert_eq!(service.gossip.peers[1].pg(), Some("SHA-512:abc"));
+        assert_eq!(service.gossip.peers[1].url(), "http://127.0.0.1:2");
+        assert!(!service.fetches_on_read());
+        assert!(resolve("mode = \"witness\"", "").fetches_on_read());
+        assert!(!resolve("mode = \"witness\"", "fetch_on_read = false").fetches_on_read());
+        assert!(resolve("", "fetch_on_read = true").fetches_on_read());
     }
 }

@@ -57,7 +57,7 @@ fn assert_refused_naming(toml: &str, key: &str) {
 /// Backs: a misspelled security setting cannot fall back to a default; the
 /// config is refused and the error names the typo. One case per table, since
 /// `deny_unknown_fields` is easy to forget on any single struct (admission
-/// tag enum, top level, `[limits]`, inline `RateBucket`, `[authority_identity]`).
+/// tag enum, top level, `[limits]`, inline `RateBucket`, `[gossip]`).
 /// Unit: the config loader runs before any server exists, so no HTTP surface
 /// reaches it.
 #[test]
@@ -76,10 +76,7 @@ fn unknown_keys_are_refused_in_every_config_table() {
         "[limits]\npush = { per_second = 1, burst = 1, bursts = 2 }\n",
         "bursts",
     );
-    assert_refused_naming(
-        "[authority_identity]\nalg = \"Ed25519\"\npub = \"AAAA\"\nalgg = \"x\"\n",
-        "algg",
-    );
+    assert_refused_naming("[gossip]\nintervall_secs = 5\n", "intervall_secs");
 }
 
 /// GREEN characterization: every shipped and every valid key still loads
@@ -94,15 +91,15 @@ fn known_keys_still_load() {
     assert!(matches!(cfg.admission, AdmissionConfig::Open));
 
     let cfg = load_toml(
-        "mode = \"witness\"\nauthority_url = \"https://a\"\n[admission]\npolicy = \
-         \"invite\"\ntokens_path = \"/t\"\n[limits]\npush = { per_second = 3, burst = 4 \
-         }\n[authority_identity]\nalg = \"Ed25519\"\npub = \"AAAA\"\n",
+        "mode = \"witness\"\n[gossip]\npeers = [\"https://a\", { url = \"https://b\", pg = \
+         \"SHA-512:AAAA\" }]\n[admission]\npolicy = \"invite\"\ntokens_path = \
+         \"/t\"\n[limits]\npush = { per_second = 3, burst = 4 }\n",
     )
     .expect("every valid key loads");
     assert!(matches!(cfg.admission, AdmissionConfig::Invite { .. }));
     assert_eq!(cfg.mode, ServerMode::Witness);
     assert_eq!(cfg.limits.push.burst, 4);
-    assert!(cfg.authority_identity.is_some());
+    assert_eq!(cfg.gossip.peers[1].pg(), Some("SHA-512:AAAA"));
 }
 
 // ========================================================================
@@ -138,7 +135,10 @@ async fn witness_against(url: &str) -> (axum::Router, tempfile::TempDir) {
     let config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: dir.path().join("data"),
-        authority_url: Some(url.to_string()),
+        gossip: cyphr_server::config::GossipConfig {
+            peers: vec![cyphr_server::config::PeerEntry::Url(url.to_string())],
+            ..Default::default()
+        },
         ..Default::default()
     };
     let state = Arc::new(AppState::new(config).expect("witness AppState"));

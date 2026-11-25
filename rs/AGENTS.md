@@ -25,7 +25,7 @@ Coz Rust library (`Cyphrme/coz-rust`) still takes raw private-key bytes
 in `coz::sign_json`, so a backend that cannot export its key needs an
 upstream change.
 
-## Building: the shared target directory
+## Building: the target directory
 
 If your checkout shares a cargo target directory across worktrees (a local,
 untracked `.cargo/config.toml` with `build.target-dir`), then when two worktrees
@@ -43,6 +43,12 @@ cd rs && cargo metadata --no-deps --format-version 1 \
 Dependency crates stay cached, so this costs a rebuild of the workspace
 only.
 
+Each worktree builds into its own default `rs/target`, with no shared
+`target-dir`: concurrent builds into a shared target replace the `debug/cyphr`
+and `debug/cyphr-server` binaries that CLI and scenario tests run by path.
+Test temp files go under the repo's `.scratch/tmp`, never `/tmp`. A worktree is
+removed when its node merges.
+
 ## Testing policy
 
 Root R13 governs. nrd: "We want meaningful property, metamorphic and
@@ -54,8 +60,11 @@ level if and where possible."
   integration tests, and e2e scenarios against real `cyphr-server`
   instances and clients. `../tests/golden` pins byte-exact formats;
   `fuzz/` covers parsers of untrusted input.
-- A unit test is allowed only for a tricky edge none of those reach, and
-  carries a comment naming the edge. Prefer making the edge
+- A unit test is allowed only as a regression test for a defect actually
+  found, usually written after the fact, and its doc comment says which
+  defect. nrd: "The only time we should be unit testing is for regression
+  testing. If we find an edge case and we want to make sure it doesn't
+  recur, that's about the only time." Prefer making the edge
   unrepresentable in the types over testing it.
 - Every test names the spec rule or user-visible behaviour it checks.
 - Delete a test that cannot fail for a real defect: green by
@@ -159,10 +168,6 @@ level if and where possible."
   later write (`EngineError::DurabilityLost`, a `500` over HTTP) until the
   process restarts. Never move a signature or an answer ahead of it
   (`docs/specs/storage-engine.md` `[record-durable-first]`).
-- **Trust-boundary parsing is multiplied.** Coz header extraction /
-  czd computation are hand-rolled in ~4/10 places (engine, reindex,
-  import, CLI) with silent defaults. Don't add a fifth — the campaign
-  consolidates these into canonical `cyphr` primitives.
 
 ## Unknowns
 

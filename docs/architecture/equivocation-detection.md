@@ -89,17 +89,22 @@ it can be checked.
   in `rs/cyphr-server/tests/spec_conformance.rs`). The server keeps no
   record of the refused branch. Nothing in the server records a fork,
   tracks a consensus state, or attaches evidence to an answer.
-- **Witness mode pulls from one configured upstream.** A server started
-  with `--mode witness` refuses writes and pulls `/patch` from the
-  server named by `authority_url`, verifying each commit before it
-  persists it (`rs/cyphr-server/src/sync.rs`). The
+- **Witness mode follows its configured peers.** A server started with
+  `--mode witness` refuses writes, pulls the principals it holds from its
+  `[gossip]` peers on a timer, and fetches a principal it does not hold from
+  them when one is read, verifying each commit before it persists it
+  (`rs/cyphr-server/src/gossip.rs`). The
   [server operating guide](../guides/operating-a-server.md) describes
   the configuration.
 - **The comparison exists as a library function.**
   `check_equivocation` in `rs/cyphr-server/src/receipt.rs` takes two tip
-  reports and a public key for each. It returns `Proven` only when both
-  verify, name the same principal and the same `sequence`, and differ in
-  `commit_id` or in a root. Reports at different sequences return
+  reports, a public key for each, and the forks a witness holds for the
+  principal. It returns `Proven` only when both verify, name the same
+  principal and the same `sequence`, and differ in `commit_id` or in a
+  root, and the report signed first does not name a commit the fork rule
+  passed over. A fork settled by a valid resolution (a resync proof or a
+  commit extending one branch) is no longer a fork, so that pair returns
+  `Resolved`. Reports at different sequences return
   `DifferentSequence`, which settles nothing: the function makes no
   prefix check. It does not check that the two keys belong to one
   server; the receipts specification requires the caller to have

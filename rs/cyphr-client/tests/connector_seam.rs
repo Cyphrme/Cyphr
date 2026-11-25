@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_client::{
-    AuthorityKey, BindingError, BindingKind, BindingPolicy, ChannelBinding, ConnectError,
-    Connector, HttpConnector, PatchFailure, PatchRequest, Request, fetch_patch,
+    BindingError, BindingKind, BindingPolicy, ChannelBinding, ConnectError, Connector,
+    HttpConnector, PatchFailure, PatchRequest, PeerKey, Request, fetch_patch,
     verify_authenticated_envelope,
 };
 
@@ -21,14 +21,14 @@ fn b64(b: u8) -> String {
 }
 
 struct Authority {
-    key: AuthorityKey,
+    key: PeerKey,
     prv: Vec<u8>,
 }
 
 fn authority() -> Authority {
     let kp = coz::Alg::Ed25519.generate_keypair();
     Authority {
-        key: AuthorityKey {
+        key: PeerKey {
             alg: kp.alg.name().to_string(),
             pub_key: kp.pub_bytes.clone(),
         },

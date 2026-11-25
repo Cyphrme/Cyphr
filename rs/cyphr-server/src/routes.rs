@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::envelope::Envelope;
 use crate::error::{AppError, AppJson};
-use crate::sync::SyncOutcome;
 use crate::{AppState, receipt};
 
 // ========================================================================
@@ -368,28 +367,18 @@ fn is_principal_ref(raw: &str) -> bool {
     }
 }
 
-/// Witness mode only: sync `pr` from the authority before the local read.
+/// A read of `pr`: fetch it from the configured peers first when the node
+/// is set to (`[gossip] fetch_on_read`, on for a witness).
 ///
 /// A `pr` that is not shaped like a principal identifier is never forwarded:
 /// the local lookup alone answers (not found), so unauthenticated garbage
-/// costs the witness no outbound request. Authority mode is unchanged.
-async fn witness_sync(state: &Arc<AppState>, pr: &str) {
-    if state.config.mode != crate::config::ServerMode::Witness {
-        return;
-    }
+/// costs the node no outbound request.
+async fn fetch_on_read(state: &Arc<AppState>, pr: &str) {
     if !is_principal_ref(pr) {
-        tracing::debug!("witness sync skipped: pr is not a principal identifier");
+        tracing::debug!("fetch on read skipped: pr is not a principal identifier");
         return;
     }
-    match crate::sync::sync_from_authority(state, pr).await {
-        SyncOutcome::Synced { applied, rejected } => {
-            tracing::debug!(principal = %pr, applied, rejected, "witness sync applied entries");
-        },
-        SyncOutcome::UpToDate => {},
-        SyncOutcome::Failed { reason } => {
-            tracing::warn!(principal = %pr, ?reason, "witness sync failed");
-        },
-    }
+    crate::gossip::fetch_on_read(state, pr).await;
 }
 
 /// `GET /tip?pg=<PG>` — current principal state.
@@ -398,7 +387,7 @@ pub async fn tip(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    witness_sync(&state, &query.pg).await;
+    fetch_on_read(&state, &query.pg).await;
 
     let tip = state
         .engine
@@ -533,7 +522,7 @@ pub async fn branches(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    witness_sync(&state, &query.pg).await;
+    fetch_on_read(&state, &query.pg).await;
 
     let branches = state
         .engine
@@ -561,7 +550,7 @@ type LogStorage = cyphr_blob_fjall::storage_fjall::FjallStorage;
 /// The tip of a principal that has one log to prove against: 404 for an
 /// unknown principal, 409 for one in Error (SPEC 15.5).
 async fn provable_tip(state: &Arc<AppState>, pr: &str) -> Result<TipState, AppError> {
-    witness_sync(state, pr).await;
+    fetch_on_read(state, pr).await;
     let t = state
         .engine
         .get_tip(pr)
@@ -732,7 +721,7 @@ pub async fn evidence(
             query.pg
         )));
     }
-    witness_sync(&state, &query.pg).await;
+    fetch_on_read(&state, &query.pg).await;
 
     let (principal, forks) = state
         .engine
@@ -1019,7 +1008,7 @@ pub async fn patch(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PatchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    witness_sync(&state, &query.pg).await;
+    fetch_on_read(&state, &query.pg).await;
 
     // Retyped from a bare sequence to a content digest (Zami #140; S0.1: the
     // anchor root is PR). Parsed here, once, at the same boundary the

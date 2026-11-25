@@ -3,7 +3,7 @@
 use std::sync::OnceLock;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::{AuthorityKey, verify_patch_body};
+use cyphr_client::{PeerKey, verify_patch_body};
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
@@ -29,12 +29,12 @@ use serde_json::{Value, json};
 // comparison and the entry decoding rather than stopping at the signature.
 
 /// One authority keypair, generated once per fuzzer process.
-fn authority() -> &'static (AuthorityKey, Vec<u8>) {
-    static KEY: OnceLock<(AuthorityKey, Vec<u8>)> = OnceLock::new();
+fn authority() -> &'static (PeerKey, Vec<u8>) {
+    static KEY: OnceLock<(PeerKey, Vec<u8>)> = OnceLock::new();
     KEY.get_or_init(|| {
         let kp = coz::Alg::Ed25519.generate_keypair();
         (
-            AuthorityKey {
+            PeerKey {
                 alg: kp.alg.name().to_string(),
                 pub_key: kp.pub_bytes.clone(),
             },

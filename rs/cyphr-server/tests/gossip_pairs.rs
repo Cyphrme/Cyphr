@@ -15,6 +15,7 @@ use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
 use cyphr_client::HttpConnector;
+use cyphr_server::gossip::Peer;
 use cyphr_server::{AppState, build_router};
 
 mod common;
@@ -170,12 +171,12 @@ async fn two_refused_roots_each_travel_with_their_own_extension() {
     let want = verdict(&reference, &id).await;
     assert!(want.0, "premise: the lines make both branches extended");
 
-    let dial = |state: &Arc<AppState>, urls: &[String]| -> Vec<(String, HttpConnector)> {
+    let dial = |state: &Arc<AppState>, urls: &[String]| -> Vec<Peer> {
         urls.iter()
             .map(|url| {
                 let connector = HttpConnector::with_client(state.http_client.clone(), url, true)
                     .expect("connector");
-                (url.clone(), connector)
+                Peer::new(url.clone(), connector)
             })
             .collect()
     };
