@@ -13,10 +13,12 @@ website, which the rest of the document calls the **relying party**, is the part
 that key.
 
 This document describes what a relying party does, in two parts. The first part reads
-the decision procedure off the relying party this repository already contains, which is
+the decision procedure off the relying party built into the Cyphr server, which is
 co-located with the record it checks against. The second part establishes what changes
-when the relying party is separated from that record, which is the ordinary deployment
-and the one nothing here implements.
+when the relying party is separated from that record, which is the ordinary deployment.
+`cyphr_client::RelyingParty` (`rs/cyphr-client/src/relying_party.rs`) is that separated
+relying party: it replays the principal's chain from peers it chose, pinned at the
+principal's genesis key, and decides a sign-in only from the key set that replay produced.
 
 **Audience.** Someone deciding how to integrate Cyphr sign-in, and anyone deciding what
 to build next. It answers how the pieces fit together, not what must be true bit by bit;
@@ -32,13 +34,13 @@ reproduced; a **watcher** cures a monotonicity failure by holding more than one 
 time. A participant trusted for nothing carries no kind — its claims are discharged by an
 evaluator instead.
 
-| participant              | what it is trying to accomplish                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | kind                                                                                                |
-| :----------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- |
-| **The person**           | Prove she controls her account without a password and without an identity provider standing between her and the site.                                                                                                                                                                                                                                                                                                                                                                                                              | **attestor** at enrollment — see below                                                              |
-| **The relying party**    | Decide whether to serve this person as the holder of a particular account, and decide it again on every session.                                                                                                                                                                                                                                                                                                                                                                                                                   | none — it is the party doing the trusting                                                           |
-| **The record authority** | Serve a correct, replayable view of a principal's chain to anyone who asks.                                                                                                                                                                                                                                                                                                                                                                                                                                                        | none — it is _not_ sufficient for the claims that need one; see [the claim table](#the-claim-table) |
-| **The recovery agent**   | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says. Where permissions are delegated to it as an external account it can also initiate a freeze, and it signs the recovery transaction that links a new Principal Root (PR) to the original Principal Genesis (PG), the account's permanent identifier ([`SPEC.md` §3.7.1](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#371-principal-root-and-principal-genesis)). | **attestor** (this sense)                                                                           |
-| **The watcher**          | Establish that the view of a principal one party holds is not a stale or partial one. **The specification names this participant; nothing implements it.** `SPEC.md` §13 is headed _"State Synchronization and Gossip // TODO"_ and its §13.7 _"Gossip"_ is a stub with an empty Prover and Verifier, so the protocol is unwritten rather than undesigned; `git grep -in gossip -- rs/ go/` returns no match.                                                                                                                      | **watcher**                                                                                         |
+| participant              | what it is trying to accomplish                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | kind                                                                                                |
+| :----------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- |
+| **The person**           | Prove she controls her account without a password and without an identity provider standing between her and the site.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | **attestor** at enrollment — see below                                                              |
+| **The relying party**    | Decide whether to serve this person as the holder of a particular account, and decide it again on every session.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | none — it is the party doing the trusting                                                           |
+| **The record authority** | Serve a correct, replayable view of a principal's chain to anyone who asks.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | none — it is _not_ sufficient for the claims that need one; see [the claim table](#the-claim-table) |
+| **The recovery agent**   | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says. Where permissions are delegated to it as an external account it can also initiate a freeze, and it signs the recovery transaction that links a new Principal Root (PR) to the original Principal Genesis (PG), the account's permanent identifier ([`SPEC.md` §3.7.1](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#371-principal-root-and-principal-genesis)).                                                                                                                                                                                                                           | **attestor** (this sense)                                                                           |
+| **The watcher**          | Establish that the view of a principal one party holds is not a stale or partial one. **The specification names this participant but does not define its protocol.** `SPEC.md` §13 is headed _"State Synchronization and Gossip // TODO"_ and its §13.7 _"Gossip"_ is a stub with an empty Prover and Verifier. What ships is the implementation's own gossip, not a specified protocol: a server's `[gossip]` timer pulls every principal it holds from the peers its operator chose, `cyphr verify`, `cyphr watch` and `cyphr audit` compare a client's view with those peers' views, and `cyphr gossip export` and `import` carry a verified record between clients with no peer. None of it makes a view current; see [currency-unmet](#currency-unmet). | **watcher**                                                                                         |
 
 Recovery agent and Recovery Authority: `SPEC.md` §14.2 names the external account that
 holds delegated recovery permissions a **Recovery Authority** (_"**External Recovery**
@@ -75,15 +77,15 @@ not the one keeping the record.
 ## Part 1 — the relying party that exists
 
 `rs/cyphr-server/src/auth/` is a working relying party, routed at
-`rs/cyphr-server/src/lib.rs:254-258` as `POST /auth/challenge` and `POST /auth/login`. It
+`rs/cyphr-server/src/lib.rs` as `POST /auth/challenge` and `POST /auth/login`. It
 is described here to fix a concrete referent, so that Part 2 is a delta rather than an
 invention.
 
 **It is co-located with the record.** It answers _is this key active for this principal_
-from its own storage, in its own words at `rs/cyphr-server/src/auth/login.rs:429-441`:
+from its own storage, in its own words in `login` (`rs/cyphr-server/src/auth/login.rs`):
 
-> Load the _claimed_ principal and gate on it: key active in it, and it is Active.
-> Reconstructed from stored state via the same engine the write path uses.
+> Read the _claimed_ principal and gate on it: key active in it, and it is Active. The
+> verified state at its tip, from the same engine entry the write path uses.
 
 It never crosses a trust boundary to learn a key set, so it never faces the question the
 rest of this document is about.
@@ -96,7 +98,7 @@ Behaviours that are neither are named at the end of this part and left alone.
 **It binds the login to its own identity.** The login's `typ` carries an audience segment
 naming the service the signer believes she is authenticating to, and the server checks it
 against its own configured identity rather than against any transport detail
-(`login.rs:171-179`). Without this, a malicious service can relay a login a person signed
+(`parse_login`, `rs/cyphr-server/src/auth/login.rs`). Without this, a malicious service can relay a login a person signed
 for it to a victim service and collect her session there — the relay that WebAuthn closes
 by binding the origin inside the signed client data (W3C Web Authentication, the
 [`CollectedClientData` `origin`
@@ -107,24 +109,24 @@ party a relay targets.
 **It requires the signer to name the principal she claims.** The key's thumbprint is not
 used to look up an account, because one key may belong to several principals; the signer
 names the principal and the server verifies the key is active in _that_ one
-(`login.rs:214-223`). A separated relying party **inherits** this, and it becomes harder:
+(`authorize_login`). A separated relying party **inherits** this, and it becomes harder:
 it must map the person to a principal identifier without a local store to search.
 
 **It verifies possession, activity, and lifecycle.** The signature must verify against the
 named key; the key must be active in the claimed principal; the principal must be in an
-Active lifecycle state (`login.rs:225-238`). The signature check is free — anyone can run
+Active lifecycle state (`authorize_login`). The signature check is free — anyone can run
 it. The activity and lifecycle checks are not: they require the principal's current state,
 and a separated relying party **breaks** here. This is the pivot of the whole document.
 
 **It refuses a key its holder disowned out of band.** A key recorded in the global
 death-set (the server's record of keys whose holders declared them dead out of band,
 kept apart from any principal's chain) is refused at login even when the chain still shows it active
-(`login.rs:444-455`), because the holder declared it compromised by a route the chain does
+(the `is_dead` check in `login`), because the holder declared it compromised by a route the chain does
 not carry. A separated relying party **breaks** here too, and worse: the death-set is
 state it does not have at all.
 
 **It bounds replay.** Either a single-use nonce or a ±60-second timestamp window,
-selected by whether the payload carries a challenge (`login.rs:457-466`). `SPEC.md` §17.3
+selected by whether the payload carries a challenge (the replay branch of `login`). `SPEC.md` §17.3
 gives both, as a two-row table reproduced here as it stands:
 
 | Mechanism            | How it works                                          | Trade-off           |
@@ -154,13 +156,13 @@ bound. A separated relying party **breaks** the assumption this design rests on.
 
 **It declines honestly when it cannot do the job.** A server with no signing identity
 refuses both login and the challenge that precedes it, with the same error, rather than
-issuing a nonce that can never be redeemed (`login.rs:366-400`). A separated relying party
+issuing a nonce that can never be redeemed (`login_capability`). A separated relying party
 **inherits** this as a pattern: a party that cannot establish a precondition should say so
 rather than serve a session that silently means less than it appears to.
 
 **The identifier survives key rotation.** A principal's genesis identifier does not change
 when its keys do; rotation extends the chain and leaves the genesis untouched
-(`docs/specs/server-identity.md:205-211`):
+(`docs/specs/server-identity.md`):
 
 > **The PG is rotation-stable.** A server's Principal Genesis never changes across a key
 > rotation -- rotation extends the chain with a `key/replace` commit and leaves the genesis
@@ -184,21 +186,17 @@ not more.
 
 ## Part 2 — what breaks when the relying party is separated
 
-Everything in this part follows from three calls
-(`rs/cyphr-server/src/auth/login.rs:432-442`):
+Everything in this part follows from two calls (`login` in
+`rs/cyphr-server/src/auth/login.rs`):
 
 ```rust
-let genesis = state
-    .engine
-    .resolve_genesis(&parsed.pg, &[])
-    .await
-    .map_err(map_load_error)?;
 let principal = state
     .engine
-    .load_principal(&parsed.pg, genesis)
+    .at_tip(&parsed.pg)
     .await
-    .map_err(map_load_error)?;
-authorize_login(&parsed, &principal)?;
+    .map_err(map_load_error)?
+    .ok_or_else(|| AppError::unauthorized("login: unknown principal"))?;
+let parsed = authorize_login(parsed, &principal)?;
 ```
 
 Those are local calls. Every check Part 1 describes that needs the principal's key set —
@@ -208,23 +206,26 @@ is not the record authority, and it is defined by the fact that it **cannot make
 call**. It must obtain the same key set over a channel it does not control.
 
 This is the one thing the co-located relying party does that a separated one cannot, and
-every difference between the two is downstream of it. Nothing in this repository
-implements the separated case, and no test addresses it.
+every difference between the two is downstream of it. The separated case is
+`cyphr_client::RelyingParty`, which the rest of this part describes, and
+`rs/cyphr-client/examples/relying_party.rs` runs it against a server.
 
-### How it would obtain the key set
+### How it obtains the key set
 
-The mechanism exists and is specified for a different consumer. A client pins a server's
-genesis identifier on first contact and thereafter verifies every later key by replaying
-the server's own chain through the public surface, rather than trusting what the server
-asserts about itself (`docs/specs/server-identity.md:194-226`):
+The mechanism is the one a client uses for a server. A client pins a server's genesis
+identifier on first contact and thereafter verifies every later key by replaying the
+server's own chain through the public surface, rather than trusting what the server asserts
+about itself (`docs/specs/server-identity.md`):
 
 > **Pin the PG on first contact.** … This is the only moment trust is extended on faith;
 > every later interaction verifies against the pinned value instead of re-trusting the
 > network.
 
-The same shape applies to a person's principal: pin the genesis identifier at enrollment,
-then replay the chain from it to learn the current key set. Every step of that replay is
-verifiable by the party doing it. **This is the part that works**, and it is what
+The same shape applies to a person's principal, and `RelyingParty` does it: it is anchored
+at the principal's genesis key or genesis commit id (never the PG alone, because one key
+set under different openers derives one PG), and `refresh` replays the chain from peers it
+chose to learn the current key set. No peer's statement about the current key is believed.
+Every step of that replay is verifiable by the party doing it. **This is the part that works**, and it is what
 `SPEC.md` §17.5's _"verifiable by any party without a central authority"_ delivers.
 
 ### What replay does not establish
@@ -232,17 +233,13 @@ verifiable by the party doing it. **This is the part that works**, and it is wha
 Replay establishes that every commit the relying party _has_ is valid and follows from the
 genesis it pinned. It does not establish that it has all of them.
 
-This is not a hypothetical. This repository already contains a party that syncs another
-principal's state over exactly such a channel, and its own module documentation states the
-gap (`rs/cyphr-server/src/sync.rs`):
-
-> **What this does not close: replay of a genuine response.** The check authenticates the
-> _pairing_ of local state and signed report, not the report's _currency_. A response the
-> authority genuinely signed at a moment when its tip equalled the witness's own state
-> matches that state by construction, forever — an on-path party can hold such a response
-> and keep serving it on every later poll … Nothing is forged or altered, so no comparison
-> of wire fields against each other or against local state can distinguish it from a live
-> response.
+This is not a hypothetical. A server in witness mode syncs another principal's state over
+exactly such a channel, and a signed tip report authenticates what the authority holds, not
+that it is current: nothing binds it to a request, so a genuine report can be replayed
+while the authority advances ([known limits](../guides/known-limits.md), "Tip currency").
+An on-path party can hold a response the authority genuinely signed and keep serving it.
+No comparison of wire fields against each other or against local state can distinguish it
+from a live response.
 
 Nothing is forged. The relying party holds a genuine, correctly-signed, internally
 consistent view. It is simply old, and no property of the view reveals that. A channel
@@ -291,15 +288,15 @@ a requirement or a note saying why it has none.
 
 ### Claims about the record
 
-| #   | claim                                                            |  Det   | Cert |  Mono  | cell            | trusted party                                                     | a bad one yields                                                  |
-| :-- | :--------------------------------------------------------------- | :----: | :--: | :----: | :-------------- | :---------------------------------------------------------------- | :---------------------------------------------------------------- |
-| 1   | This request was signed by key _K_                               |   —    |  —   |   —    | below the floor | none — evaluator: `coz::verify_json`, `login.rs:226`              | a forged sign-in is accepted                                      |
-| 2   | This chain derives to identifier _P_                             |  yes   | yes  |  yes   | 1 — verifiable  | none — evaluator required; **none exists**, see row note          | a record is served under an identifier it does not belong to      |
-| 3   | _P_'s identifier is the same one as last session                 |  yes   | yes  |  yes   | 1 — verifiable  | none — evaluator required; **none exists**, see row note          | the account silently becomes a different account after a rotation |
-| 4   | _K_ is an active key of principal _P_                            |  yes   | yes  | **no** | 2 / T3          | **watcher** — none exists; no "as of" scoping; no view-age expiry | a revoked or lost key still signs in                              |
-| 5   | The record I hold for _P_ is canonical — _P_ has not equivocated |  yes   | yes  | **no** | 2 / T3          | **watcher** — none exists; no "as of" scoping; no view-age expiry | a split or frozen view is served indefinitely                     |
-| 6   | The person presenting _K_ is the person this account is for      | **no** |  —   |  yes   | 5 / T1          | the person at enrollment, the **recovery agent** thereafter       | the account is served to the wrong human                          |
-| 7   | _P_ may perform operation _X_                                    |   —    |  —   |   —    | decision        | the relying party itself                                          | over-authorization                                                |
+| #   | claim                                                            |  Det   | Cert |  Mono  | cell            | trusted party                                                                            | a bad one yields                                                  |
+| :-- | :--------------------------------------------------------------- | :----: | :--: | :----: | :-------------- | :--------------------------------------------------------------------------------------- | :---------------------------------------------------------------- |
+| 1   | This request was signed by key _K_                               |   —    |  —   |   —    | below the floor | none — evaluator: `coz::verify_json`, called in `authorize_login`                        | a forged sign-in is accepted                                      |
+| 2   | This chain derives to identifier _P_                             |  yes   | yes  |  yes   | 1 — verifiable  | none — evaluator required; **none exists**, see row note                                 | a record is served under an identifier it does not belong to      |
+| 3   | _P_'s identifier is the same one as last session                 |  yes   | yes  |  yes   | 1 — verifiable  | none — evaluator required; **none exists**, see row note                                 | the account silently becomes a different account after a rotation |
+| 4   | _K_ is an active key of principal _P_                            |  yes   | yes  | **no** | 2 / T3          | **watcher** — none exists; no "as of" scoping; `RelyingParty` bounds the age of its view | a revoked or lost key still signs in                              |
+| 5   | The record I hold for _P_ is canonical — _P_ has not equivocated |  yes   | yes  | **no** | 2 / T3          | **watcher** — none exists; no "as of" scoping; `RelyingParty` bounds the age of its view | a split or frozen view is served indefinitely                     |
+| 6   | The person presenting _K_ is the person this account is for      | **no** |  —   |  yes   | 5 / T1          | the person at enrollment, the **recovery agent** thereafter                              | the account is served to the wrong human                          |
+| 7   | _P_ may perform operation _X_                                    |   —    |  —   |   —    | decision        | the relying party itself                                                                 | over-authorization                                                |
 
 **Rows 2 and 3 are cell-1 claims** (the trust model's
 [Row-1 claims](../trust-model.md#row-1-claims), here called by the cell they occupy so that
@@ -316,27 +313,26 @@ is that satisfying it is not enough — which is what the exchange rows say.
 engine holds both the derived genesis and the identifier a record is filed under at the
 moment of the write, and does not compare them; its own documentation names the same gap on
 the read path — "storage never binds a derived genesis to the identifier it is filed under"
-(`rs/cyphr-storage/src/engine/mod.rs:406-407`), in a doc comment that names the tracking
-issue, #154 (`:397-409`). A cell-1 claim left undischarged is
+(forge issue #154). A cell-1 claim left undischarged is
 [indefensible](../trust-model.md#row-1-claims) — the check is free and nobody is running it.
 Discharging it at every writer is a system-wide task beyond this path; the requirement here
 is only that a relying party must not assume it.
 
 **Row 3 has no evaluator, and the nearest candidate is about a different principal.**
 `rotation_preserves_pg_and_swaps_active_key`
-(`rs/cyphr-server/tests/server_principal.rs:243`) does assert that a genesis identifier
+(`rs/cyphr-server/tests/server_principal.rs`) does assert that a genesis identifier
 survives rotation, but it drives `ServerPrincipal::bootstrap` and `sp.rotate` — the
 **server's** own chain. A person's principal rotates through the ordinary write path, and
 the two golden fixtures that exercise `key/replace` both leave `pg` empty, which
-`rs/cyphr/tests/golden_fixtures.rs:206` skips. Nothing checks that a person's identifier
+`rs/cyphr/tests/golden_fixtures.rs` skips. Nothing checks that a person's identifier
 survives her own rotation.
 
 **Rows 4 and 5 are the same failure at two scopes.** Row 4 is about one principal's key
 set going stale; row 5 is about the whole view being non-canonical. Both need a watcher to
 be established as current. The two weaker remedies discharge only a scoped or bounded
-claim, not a current key set, and none of the three is in place: no watcher exists,
-nothing a separated party is served is scoped "as of" a moment, and no bound on the age of
-the view is implemented
+claim, not a current key set, and none of the three is in place: no watcher
+establishes currency, nothing a separated party is served is scoped "as of" a moment, and
+the one remedy in place is the bound on the age of the view that `RelyingParty` applies
 ([separated-staleness-not-absence](#separated-staleness-not-absence) requires one).
 
 **Row 6 is Path A's determination claim and the one that cannot be engineered away.** No
@@ -366,13 +362,13 @@ login and of a replayed one**. The attack succeeds with the row satisfied, so wh
 attacks defeat is not a claim about the record at all. Four requirements trace here rather
 than to rows 1 and 7.
 
-| #   | claim                                        | Det | Cert |  Mono  | cell           | trusted party                                                                                                           | a bad one yields                                               |
-| :-- | :------------------------------------------- | :-: | :--: | :----: | :------------- | :---------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------- |
-| 8   | This assertion was made _to me_              | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `login_rejects_mismatched_audience`, `rs/cyphr-server/tests/login.rs:636`                             | a login signed for one service is relayed to another           |
-| 9   | This assertion is _fresh_ — challenge        | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `login_rejects_replayed_challenge`, `rs/cyphr-server/tests/login.rs:578`                              | a captured login is replayed                                   |
-| 10  | This assertion is _fresh_ — timestamp window | yes | yes  | **no** | 2 / T3         | none — an accepted expiry, plus clock agreement                                                                         | a captured login is replayed inside the window                 |
-| 11  | This artifact _is a session token I issued_  | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `bearer_refuses_server_signed_non_token`, `rs/cyphr-server/tests/route_protection.rs`                 | another message the service signed is presented as a session   |
-| 12  | A challenge I issue can be redeemed          | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `keyless_login_and_challenge_share_the_same_rejection`, `rs/cyphr-server/tests/keyless_matrix.rs:431` | a person completes a challenge that can never become a session |
+| #   | claim                                        | Det | Cert |  Mono  | cell           | trusted party                                                                                                       | a bad one yields                                               |
+| :-- | :------------------------------------------- | :-: | :--: | :----: | :------------- | :------------------------------------------------------------------------------------------------------------------ | :------------------------------------------------------------- |
+| 8   | This assertion was made _to me_              | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `login_rejects_mismatched_audience`, `rs/cyphr-server/tests/login.rs`                             | a login signed for one service is relayed to another           |
+| 9   | This assertion is _fresh_ — challenge        | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `login_rejects_replayed_challenge`, `rs/cyphr-server/tests/login.rs`                              | a captured login is replayed                                   |
+| 10  | This assertion is _fresh_ — timestamp window | yes | yes  | **no** | 2 / T3         | none — an accepted expiry, plus clock agreement                                                                     | a captured login is replayed inside the window                 |
+| 11  | This artifact _is a session token I issued_  | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `bearer_refuses_server_signed_non_token`, `rs/cyphr-server/tests/route_protection.rs`             | another message the service signed is presented as a session   |
+| 12  | A challenge I issue can be redeemed          | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `keyless_login_and_challenge_share_the_same_rejection`, `rs/cyphr-server/tests/keyless_matrix.rs` | a person completes a challenge that can never become a session |
 
 **Rows 9 and 10 are one claim under two mechanisms, and the two do not land in the same
 cell.** A single-use challenge checks state the relying party issued and holds, so
@@ -395,7 +391,7 @@ the Principal Genesis; `SPEC.md` §14.2 says Level 1 supports no recovery (only 
 and Level 3+ supports it, including adding new keys. At Level 3+ a designated recovery
 agent signs a `key/create` for her and the account survives, because _"the agent's
 authority derives from the `recovery/create` delegation"_
-(`docs/specs/recovery.md:98-100`). Her identifier survives; at Level 1 it would not, and
+(`docs/specs/recovery.md`). Her identifier survives; at Level 1 it would not, and
 `SPEC.md` §14.1 says so — _"Note that sideband recovery results in a new Principal
 identity."_ The account continues. Those mechanics are here only to make the participant
 table's recovery row legible; they produce no requirements.
@@ -423,7 +419,7 @@ commit chains, the view is internally consistent. There is no error to handle.
 **What the party does when the answer is bad.** Co-located, the answer is already correct.
 That a revoked key stops signing in is checkable, and is checked:
 `revoked_key_refused_at_login_sibling_survives`
-(`rs/cyphr-server/tests/naked_revoke.rs:939`) asserts the whole sequence — the key signs in
+(`rs/cyphr-server/tests/naked_revoke.rs`) asserts the whole sequence — the key signs in
 first, so the baseline is empirical rather than assumed; the revocation is accepted; the
 key is then refused; and a sibling key of the same principal still signs in, so the
 refusal is scoped to the key and not the account.
@@ -455,7 +451,7 @@ repudiation; without _v_ there is no finite bound.
 ## Requirements
 
 Each is traceable to a row of [the claim table](#the-claim-table). Requirements in the
-first group are satisfied by the relying party in this repository. Each requirement
+first group are satisfied by the relying party built into the server. Each requirement
 carries a fenced `claim` block read by docket, this repository's documentation claim gate
 ([`docs/AGENTS.md`](../AGENTS.md), section "Docket — the documentation claim gate"): `kind` is always
 `requirement` here, `evaluator` is `test` when an automated test backs the requirement and
@@ -464,8 +460,13 @@ carries a fenced `claim` block read by docket, this repository's documentation c
 The machine binding runs from the test to the requirement: an `@docket: <id> :: <command>`
 marker comment at a test names the requirement id and the command that runs the test, and
 a requirement's claim block never names a test. Prose may still cite tests that carry no
-marker of their own, as several requirements below do. Requirements in the second group
-are satisfied by nothing here.
+marker of their own, as several requirements below do. The requirements from
+[separated-key-set-by-replay](#separated-key-set-by-replay) on
+are satisfied by `cyphr_client::RelyingParty`, except
+[currency-unmet](#currency-unmet), which nothing in the record can meet. Docket registers those
+requirements with `evaluator: none` because no test carries an `@docket:` marker for them yet;
+`rs/cyphr-client/tests/relying_party.rs` and `rs/cyphr-scenarios/tests/relying_party_signin.rs`
+exercise them.
 
 ### [signon-audience-binding]
 
@@ -473,8 +474,8 @@ A relying party MUST verify that the audience named inside the signed login payl
 own identity, and MUST NOT take the audience from any unsigned transport detail. Traces to
 row 8. The MUST NOT clause is closed structurally rather than by a test, which is a
 stronger closure than a test: `parse_login` derives the audience from the signed
-payload's `typ` (`login.rs:171-173`) and compares it to the configured `server_audience`
-(`login.rs:177`), so no transport value reaches the comparison and there is no path a test
+payload's `typ` (`parse_request` in `rs/cyphr-client/src/login.rs`) and compares it to the
+configured `server_audience` (`parse_login`), so no transport value reaches the comparison and there is no path a test
 could exercise.
 
 ```claim
@@ -501,7 +502,7 @@ the one the signer named, per
 [signon-claimed-principal](#signon-claimed-principal). Traces to row 4. The marker
 registers the first conjunct, via `login_rejects_key_revoked_in_claimed_principal`; the
 second is closed by `login_rejects_frozen_principal`
-(`rs/cyphr-server/tests/login.rs:815`) and `login_rejects_deleted_principal` (`:853`),
+(`rs/cyphr-server/tests/login.rs`) and `login_rejects_deleted_principal` (same file),
 neither of which carries a marker of its own.
 
 ```claim
@@ -530,7 +531,7 @@ A relying party MUST bound signature replay, by a single-use challenge or by a b
 acceptance window on the signed timestamp. Traces to rows 9 and 10 — one row per mechanism,
 because the two do not land in the same cell. The marker registers the challenge arm; the
 window arm is closed by `login_rejects_out_of_window_timestamp`
-(`rs/cyphr-server/tests/login.rs:612`), which carries no marker of its own.
+(`rs/cyphr-server/tests/login.rs`), which carries no marker of its own.
 
 ```claim
 kind: requirement
@@ -695,7 +696,8 @@ deliberately so:
 - The design of the party that assembles reports about one principal from more than one
   source — its inputs, its freshness obligation, and what it does with a disagreement.
 - How such a party would be built: gossip, a polled registry, an operator-driven audit, or
-  anything else.
+  anything else. The implementation ships a gossip timer on the server and `cyphr verify`,
+  `watch`, `audit` and `gossip` on the client; this document does not analyse them.
 
 [currency-unmet](#currency-unmet) reaches that boundary and stops at it, stating the
 obligation and the party kind that discharges it. `SPEC.md` §2.2.16 already names the
