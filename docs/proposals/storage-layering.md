@@ -162,7 +162,7 @@ what makes being wrong about it cheap: one rebuild, no schema
 migration.
 
 The main specification calls this layer "a relational index"
-(`SPEC.md:3156`, repeated at `docs/specs/storage-engine.md:73-76`); the
+(SPEC §16.3.2, repeated at `docs/specs/storage-engine.md:73-76`); the
 shipped implementation retired that design — there is no SQL engine
 anywhere in the workspace, and the index's own module documentation
 reads "never a relational database"
@@ -518,7 +518,7 @@ proposal would imply; this document itself changes none of them.
 
 | Document                            | Disposition if accepted                                                                                                                                                                                                    |
 | :---------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SPEC.md` §16                       | untouched by this proposal — its §16.3.2 "relational" label (`SPEC.md:3156`) is contradicted by the shipped implementation under either answer; amending it is its owner's call, and this proposal supplies the motivation |
+| `SPEC.md` §16                       | untouched by this proposal — its §16.3.2 "relational" label (SPEC §16.3.2) is contradicted by the shipped implementation under either answer; amending it is its owner's call, and this proposal supplies the motivation |
 | `docs/specs/storage-engine.md`      | amended — two-layer separation survives; the "relational" noun, the layout description, and the registry's role change; gains the EML co-location exception                                                                |
 | `docs/specs/indexer.md`             | amended — gains the membership test, the one-writer contract, and the generated registry; its rebuildability claims survive unchanged                                                                                      |
 | `docs/specs/blob-store.md`          | untouched — the record layer keeps the trait as it stands                                                                                                                                                                  |
