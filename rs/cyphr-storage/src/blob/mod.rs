@@ -88,13 +88,6 @@ pub enum BlobStoreError {
     #[error("blob store backend error: {0}")]
     Backend(String),
 
-    /// Content did not match the expected BLAKE3 hash.
-    #[error("hash mismatch: expected {expected}, got {actual}")]
-    HashMismatch {
-        expected: Blake3Hash,
-        actual: Blake3Hash,
-    },
-
     /// Blob size exceeds maximum allowed size.
     #[error("blob too large: size {size} exceeds maximum allowed size {max}")]
     BlobTooLarge { size: usize, max: usize },

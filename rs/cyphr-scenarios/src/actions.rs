@@ -1100,15 +1100,6 @@ impl Client<'_> {
         self.cyphr(&args).await.map(|_| ())
     }
 
-    /// Hand every principal this client knows to `other`, as a bundle file.
-    pub async fn gossip_with(&self, other: &Client<'_>) -> ActionResult<()> {
-        let known: Vec<String> = self.state().peers.keys().cloned().collect();
-        for handle in known {
-            other.learn_from(self, &Principal(handle)).await?;
-        }
-        Ok(())
-    }
-
     /// Replay the principal from the given peers and conclude: `cyphr fetch`
     /// from each, then `cyphr verify`. An empty `from` means the peers this
     /// client currently knows for it, handed to the CLI as its choices file.

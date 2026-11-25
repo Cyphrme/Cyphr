@@ -385,11 +385,6 @@ fn expand_repeats(doc: &mut toml::Table) -> Result<(), Error> {
 }
 
 impl TestIntent {
-    /// Returns true if this test has commits (state-mutating cozies).
-    pub fn has_commits(&self) -> bool {
-        !self.commit.is_empty()
-    }
-
     /// Returns true if this test has actions (Level 4 data recording).
     pub fn has_action(&self) -> bool {
         !self.action.is_empty()

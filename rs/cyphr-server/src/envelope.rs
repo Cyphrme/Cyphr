@@ -129,12 +129,6 @@ impl<T> Envelope<T> {
             statement: Statement::Signed(coz),
         }
     }
-
-    /// Whether this envelope carries a server statement.
-    #[must_use]
-    pub fn is_signed(&self) -> bool {
-        matches!(self.statement, Statement::Signed(_))
-    }
 }
 
 #[cfg(test)]
