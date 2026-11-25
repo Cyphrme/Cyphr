@@ -9,6 +9,10 @@
 //! storage path and assert the reconstructed lifecycle state before the
 //! login attempt.
 
+// The write path's future nests deeply enough that proving the `save_note`
+// handler `Send` overruns the default recursion limit.
+#![recursion_limit = "256"]
+
 use std::sync::Arc;
 
 use axum::body::Body;
