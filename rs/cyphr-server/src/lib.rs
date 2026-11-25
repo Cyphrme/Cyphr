@@ -132,6 +132,9 @@ impl AppState {
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(10))
+            // A redirect could carry an upstream call off the peer the
+            // operator named (the client's own connector refuses them too).
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
 
         let health = metrics::HealthProbe::new(&config.record_dir());
