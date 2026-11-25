@@ -1,10 +1,9 @@
-//! Refusals that keep the key set and the genesis well-formed.
+//! Refusals that keep the key set well-formed.
 //!
 //! SPEC 6.3: `key/replace` "removes the signing key and adds a new key
 //! atomically". Naming a key the principal already holds either empties the
 //! set (the signer) or acts as a silent delete (another held key); SPEC 7.6
-//! makes a `create` of an existing item `DUPLICATE`. SPEC 7.6 likewise makes
-//! a repeated `principal/create` `DUPLICATE`.
+//! makes a `create` of an existing item `DUPLICATE`.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::signer::SoftwareSigner;
@@ -107,32 +106,4 @@ async fn replace_onto_a_held_key_is_refused_and_a_fresh_key_swaps() {
     assert_eq!(p.active_key_count(), keys.len());
     assert!(!p.is_key_active(&keys[0].tmb));
     assert!(p.is_key_active(&fresh.tmb));
-}
-
-/// Regression: a repeated `principal/create` surfaced as `StateMismatch`;
-/// SPEC 7.6 calls it `DUPLICATE`. Whatever `id` the repeat carries, it is
-/// refused as a duplicate and the principal is untouched.
-#[tokio::test]
-async fn repeated_principal_create_is_a_duplicate() {
-    let g = kp();
-    let mut p = principal_of(std::slice::from_ref(&g)).await;
-    let before = state(&p);
-    for id in [
-        format!("SHA-512:{}", b64(&g.tmb)),
-        format!("SHA-512:{}", Base64UrlUnpadded::encode_string(&[0u8; 64])),
-    ] {
-        let mut scope = p.begin_commit();
-        let (pay, sig, czd) = sign(
-            &g,
-            json!({"alg": g.alg, "id": id, "now": T, "tmb": b64(&g.tmb),
-                   "typ": "cyphr.me/cyphr/principal/create"}),
-        );
-        let refused = scope.verify_and_apply(&pay, &sig, czd, None);
-        assert!(
-            matches!(refused, Err(Error::DuplicatePrincipal)),
-            "id {id}: {refused:?}"
-        );
-        drop(scope);
-        assert_eq!(before, state(&p));
-    }
 }

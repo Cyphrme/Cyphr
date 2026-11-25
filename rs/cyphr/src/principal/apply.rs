@@ -548,12 +548,6 @@ impl PrincipalState {
                 // SPEC 5.1 step 3, 5.2 TX1 "ID == PG == SR": `id` is the
                 // future SR, the state every genesis mutation before this
                 // one reached (keys, nonces), promoted to PR with no CR.
-                // SPEC 7.6: `create` of an item that exists is `DUPLICATE`.
-                // Decided before the id is compared, which a repeat would
-                // only fail as a state mismatch.
-                if self.pg.is_some() {
-                    return Err(Error::DuplicatePrincipal);
-                }
                 let pg = self.genesis_pr()?;
                 if !id.0.matches(&pg.0) {
                     return Err(Error::StateMismatch);

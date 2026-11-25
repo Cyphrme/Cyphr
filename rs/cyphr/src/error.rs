@@ -56,11 +56,6 @@ pub enum Error {
     #[error("duplicate key")]
     DuplicateKey,
 
-    /// `principal/create` for a principal that already exists (SPEC §7.6:
-    /// `create` of an existing item fails with `DUPLICATE`).
-    #[error("duplicate principal")]
-    DuplicatePrincipal,
-
     /// `nonce/create` for a nonce already at that level (SPEC §7.6, §10.2).
     #[error("duplicate nonce")]
     DuplicateNonce,
