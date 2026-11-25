@@ -502,6 +502,26 @@ impl From<AdmissionWire> for AdmissionConfig {
 }
 
 impl ServerConfig {
+    /// Settings that start a server which can do nothing useful, said at
+    /// start rather than discovered by a silent run.
+    #[must_use]
+    pub fn startup_warnings(&self) -> Vec<&'static str> {
+        let mut warnings = Vec::new();
+        if self.mode == ServerMode::Witness && self.gossip.peers.is_empty() {
+            warnings.push(
+                "witness mode with no upstream: `[gossip] peers` is empty, so this witness has \
+                 nothing to witness",
+            );
+        }
+        if self.audience.is_some() && self.signing_key_path.is_none() {
+            warnings.push(
+                "an audience is set but there is no signing key: the server accepts no logins \
+                 without one (set `signing_key_path`)",
+            );
+        }
+        warnings
+    }
+
     /// Whether a read of a principal this server does not hold fetches it
     /// from the peers: the setting when given, else the mode's default
     /// (a witness does, a service does not).

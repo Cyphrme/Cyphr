@@ -145,6 +145,7 @@ impl ServerIdentity {
     /// that does not match the private key.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, AuthError> {
         let path = path.as_ref();
+        warn_if_readable_by_others(path);
         // The file text holds the private key; it is wiped once parsed.
         let content = zeroize::Zeroizing::new(std::fs::read_to_string(path)?);
         let doc: serde_json::Value = serde_json::from_str(&content)?;
@@ -323,6 +324,27 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(dir)?.sync_all()?;
     Ok(())
 }
+
+/// Say so when other users can read the signing key file. The server does
+/// not change the mode: it is the operator's file, and the keystore's own
+/// check likewise only reports a directory it does not own.
+#[cfg(unix)]
+fn warn_if_readable_by_others(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            tracing::warn!(
+                path = %path.display(),
+                mode = format!("{mode:04o}"),
+                "signing key file is accessible to other users; restrict it to its owner (0600)"
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_if_readable_by_others(_path: &Path) {}
 
 /// Wall-clock server time in Unix seconds, shared by every auth surface
 /// that needs "now" for expiry/window checks (login's timestamp window

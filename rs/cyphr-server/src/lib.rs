@@ -441,6 +441,10 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     // loaded, so the boot signs with the chain's active key.
     reconcile_key_rotation(&config).await?;
 
+    for warning in config.startup_warnings() {
+        tracing::warn!("{warning}");
+    }
+
     let listen_addr = config.listen.clone();
     let transport_listen = config.transport_listen.clone();
     let mut state = AppState::new(config)?;
