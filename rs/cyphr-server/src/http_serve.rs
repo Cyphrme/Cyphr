@@ -65,6 +65,15 @@ impl Exchange {
         *self.started.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// Start the clock unless an exchange is already running.
+    fn start_if_idle(&self, at: Instant) -> Instant {
+        *self
+            .started
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_or_insert(at)
+    }
+
     fn set_started(&self, at: Option<Instant>) {
         *self.started.lock().unwrap_or_else(|p| p.into_inner()) = at;
     }
@@ -78,6 +87,8 @@ struct BoundedStream {
     request: Duration,
     deadline: Pin<Box<Sleep>>,
     exchange: Arc<Exchange>,
+    /// The exchange start the hard deadline below was built for.
+    armed_for: Option<Instant>,
     hard: Option<Pin<Box<Sleep>>>,
 }
 
@@ -89,6 +100,7 @@ impl BoundedStream {
             request,
             deadline: Box::pin(tokio::time::sleep(idle)),
             exchange,
+            armed_for: None,
             hard: None,
         }
     }
@@ -99,6 +111,15 @@ impl BoundedStream {
 
     /// Refuse to go on with an exchange past its limit.
     fn check_exchange(&mut self, cx: &mut Context<'_>) -> Poll<io::Error> {
+        // The hard deadline follows the exchange the service says is
+        // running, whether it began with a socket read or with a request
+        // hyper parsed from bytes it already held (a pipelined one).
+        let started = self.exchange.started();
+        if started != self.armed_for {
+            self.armed_for = started;
+            self.hard = started
+                .map(|at| Box::pin(tokio::time::sleep_until(at + self.request + DELIVERY_GRACE)));
+        }
         if let Some(hard) = self.hard.as_mut()
             && hard.as_mut().poll(cx).is_ready()
         {
@@ -114,13 +135,7 @@ impl BoundedStream {
 
     /// Note the first byte of a request: the exchange's clock starts.
     fn begin_exchange(&mut self) {
-        if self.hard.is_none() {
-            let now = Instant::now();
-            self.exchange.set_started(Some(now));
-            self.hard = Some(Box::pin(tokio::time::sleep_until(
-                now + self.request + DELIVERY_GRACE,
-            )));
-        }
+        self.exchange.start_if_idle(Instant::now());
     }
 
     /// Fail a pending operation once the idle deadline has passed.
@@ -187,6 +202,7 @@ impl AsyncWrite for BoundedStream {
             && self.exchange.finished.swap(false, Ordering::SeqCst)
         {
             self.hard = None;
+            self.armed_for = None;
             self.exchange.set_started(None);
         }
         self.bounded(cx, polled)
@@ -283,7 +299,10 @@ pub(crate) async fn serve(
             let service = service.clone();
             let exchange = service_exchange.clone();
             async move {
-                let deadline = exchange.started().unwrap_or_else(Instant::now) + request_limit;
+                // A request hyper parsed from buffered bytes arrives with no
+                // read to start the clock: starting it here covers every
+                // request of a pipelined run.
+                let deadline = exchange.start_if_idle(Instant::now()) + request_limit;
                 let response =
                     match tokio::time::timeout_at(deadline, service.oneshot(request)).await {
                         Ok(Ok(response)) => response.map(Body::new),
@@ -387,6 +406,80 @@ mod tests {
             "cut off late: {:?}",
             started.elapsed()
         );
+    }
+
+    /// Claim: the exchange deadline holds for every request of a pipelined
+    /// run, not only the first: two large requests sent in one write, the
+    /// first response read fast and the second read slowly, is cut off at
+    /// the deadline. Turns red if the clock is armed by a socket read only,
+    /// since hyper parses the later requests from bytes it already holds.
+    /// End-to-end scenario: yes (a real listener and a real socket).
+    #[tokio::test]
+    async fn a_pipelined_request_is_bounded_too() {
+        let addr = start(limits(5, 16)).await;
+        let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+        socket.set_recv_buffer_size(4096).expect("rcvbuf");
+        let mut client = socket.connect(addr).await.expect("connect");
+        client
+            .write_all(b"GET /big HTTP/1.1\r\nHost: x\r\n\r\nGET /big HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .expect("two requests in one write");
+        let mut received = 0usize;
+        let mut buf = vec![0u8; 256 * 1024];
+        // The first response, read as fast as it comes (well inside the limit).
+        while received < BIG {
+            match client.read(&mut buf).await {
+                Ok(0) | Err(_) => panic!("closed during the first response"),
+                Ok(n) => received += n,
+            }
+        }
+        // The second, dripped.
+        let second = StdInstant::now();
+        loop {
+            match client.read(&mut buf[..1024]).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => received += n,
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(
+                second.elapsed() < Duration::from_secs(20),
+                "still connected {:?} into the second response",
+                second.elapsed()
+            );
+        }
+        assert!(received < 2 * BIG, "both responses were delivered whole");
+    }
+
+    /// Claim: an exchange the service starts, with no socket read to arm it
+    /// (hyper parses a pipelined request from bytes it already holds), is
+    /// bounded all the same: a write the peer never drains fails `TimedOut`
+    /// at the limit plus the grace. Turns red if the hard deadline is armed
+    /// by a read alone, for then this write waits for ever.
+    /// End-to-end scenario: no; it drives the stream on a real socket pair,
+    /// the one place a request can start without a read.
+    #[tokio::test]
+    async fn an_exchange_the_service_starts_is_bounded_without_a_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        // The peer connects and never reads.
+        let _peer = TcpStream::connect(addr).await.expect("connect");
+        let (server, _) = listener.accept().await.expect("accept");
+        let exchange = Arc::new(Exchange::default());
+        let mut stream = BoundedStream::new(
+            server,
+            Duration::from_secs(120),
+            Duration::from_secs(1),
+            exchange.clone(),
+        );
+        exchange.start_if_idle(Instant::now());
+        let started = StdInstant::now();
+        let written =
+            tokio::time::timeout(Duration::from_secs(10), stream.write_all(&vec![0u8; BIG]))
+                .await
+                .expect("the write was cut off, not left waiting");
+        let err = written.expect_err("the write cannot complete to a peer that never reads");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     /// Claim: at the connection cap the listener stops accepting, so a
