@@ -36,10 +36,10 @@ use subtle::ConstantTimeEq;
 use tower::{Layer, Service};
 
 use crate::config::AdmissionConfig;
-use crate::envelope::Envelope;
 use crate::durable::{
     DurabilityLost, STORE_FORMAT_VERSION, StampError, SyncLatch, check_store_version,
 };
+use crate::envelope::Envelope;
 
 /// Header carrying the opaque, out-of-band invite token.
 const INVITE_HEADER: &str = "x-cyphr-invite";

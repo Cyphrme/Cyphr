@@ -5,7 +5,8 @@
 use axum::Router;
 use axum::http::{StatusCode, header};
 use axum::routing::get;
-use cyphr_server::{AppState, config::ServerConfig};
+use cyphr_server::AppState;
+use cyphr_server::config::ServerConfig;
 
 /// Claim: an upstream's redirect is returned as it is, not followed.
 ///

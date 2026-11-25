@@ -285,7 +285,10 @@ async fn the_probes_are_not_held_by_the_read_bucket() {
     let reads = server
         .burst("GET", "/tip?pg=nobody", None, "127.0.0.1", BURST)
         .await;
-    assert!(some_429(&reads), "the read bucket must be tripped: {reads:?}");
+    assert!(
+        some_429(&reads),
+        "the read bucket must be tripped: {reads:?}"
+    );
 
     for path in ["/healthz", "/metrics"] {
         let probes = server.burst("GET", path, None, "127.0.0.1", BURST).await;

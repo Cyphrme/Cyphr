@@ -21,10 +21,20 @@ fn the_tx_list_table_names_kinds_in_words() {
         .arg(user.keystore())
         .arg("--store")
         .arg(user.store_uri())
-        .args(["--output", "table", "tx", "list", &format!("--identity={id}")])
+        .args([
+            "--output",
+            "table",
+            "tx",
+            "list",
+            &format!("--identity={id}"),
+        ])
         .output()
         .expect("running cyphr");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let table = String::from_utf8_lossy(&out.stdout);
     assert!(table.contains("key/create"), "kinds in words: {table}");
     assert!(

@@ -517,7 +517,9 @@ mod tests {
         fn one_ipv6_64_is_one_http_source(
             prefix in any::<u64>(), a in any::<u64>(), b in any::<u64>(), other in any::<u64>(),
         ) {
-            let v6 = |p: u64, host: u64| IpAddr::V6((u128::from(p) << 64 | u128::from(host)).into());
+            let v6 = |p: u64, host: u64| {
+                IpAddr::V6(((u128::from(p) << 64) | u128::from(host)).into())
+            };
             prop_assert_eq!(
                 peer_ip(&request_from(v6(prefix, a))),
                 peer_ip(&request_from(v6(prefix, b)))

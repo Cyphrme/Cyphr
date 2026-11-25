@@ -171,14 +171,10 @@ async fn fresh_boot_creates_exact_record_and_index_tree() {
 
     let record_dir = data_dir.join("record");
     let record_entries = read_dir_names(&record_dir);
-    let expected_record_entries: BTreeSet<String> = [
-        "blobs",
-        "admission",
-        "server-principal.json",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
+    let expected_record_entries: BTreeSet<String> = ["blobs", "admission", "server-principal.json"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(
         record_entries, expected_record_entries,
         "record/ must hold exactly the three told stores (ADR-0002 Decision 1), got: \
@@ -252,9 +248,8 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
             record_blobs_db.keyspace_exists(name),
             "principal {principal_id}'s EML keyspace {name} must live inside record/blobs -- \
              ADR-0002 Decision 6: the commit tree is record data (its root is signed into every \
-             commit's Arrow, SPEC 3.7.6 and 4.2), not a derived projection, so it \
-             belongs in the record/ tree the same as any other told store. Found no such keyspace \
-             there."
+             commit's Arrow, SPEC 3.7.6 and 4.2), not a derived projection, so it belongs in the \
+             record/ tree the same as any other told store. Found no such keyspace there."
         );
     }
 

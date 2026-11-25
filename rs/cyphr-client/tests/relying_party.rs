@@ -22,7 +22,8 @@ const T0: i64 = 1_700_000_000;
 const AUDIENCE: &str = "rp.example";
 const BOUND: Duration = Duration::from_secs(30);
 const REFRESH: Duration = Duration::from_secs(10);
-const SESSION_TTL: Duration = Duration::from_secs(cyphr_client::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs());
+const SESSION_TTL: Duration =
+    Duration::from_secs(cyphr_client::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs());
 
 fn config() -> RpConfig {
     let site = coz::Alg::Ed25519.generate_keypair();
@@ -422,7 +423,8 @@ async fn a_session_ends_at_its_lifetime_with_a_current_view() {
 
     TTL_CLOCK.store(T0 + 100 + ttl - 1, Ordering::SeqCst);
     rp.refresh(&[peer("p1", &mirror)]).await;
-    rp.check_session(&session.token).expect("live a second before its lifetime");
+    rp.check_session(&session.token)
+        .expect("live a second before its lifetime");
 
     TTL_CLOCK.store(T0 + 100 + ttl, Ordering::SeqCst);
     rp.refresh(&[peer("p1", &mirror)]).await;

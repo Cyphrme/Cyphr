@@ -18,7 +18,9 @@ use tokio::net::TcpListener;
 
 mod common;
 
-use common::{build_genesis_push_body, golden_principal_id, load_pool, post_json, write_signing_key};
+use common::{
+    build_genesis_push_body, golden_principal_id, load_pool, post_json, write_signing_key,
+};
 
 const NOW: i64 = 1_700_000_000;
 
@@ -74,9 +76,10 @@ async fn register_route_is_gone_and_push_never_dials_out() {
     })
     .expect("state");
     let identity = state.identity.clone().expect("keyed state has identity");
-    let principal = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
-        .await
-        .expect("bootstrap the server principal");
+    let principal =
+        ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
+            .await
+            .expect("bootstrap the server principal");
     state.principal = Some(Arc::new(principal));
     let app = build_app_router(Arc::new(state)).expect("router");
 

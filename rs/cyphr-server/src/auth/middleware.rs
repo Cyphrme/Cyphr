@@ -106,10 +106,7 @@ pub fn check_channel(claims: &Claims, channel: Option<&[u8]>) -> Result<(), Sess
 /// (`StorageEngine::at_tip`), serialized with its writes, so the answer is
 /// as current as the server's own view -- not a claim about other views of
 /// the principal -- and costs no replay while the engine keeps its state.
-pub async fn check_session_key(
-    engine: &Engine,
-    claims: &Claims,
-) -> Result<(), SessionError> {
+pub async fn check_session_key(engine: &Engine, claims: &Claims) -> Result<(), SessionError> {
     let load_error = |e: EngineError| match e {
         EngineError::NotFound(_) => SessionError::UnknownPrincipal,
         other => SessionError::Storage(other),

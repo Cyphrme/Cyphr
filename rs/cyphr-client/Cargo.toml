@@ -36,12 +36,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 snow = { version = "=0.10.0", optional = true }
 thiserror = { workspace = true }
-zeroize = { workspace = true }
 tokio = { workspace = true, optional = true, features = [
   "net",
   "io-util",
   "time",
 ] }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

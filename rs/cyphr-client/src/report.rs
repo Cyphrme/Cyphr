@@ -143,7 +143,11 @@ impl TipReport {
         };
         let now = match coz.pay.get("now") {
             None | Some(Value::Null) => None,
-            Some(value) => Some(value.as_i64().ok_or_else(|| TipReportParseError::Now(value.clone()))?),
+            Some(value) => Some(
+                value
+                    .as_i64()
+                    .ok_or_else(|| TipReportParseError::Now(value.clone()))?,
+            ),
         };
         Ok(Self {
             pg,

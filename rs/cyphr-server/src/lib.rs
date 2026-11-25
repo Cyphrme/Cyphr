@@ -16,12 +16,12 @@
 pub mod admission;
 pub mod auth;
 pub mod config;
+pub mod durable;
 pub mod envelope;
 pub mod error;
 pub mod gossip;
 pub mod logging;
 pub mod metrics;
-pub mod durable;
 pub mod ops;
 pub mod rate_limit;
 pub mod receipt;

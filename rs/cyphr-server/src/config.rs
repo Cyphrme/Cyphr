@@ -834,7 +834,12 @@ mod tests {
     fn a_named_config_file_that_does_not_exist_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("typo.toml");
-        let cli = parse(&["cyphr-server", "--config", missing.to_str().expect("utf-8"), "serve"]);
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            missing.to_str().expect("utf-8"),
+            "serve",
+        ]);
         assert!(matches!(
             resolve_config(&cli),
             Err(ConfigError::MissingConfigFile(path)) if path == missing
