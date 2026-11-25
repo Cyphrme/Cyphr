@@ -239,6 +239,25 @@ fn classify(method: &Method, path: &str) -> Op {
     }
 }
 
+/// The unit a per-source limit counts, shared by the HTTP fences and the
+/// Noise session cap so one source is one source on both. An IPv6 /64 is one
+/// end site, one subscriber (RFC 6177), who can source an address per
+/// connection, so it is bucketed by its /64 prefix. IPv4 keeps the full
+/// address: a /24 would merge unrelated hosts behind one provider's block
+/// (and one NAT already shares an address), and no test here supports the
+/// wider bucket.
+pub(crate) fn source_bucket(ip: IpAddr) -> IpAddr {
+    // A dual-stack listener reports an IPv4 client as `::ffff:a.b.c.d`;
+    // key it as the IPv4 address it is, or all of them share one /64.
+    match ip.to_canonical() {
+        v4 @ IpAddr::V4(_) => v4,
+        IpAddr::V6(v6) => {
+            let prefix = u128::from(v6) & !u128::from(u64::MAX);
+            IpAddr::V6(prefix.into())
+        },
+    }
+}
+
 /// The peer IP for per-IP keying, read from the `ConnectInfo` extension that
 /// `serve()` wires via `into_make_service_with_connect_info`. Absent it (which
 /// the wiring makes unreachable in `serve()`), all requests fall into one
@@ -246,7 +265,7 @@ fn classify(method: &Method, path: &str) -> Op {
 fn peer_ip(req: &Request) -> IpAddr {
     req.extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|info| info.0.ip())
+        .map(|info| source_bucket(info.0.ip()))
         .unwrap_or(IpAddr::from([0, 0, 0, 0]))
 }
 
@@ -471,7 +490,40 @@ where
 
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
+    use proptest::prelude::*;
+
     use super::*;
+
+    fn request_from(ip: IpAddr) -> Request {
+        let mut req = Request::new(Body::empty());
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(ip, 4000)));
+        req
+    }
+
+    proptest! {
+        /// Property: the HTTP fences key every address of one IPv6 /64 to
+        /// one bucket (as the Noise session cap does), so a client that
+        /// sources a fresh address per request cannot mint a fresh
+        /// allowance each time; addresses of different /64s stay apart.
+        /// Red if `peer_ip` keys the full address.
+        #[test]
+        fn one_ipv6_64_is_one_http_source(
+            prefix in any::<u64>(), a in any::<u64>(), b in any::<u64>(), other in any::<u64>(),
+        ) {
+            let v6 = |p: u64, host: u64| IpAddr::V6((u128::from(p) << 64 | u128::from(host)).into());
+            prop_assert_eq!(
+                peer_ip(&request_from(v6(prefix, a))),
+                peer_ip(&request_from(v6(prefix, b)))
+            );
+            prop_assume!(other != prefix);
+            prop_assert_ne!(
+                peer_ip(&request_from(v6(prefix, a))),
+                peer_ip(&request_from(v6(other, a)))
+            );
+        }
+    }
 
     /// Backs: each route is rate-limited under its own operation bucket (push, revoke, login,
     /// read). Unit: rate_limits.rs probes push/read/revoke buckets; the login/other mapping has no
