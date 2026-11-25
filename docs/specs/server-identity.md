@@ -92,7 +92,7 @@ bootstrapped:
 - `tier` -- `"attestor"` or `"repository"`, lowercase, always present.
 - `pg`, `alg`, `pub`, `tmb`, `genesis` -- present ONLY on `attestor`.
   `pg` is the server's stable Principal Genesis (a tagged digest, the
-  same identifier `GET /tip?pr=<pg>` and `GET /patch?pr=<pg>` serve the
+  same identifier `GET /tip?pg=<pg>` and `GET /patch?pg=<pg>` serve the
   chain under). `alg`, `pub`, `tmb` describe the server's CURRENT
   signing key: `pub` and `tmb` are base64url, matching the encoding
   every other coz-adjacent field on the wire uses. `genesis` is a
@@ -216,8 +216,8 @@ out-of-band trust anchor:
    (`rs/cyphr-server/src/auth/principal.rs`'s module doc, SPEC.md
    §3.7.1/§5.1), a client verifies any key the server claims later by
    fetching that chain through the same public surface every other
-   principal's chain is served through -- `GET /tip?pr=<pinned-pg>` for
-   the current state, `GET /patch?pr=<pinned-pg>` for the commit
+   principal's chain is served through -- `GET /tip?pg=<pinned-pg>` for
+   the current state, `GET /patch?pg=<pinned-pg>` for the commit
    history -- and replaying it with the ordinary protocol validation
    rules. A key is trusted only once it is reached by replaying from the
    pinned genesis, never because the discovery endpoint merely asserted

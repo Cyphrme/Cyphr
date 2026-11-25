@@ -122,6 +122,11 @@ const AUDIENCE: &str = "cyphr.me";
 /// An `AppState` configured for login: a fresh Ed25519 signing identity and
 /// an audience, over a temporary database.
 fn login_state() -> Arc<AppState> {
+    Arc::new(login_app_state())
+}
+
+/// [`login_state`] before it is shared, for a test that configures it.
+fn login_app_state() -> AppState {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let key_path = temp_dir.path().join("signing-key.json");
     let kp = coz::Alg::Ed25519.generate_keypair();
@@ -139,7 +144,7 @@ fn login_state() -> Arc<AppState> {
         ..Default::default()
     };
     std::mem::forget(temp_dir);
-    Arc::new(AppState::new(config).expect("open login AppState"))
+    AppState::new(config).expect("open login AppState")
 }
 
 /// Current wall-clock Unix seconds, for signing timestamp-flow logins the
@@ -149,6 +154,18 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+/// The wire request: the signed Coz and, in the challenge flow, the
+/// challenge the server issued, returned to it.
+fn cyphr_server_login_request(
+    coz: coz::CozJson,
+    challenge: Option<&serde_json::Value>,
+) -> cyphr_client::login::LoginRequest {
+    cyphr_client::login::LoginRequest {
+        coz,
+        challenge: challenge.map(|c| serde_json::from_value(c.clone()).expect("challenge coz")),
+    }
 }
 
 /// Sign a login envelope with a pool key, returning the JSON request body.
@@ -162,7 +179,7 @@ fn login_body(
     signer_name: &str,
     audience: &str,
     claimed_pr: Option<&str>,
-    challenge: Option<&str>,
+    challenge: Option<&serde_json::Value>,
     now: i64,
 ) -> String {
     let signer = pool.get(signer_name).expect("signer in pool");
@@ -175,22 +192,25 @@ fn login_body(
     pay.alg = Some(signer.alg.clone());
     pay.now = Some(now);
     pay.tmb = Some(tmb);
-    pay.typ = Some(format!("{audience}/cyphr/auth/login"));
+    pay.typ = Some(format!("{audience}/user/login/request/create"));
     if let Some(pr) = claimed_pr {
         pay.extra
-            .insert("pr".to_string(), serde_json::Value::String(pr.into()));
+            .insert("pg".to_string(), serde_json::Value::String(pr.into()));
     }
     if let Some(c) = challenge {
         pay.extra
-            .insert("challenge".to_string(), serde_json::Value::String(c.into()));
+            .insert("challenge".to_string(), c["pay"]["nonce"].clone());
     }
 
     let pay_bytes = serde_json::to_vec(&pay).unwrap();
     let (sig, _cad) = coz::sign_json(&pay_bytes, &signer.alg, &prv, &pub_key).expect("sign login");
-    serde_json::to_string(&coz::CozJson {
-        pay: serde_json::to_value(&pay).unwrap(),
-        sig,
-    })
+    serde_json::to_string(&cyphr_server_login_request(
+        coz::CozJson {
+            pay: serde_json::to_value(&pay).unwrap(),
+            sig,
+        },
+        challenge,
+    ))
     .unwrap()
 }
 
@@ -406,7 +426,7 @@ async fn login_timestamp_flow_issues_valid_token() {
         .unwrap()
         .verify_token(token, now_secs())
         .expect("issued token must verify as a genuine bearer token");
-    assert_eq!(claims.pr, pid, "token must bind the logged-in principal");
+    assert_eq!(claims.pg, pid, "token must bind the logged-in principal");
 }
 
 /// Challenge flow: fetch a challenge, sign it, receive a valid token.
@@ -421,11 +441,8 @@ async fn login_challenge_flow_issues_valid_token() {
 
     let (cs, cj) = post_json(app.clone(), "/auth/challenge", String::new()).await;
     assert_eq!(cs, StatusCode::OK);
-    let challenge_payload = envelope_payload(&cj);
-    let challenge = challenge_payload["challenge"]
-        .as_str()
-        .expect("challenge issued")
-        .to_string();
+    let challenge = envelope_payload(&cj)["challenge"].clone();
+    assert!(challenge.is_object(), "a signed challenge is issued");
 
     let body = login_body(
         &pool,
@@ -449,6 +466,121 @@ async fn login_challenge_flow_issues_valid_token() {
 }
 
 // ========================================================================
+// Permissions: a service's policy and a route that requires one
+// ========================================================================
+
+/// The test service: it grants `notes:write` to one key only.
+struct NotesPolicy {
+    writer: coz::Thumbprint,
+}
+
+impl cyphr_server::auth::policy::LoginPolicy for NotesPolicy {
+    fn perms(&self, _pg: &str, login_key: &coz::Thumbprint) -> Vec<String> {
+        if *login_key == self.writer {
+            vec!["notes:write".to_string()]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// The service's one protected route.
+async fn save_note(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<&'static str, cyphr_server::error::AppError> {
+    cyphr_server::auth::middleware::require(&state, &headers, None, "notes:write").await?;
+    Ok("saved")
+}
+
+/// An integrating service supplies its own permissions and protects its
+/// own route with them: no token is refused, a token whose login the
+/// policy did not grant the permission is forbidden, and a token it did is
+/// served. The permission names are the service's alone.
+#[tokio::test]
+async fn a_service_policy_grants_and_its_route_requires_a_permission() {
+    let pool = load_pool();
+    let writer = pool.get("golden").unwrap().compute_tmb().unwrap();
+    let state = Arc::new(login_app_state().with_login_policy(Arc::new(NotesPolicy { writer })));
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let app = build_router(state.clone()).merge(
+        axum::Router::new()
+            .route("/notes", axum::routing::post(save_note))
+            .with_state(state.clone()),
+    );
+
+    let token_for = |signer: &'static str| {
+        let app = app.clone();
+        let body = login_body(&pool, signer, AUDIENCE, Some(&pid), None, now_secs());
+        async move {
+            let (status, json) = post_json(app, "/auth/login", body).await;
+            assert_eq!(status, StatusCode::OK, "login must succeed: {json:?}");
+            envelope_payload(&json)["token"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let save = |token: Option<String>| {
+        let app = app.clone();
+        async move {
+            let mut req = Request::builder().method("POST").uri("/notes");
+            if let Some(t) = token {
+                req = req.header("authorization", format!("Bearer {t}"));
+            }
+            app.oneshot(req.body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+
+    assert_eq!(save(None).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        save(Some(token_for("key_a").await)).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(save(Some(token_for("golden").await)).await, StatusCode::OK);
+}
+
+/// A challenge signed by another issuer is refused, though it is for this
+/// audience, fresh, and answered by a valid login: the server accepts only
+/// challenges it signed itself.
+#[tokio::test]
+async fn login_refuses_a_challenge_another_issuer_signed() {
+    let state = login_state();
+    let pool = load_pool();
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let other = coz::Alg::Ed25519.generate_keypair();
+    let other = cyphr_client::login::SoftwareIssuer::new(
+        other.alg.name(),
+        &other.prv_bytes,
+        &other.pub_bytes,
+    );
+    let foreign = serde_json::to_value(
+        cyphr_client::login::issue_challenge(&other, AUDIENCE, now_secs()).expect("issues"),
+    )
+    .expect("json");
+
+    let body = login_body(
+        &pool,
+        "golden",
+        AUDIENCE,
+        Some(&pid),
+        Some(&foreign),
+        now_secs(),
+    );
+    let (status, json) = post_json(build_router(state), "/auth/login", body).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a challenge another issuer signed must be refused: {json:?}"
+    );
+}
+
+// ========================================================================
 // Replay defenses
 // ========================================================================
 
@@ -464,10 +596,7 @@ async fn login_rejects_replayed_challenge() {
     let app = build_router(state.clone());
 
     let (_, cj) = post_json(app.clone(), "/auth/challenge", String::new()).await;
-    let challenge = envelope_payload(&cj)["challenge"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let challenge = envelope_payload(&cj)["challenge"].clone();
     let body = login_body(
         &pool,
         "golden",
@@ -993,7 +1122,7 @@ async fn token_subject_is_one_whatever_spelling_logged_in() {
             .unwrap()
             .verify_token(token, now_secs())
             .expect("issued token verifies");
-        subjects.push(claims.pr);
+        subjects.push(claims.pg);
     }
     assert_eq!(
         subjects[0], subjects[1],
@@ -1043,8 +1172,18 @@ async fn login_and_challenge_refuse_alike_without_audience() {
         challenge_status, login_status,
         "challenge must refuse with login's status: {challenge_json:?}"
     );
+    // The two answers are built a moment apart and each carries its own
+    // `now`, so they are compared without it.
+    let alike = |mut body: serde_json::Value| {
+        body["payload"]
+            .as_object_mut()
+            .expect("payload object")
+            .remove("now");
+        body
+    };
     assert_eq!(
-        challenge_json, login_json,
+        alike(challenge_json),
+        alike(login_json),
         "challenge must refuse with login's body"
     );
 }
@@ -1075,7 +1214,7 @@ async fn login_rejects_future_dated_timestamp() {
 
 // ========================================================================
 // Sign-on typ and role separation (SPEC 17.2: both flows share one typ,
-// `<audience>/cyphr/auth/login`; the challenge field tells them apart)
+// `<audience>/user/login/request/create`; the challenge field tells them apart)
 // ========================================================================
 
 /// Sign a login-shaped payload under an arbitrary `typ`, so tests can vary
@@ -1085,7 +1224,7 @@ fn login_body_typ(
     signer_name: &str,
     typ: &str,
     pr: &str,
-    challenge: Option<&str>,
+    challenge: Option<&serde_json::Value>,
     now: i64,
 ) -> String {
     let signer = pool.get(signer_name).expect("signer in pool");
@@ -1098,22 +1237,25 @@ fn login_body_typ(
     pay.tmb = Some(signer.compute_tmb().expect("signer tmb"));
     pay.typ = Some(typ.to_string());
     pay.extra
-        .insert("pr".to_string(), serde_json::Value::String(pr.into()));
+        .insert("pg".to_string(), serde_json::Value::String(pr.into()));
     if let Some(c) = challenge {
         pay.extra
-            .insert("challenge".to_string(), serde_json::Value::String(c.into()));
+            .insert("challenge".to_string(), c["pay"]["nonce"].clone());
     }
     let pay_bytes = serde_json::to_vec(&pay).unwrap();
     let (sig, _cad) = coz::sign_json(&pay_bytes, &signer.alg, &prv, &pub_key).expect("sign");
-    serde_json::to_string(&coz::CozJson {
-        pay: serde_json::to_value(&pay).unwrap(),
-        sig,
-    })
+    serde_json::to_string(&cyphr_server_login_request(
+        coz::CozJson {
+            pay: serde_json::to_value(&pay).unwrap(),
+            sig,
+        },
+        challenge,
+    ))
     .unwrap()
 }
 
 /// Backs: a sign-on statement is accepted only under exactly the typ it was
-/// signed for, `<server audience>/cyphr/auth/login`. Turns red if the typ
+/// signed for, `<server audience>/user/login/request/create`. Turns red if the typ
 /// match loosens to a prefix/suffix/contains test: a foreign audience, a
 /// trailing segment, a leading segment, or no audience then yields a token.
 /// The control (exact typ accepted) stops a reject-everything no-op.
@@ -1125,7 +1267,7 @@ async fn login_typ_is_matched_exactly() {
     let pid =
         bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
 
-    let exact = format!("{AUDIENCE}/cyphr/auth/login");
+    let exact = format!("{AUDIENCE}/user/login/request/create");
     let (status, json) = post_json(
         build_router(state.clone()),
         "/auth/login",
@@ -1139,11 +1281,11 @@ async fn login_typ_is_matched_exactly() {
     );
 
     for typ in [
-        "evil.example/cyphr/auth/login".to_string(),
-        format!("{AUDIENCE}/cyphr/auth/login/extra"),
-        format!("sub/{AUDIENCE}/cyphr/auth/login"),
-        "/cyphr/auth/login".to_string(),
-        format!("{AUDIENCE}/cyphr/auth/logout"),
+        "evil.example/user/login/request/create".to_string(),
+        format!("{AUDIENCE}/user/login/request/create/extra"),
+        format!("sub/{AUDIENCE}/user/login/request/create"),
+        "/user/login/request/create".to_string(),
+        format!("{AUDIENCE}/user/login/request/delete"),
     ] {
         let (status, json) = post_json(
             build_router(state.clone()),
@@ -1170,7 +1312,7 @@ async fn cross_flow_challenge_statement_never_passes_as_timestamp() {
     let pool = load_pool();
     let pid =
         bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
-    let typ = format!("{AUDIENCE}/cyphr/auth/login");
+    let typ = format!("{AUDIENCE}/user/login/request/create");
 
     let (_, cj) = post_json(
         build_router(state.clone()),
@@ -1178,10 +1320,7 @@ async fn cross_flow_challenge_statement_never_passes_as_timestamp() {
         String::new(),
     )
     .await;
-    let challenge = envelope_payload(&cj)["challenge"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let challenge = envelope_payload(&cj)["challenge"].clone();
     let body = login_body_typ(&pool, "golden", &typ, &pid, Some(&challenge), now_secs());
 
     let (first, _) = post_json(build_router(state.clone()), "/auth/login", body.clone()).await;
@@ -1202,7 +1341,7 @@ async fn cross_flow_challenge_statement_never_passes_as_timestamp() {
         "golden",
         &typ,
         &pid,
-        Some("never-issued"),
+        Some(&serde_json::json!({"pay": {"nonce": "never-issued"}, "sig": ""})),
         now_secs(),
     );
     let (status, json) = post_json(build_router(state), "/auth/login", forged).await;
@@ -1226,7 +1365,7 @@ async fn login_role_is_not_interchangeable_with_other_statements() {
     let pool = load_pool();
     let pid =
         bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
-    let login_typ = format!("{AUDIENCE}/cyphr/auth/login");
+    let login_typ = format!("{AUDIENCE}/user/login/request/create");
 
     // Other roles presented as a login.
     let revoke_as_login = login_body_typ(

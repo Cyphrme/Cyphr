@@ -40,7 +40,7 @@ pub enum PeerError {
         message: String,
     },
     /// The peer holds a tip the sender's history does not contain.
-    #[error("peer {peer} holds a newer or different tip ({detail}); rebase onto it first")]
+    #[error("peer {peer} holds a newer or different tip ({detail})")]
     Stale {
         /// The peer's base URL.
         peer: String,
@@ -84,12 +84,18 @@ pub enum PeerError {
     },
     /// The peer's history disagrees with the local history below the tip.
     /// The divergence is not verified: the peer's chain is not replayed.
-    #[error("peer {peer} history diverges from the local history at commit {height}")]
+    #[error(
+        "peer {peer} history diverges from the local history at commit {height}: {report}; \
+         nothing was changed. `fetch --trust-remote` discards the local commits after the parting \
+         point and adopts the peer's"
+    )]
     Diverged {
         /// The peer's base URL.
         peer: String,
         /// 0-based index of the first differing commit.
         height: usize,
+        /// Where the histories part and what each holds after it.
+        report: String,
     },
 }
 
@@ -171,7 +177,7 @@ impl Peer {
     /// commit it is later sent, so this is only used to choose what to send.
     pub async fn tip(&self, principal: &str) -> Result<Option<TipAnswer>, PeerError> {
         match self
-            .send(&Request::get(format!("/tip?pr={principal}")))
+            .send(&Request::get(format!("/tip?pg={principal}")))
             .await
         {
             Ok(body) => {
@@ -287,6 +293,27 @@ impl Peer {
         let doc: Value =
             serde_json::from_slice(&answer).map_err(|e| self.malformed(e.to_string()))?;
         Ok(doc["payload"].clone())
+    }
+
+    /// Post a signed login (`POST /auth/login`) and return the bearer
+    /// token the peer issued.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerError`] when the peer is unreachable, refuses the login, or
+    /// answers without a token.
+    pub async fn login(
+        &self,
+        request: &cyphr_client::login::LoginRequest,
+    ) -> Result<String, PeerError> {
+        let bytes = serde_json::to_vec(request).map_err(|e| self.malformed(e.to_string()))?;
+        let answer = self.send(&Request::post("/auth/login", bytes)).await?;
+        let doc: Value =
+            serde_json::from_slice(&answer).map_err(|e| self.malformed(e.to_string()))?;
+        doc["payload"]["token"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| self.malformed("the answer carries no token".into()))
     }
 
     /// Send a naked revoke envelope (`{pay, sig, key}`, SPEC 6.4) to the peer.

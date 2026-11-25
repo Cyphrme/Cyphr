@@ -49,7 +49,7 @@ listening on 127.0.0.1:3000
 That line goes to stdout and everything else goes to stderr, so a supervisor
 that wants to know the real port when you asked for `:0` can read it without
 parsing logs. The defaults if you pass nothing at all are
-`127.0.0.1:3000`, `./data`, pretty logs, and authority mode.
+`127.0.0.1:3000`, `./data`, pretty logs, and service mode.
 
 This server holds no key. It stores and serves commits, signs nothing, and
 declares itself accordingly:
@@ -131,19 +131,18 @@ up silently. It is the fastest way to get a server that behaves nothing like
 its command line — the TOML-only settings especially, since no flag can
 override them. Pass `--config` explicitly in anything you automate.
 
-| Setting              | Flag                 | Environment              | What it buys                                                                                                                                           |
-| :------------------- | :------------------- | :----------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `listen`             | `--listen`           | `CYPHR_LISTEN`           | Bind address. `:0` picks a free port and reports it on stdout.                                                                                         |
-| `transport_listen`   | `--transport-listen` | `CYPHR_TRANSPORT_LISTEN` | Bind address for the Noise transport, which authenticates both ends as principals. Off when unset; a keyless server refuses it and keeps serving HTTP. |
-| `data_dir`           | `--data-dir`         | `CYPHR_DATA_DIR`         | Where every durable store lives. Locked exclusively while running.                                                                                     |
-| `signing_key_path`   | `--signing-key-path` | `CYPHR_SIGNING_KEY_PATH` | The key the server signs receipts and tokens with. Absent means keyless.                                                                               |
-| `audience`           | `--audience`         | `CYPHR_AUDIENCE`         | The name clients must sign into. Absent means logins are refused.                                                                                      |
-| `mode`               | `--mode`             | `CYPHR_MODE`             | `authority` (accepts writes) or `witness` (read-only, syncs from an authority).                                                                        |
-| `log_format`         | `--log-format`       | `CYPHR_LOG_FORMAT`       | `pretty` for a terminal, `json` for a log pipeline.                                                                                                    |
-| `authority_url`      | `--authority-url`    | `CYPHR_AUTHORITY_URL`    | The upstream a witness pulls from.                                                                                                                     |
-| `authority_identity` | —                    | —                        | The upstream's public key, so a witness can verify what it pulls. **TOML only.**                                                                       |
-| `[admission]`        | —                    | —                        | The gate on new principals. **TOML only.**                                                                                                             |
-| `[limits]`           | —                    | —                        | Rate, body size, and commit-count fences. **TOML only.**                                                                                               |
+| Setting            | Flag                                                                | Environment                                                                      | What it buys                                                                                                                                           |
+| :----------------- | :------------------------------------------------------------------ | :------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `listen`           | `--listen`                                                          | `CYPHR_LISTEN`                                                                   | Bind address. `:0` picks a free port and reports it on stdout.                                                                                         |
+| `transport_listen` | `--transport-listen`                                                | `CYPHR_TRANSPORT_LISTEN`                                                         | Bind address for the Noise transport, which authenticates both ends as principals. Off when unset; a keyless server refuses it and keeps serving HTTP. |
+| `data_dir`         | `--data-dir`                                                        | `CYPHR_DATA_DIR`                                                                 | Where every durable store lives. Locked exclusively while running.                                                                                     |
+| `signing_key_path` | `--signing-key-path`                                                | `CYPHR_SIGNING_KEY_PATH`                                                         | The key the server signs receipts and tokens with. Absent means keyless.                                                                               |
+| `audience`         | `--audience`                                                        | `CYPHR_AUDIENCE`                                                                 | The name clients must sign into. Absent means logins are refused.                                                                                      |
+| `mode`             | `--mode`                                                            | `CYPHR_MODE`                                                                     | `service` (accepts principals' writes; the default) or `witness` (refuses writes, keeps copies and follows its peers).                                 |
+| `log_format`       | `--log-format`                                                      | `CYPHR_LOG_FORMAT`                                                               | `pretty` for a terminal, `json` for a log pipeline.                                                                                                    |
+| `[gossip]`         | `--gossip-peer`, `--gossip-interval-secs`, `--gossip-fetch-on-read` | `CYPHR_GOSSIP_PEERS`, `CYPHR_GOSSIP_INTERVAL_SECS`, `CYPHR_GOSSIP_FETCH_ON_READ` | The peers to pull from and how. A peer can name its server principal's PG, which is **TOML only**.                                                     |
+| `[admission]`      | —                                                                   | —                                                                                | The gate on new principals. **TOML only.**                                                                                                             |
+| `[limits]`         | —                                                                   | —                                                                                | Rate, body size, and commit-count fences. **TOML only.**                                                                                               |
 
 The last three have no flag and no environment variable. If you are
 deploying from a unit file or a container spec that only sets environment,
@@ -153,7 +152,7 @@ file on disk. A full one:
 ```toml
 listen = "0.0.0.0:3000"
 data_dir = "/var/lib/cyphr"
-mode = "authority"
+mode = "service"
 log_format = "json"
 signing_key_path = "/etc/cyphr/signing-key.json"
 audience = "login.example.com"
@@ -278,14 +277,13 @@ login with a `500`. Configure both or neither.
 Pick the host your users' clients actually address — `login.example.com`,
 not `Example Inc`.
 
-**Turning on login turns on one permission level, not a model.** Every
-bearer token issued at login carries `["read", "write"]`, unconditionally --
-there is no narrower grant for a client that only needs to read. In
-practice this gates little: `POST /push` is the only route that checks a
-presented token at all, and only to confirm it names the principal being
-written to. Every other route, reads included, takes no token. Setting
-`--audience` is a decision to start issuing tokens, not a decision about
-what those tokens will be trusted to do.
+**Login grants the permissions the integrating service decides.** The
+server grants a login whatever its login policy returns, and none when the
+service supplies no policy. No Cyphr route requires a permission: `POST /push`
+is the only route that checks a presented token at all, and only to confirm
+it names the principal being written to. Setting `--audience` is a decision
+to start issuing tokens, not a decision about what those tokens will be
+trusted to do.
 
 ## What lives in the data directory
 
@@ -711,8 +709,8 @@ returned.
 
 ## Witness mode
 
-A witness is a read-only replica that pulls state from an upstream
-authority. It refuses every write itself:
+A witness is a read-only replica that pulls state from its
+peers. It refuses every write itself:
 
 ```sh
 curl -s -X POST http://127.0.0.1:3001/push -H 'content-type: application/json' -d @push.json
@@ -733,118 +731,81 @@ curl -s -X POST http://127.0.0.1:3001/push -H 'content-type: application/json' -
 rather than by route, so `/revoke` and `/auth/login` are refused on a
 witness too.
 
-Start one by naming its upstream:
+Start one by naming its peers:
 
 ```sh
 cyphr-server serve \
   --listen 127.0.0.1:3001 \
   --data-dir ./witness-data \
   --mode witness \
-  --authority-url http://127.0.0.1:3000
+  --gossip-peer http://127.0.0.1:3000
 ```
 
-**Sync is pull-on-read, not a background loop.** A witness fetches a
-principal's delta when someone asks it for that principal — `GET /tip` or
-`GET /patch` triggers the fetch, applies what verifies, and then answers
-from local state. There is no poller and no schedule. A principal nobody
-asks about is never synced, and the first read after an upstream change
-pays the latency of the fetch.
+**A witness follows its peers two ways.** The gossip timer (`gossip_interval_secs`,
+sixty seconds by default) pulls every principal the witness holds from every
+peer, as it does on a service. And a read of a principal the witness does
+not hold fetches it from the peers, in order, from genesis, and applies what
+verifies before answering (`fetch_on_read`, on by default for a witness and
+off for a service; set it in `[gossip]` to override the mode). A principal
+the witness already holds is refreshed by the timer, not by the read, so its
+answer can be up to one gossip interval old.
 
-Each entry is validated in memory against the ordinary storage rules before
-anything is persisted, and each entry stands on its own: one that fails to
-decode or fails verification is skipped and counted, and the sync moves to
-the next. That is deliberate. Aborting the whole response on the first bad
-entry would make every genuine entry behind it permanently unreachable — a
-witness keeps no progress marker, so the next read would refetch the same
-response and fail on the same entry, forever.
+Each commit is validated in memory against the ordinary storage rules before
+anything is persisted, and each stands on its own: one that fails to decode or
+fails verification is skipped, and the fetch moves to the next. That is
+deliberate. Aborting the whole response on the first bad entry would make
+every genuine entry behind it permanently unreachable.
 
 The consequence is that **a witness can end up partially applied.** Nothing
-unverifiable is ever persisted; every entry that lands passed the same
-chain checks a direct push would. But the witness can be left short of the
-authority's tip, and `GET /tip` serves whatever it holds without saying so.
-The counts are in the log, at `cyphr_server=debug`: a
-`witness sync applied entries` line carrying the principal alongside an
-`applied` and a `rejected` count.
+unverifiable is ever persisted; every commit that lands passed the same
+chain checks a direct push would. But the witness can be left short of its
+peers' tips, and `GET /tip` serves whatever it holds without saying so.
 
-A non-zero `rejected` is the signal that this witness's answer is not the
-authority's whole story. With an `[authority_identity]` configured, the
-post-apply check compares what the witness now holds against what the
-authority signed for, and fails the sync when they differ — but the entries
-that already applied stay applied. Failing the sync does not roll anything
-back.
+### Checking a peer's tip reports
 
-### Authenticating the upstream
-
-Out of the box the sync channel is not authenticated, and the server says so
-loudly on startup — before the log subscriber is even installed, so it
-reaches you regardless of log configuration:
-
-```
-WARNING: witness mode is configured with an authority_url but no [authority_identity] -- the sync channel is UNAUTHENTICATED (K10 disabled). An on-path party can forge, withhold, or substitute /patch entries with no verification. Configure an [authority_identity] table (alg + pub) in the TOML config file to enable the authenticated channel.
-```
-
-Fix it by pinning the upstream's key. Read it from the authority's own
-discovery endpoint:
+By default a peer's answers are taken as the commits they carry, each
+verified; the peer is not asked to sign for them. To have the witness check a
+peer's signed tip report, name the peer's server principal. Read its PG from
+the peer's own discovery endpoint:
 
 ```sh
-curl -s http://127.0.0.1:3000/server | jq -r .payload.pub
+curl -s http://127.0.0.1:3000/server | jq -r .payload.pg
 ```
 
-```
-xzV0Vr3u_IB9KYe0P2nk5mWkLNKTQMDdRzcBTcpVEIM
-```
-
-and put it in the witness's config file — this setting has no flag and no
-environment variable:
+and put it beside the URL in the witness's config file (this has no flag and
+no environment variable):
 
 ```toml
 mode = "witness"
-authority_url = "http://127.0.0.1:3000"
 
-[authority_identity]
-alg = "Ed25519"
-pub = "xzV0Vr3u_IB9KYe0P2nk5mWkLNKTQMDdRzcBTcpVEIM"
+[gossip]
+peers = [{ url = "http://127.0.0.1:3000", pg = "SHA-512:..." }]
 ```
 
-The warning goes away and the witness now verifies two things: that the
-signed report accompanying a delta came from that key and names the
-principal it asked about, and that its own resulting local state matches
-what the report attests. The second check is what catches truncation and
-substitution — comparing the response's own fields against each other could
-never do it, because a signature over the report says nothing about a
-separate plaintext list of entries.
+The witness now fetches that server principal's chain from the peer, like
+any other principal, and accepts a tip report only if it is signed by a key
+active in that chain and names the principal asked about. It then checks that
+the tip it holds after applying what verified is the one the report attests.
+Until the chain is held, or if the signing key is not in it even after one
+more fetch, the peer's answer for that round is refused and nothing from it
+is applied. The second check is what catches truncation and substitution;
+a signature over the report says nothing about a separate list of entries.
+When the tips differ, the witness asks the peer for its branches and
+evidence, and keeps what verifies as proof of a fork.
 
-**What a wrong key looks like from the outside.** Point a witness at the
-right upstream with the wrong `pub` and reads simply fail to find anything:
+**What a wrong PG looks like from the outside.** Point a witness at the
+right peer with the wrong `pg` and reads simply fail to find anything: the
+answer is the same `404` a principal that genuinely does not exist gets, and
+the real reason is a `WARN` line in the log naming the peer and why it was
+refused. A mis-pinned witness therefore looks like an empty one. If you run
+witnesses, watch for that warning explicitly; nothing on the wire will tell
+you.
 
-```json
-{
-  "v": 1,
-  "payload": {
-    "error": "principal AkQKBDXinn-_73V0UNuISr5n7pNVItqqrHI_6zcaYgA not found",
-    "now": 1795229751
-  },
-  "statement": { "kind": "unsigned" }
-}
-```
-
-`404` — the same answer as a principal that genuinely does not exist. The
-real reason is a pair of `WARN` lines in the log:
-
-```
-WARN cyphr_server::sync: witness sync: patch fetch or verification failed principal=AkQK… error=statement unsigned or not signed by the expected authority
-WARN cyphr_server::routes: witness sync failed principal=AkQK… reason=EnvelopeUnsignedOrMisSigned
-```
-
-A mis-keyed witness therefore looks like an empty one. If you run witnesses,
-watch for that warning explicitly; nothing on the wire will tell you.
-
-**One thing the authenticated channel does not close: replay of a genuine
-response.** It authenticates the pairing of local state and signed report,
-not the report's freshness. A response the authority genuinely signed at a
+**One thing the tip check does not close: replay of a genuine response.** It authenticates the pairing of local state and signed report,
+not the report's freshness. A response the peer genuinely signed at a
 moment when its tip matched the witness's state matches that state forever,
 so an on-path party can keep serving that captured response while the
-authority advances, and the witness will keep concluding it is up to date.
+peer advances, and the witness will keep concluding it is up to date.
 Nothing is forged, so no comparison catches it. Closing it needs a freshness
 property the channel does not currently provide.
 
@@ -865,7 +826,7 @@ bootstraps its own principal, signs the tips it serves —
 the payload above, because witness mode decides the tier before it looks
 at any key. Clients get signatures with no published key to check them
 against. Run witnesses keyless and let clients that need a verifiable
-receipt ask the authority.
+receipt ask a keyed peer.
 
 ## The key death-set
 
@@ -973,7 +934,7 @@ RUST_LOG=cyphr_server=info,tower_http=debug cyphr-server serve …
   "span": {
     "method": "GET",
     "request_id": "f2a6264a-2209-4fc1-a461-c3bc96b91a77",
-    "uri": "/tip?pr=nobody",
+    "uri": "/tip?pg=nobody",
     "name": "request"
   }
 }
@@ -1107,7 +1068,7 @@ accept a different commit at the same position and sign that too, and the
 two signed statements would convict an honest server of equivocation. The
 same flush covers a retained rival commit (a fork), a naked revoke and an
 action-only push, because the server answers each of them as recorded.
-The rule applies in every mode, keyed or not, witness or authority.
+The rule applies in every mode, keyed or not, witness or service.
 
 The cost is one disk flush per accepted commit, about 8 ms on a push that
 takes about 40 ms. **Group commit is not implemented:** there is no
@@ -1229,7 +1190,7 @@ forks, embedded principals, promises the system does not keep) are in
 [Known limits](known-limits.md). What follows is specific to running the
 server.
 
-- **No replay protection on witness sync.** The authenticated sync channel (see "Authenticating the upstream" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the authority advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
+- **No replay protection on witness sync.** The authenticated sync channel (see "Checking a peer's tip reports" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the peer advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
 - **No online key rotation.** `rotate-key` (see "Rotating the signing key") works on a stopped server; there is no endpoint or signal that rotates a running one.
 - **No access log by default** (see above to turn one on); counters are `GET /metrics`.
 - **No group commit.** Every accepted commit pays its own disk flush (see "Durability"), so a busy server's push rate is bounded by the flush latency of its disk.
@@ -1237,6 +1198,6 @@ server.
 - **No token revocation and no invite expiry.** A leaked invite token is live until spent; a leaked bearer token is live until it expires, 15 minutes later.
 - **No `Retry-After` on a `429`,** and no indication of which bucket refused, so a well-behaved client cannot back off intelligently.
 - **No admission or limits configuration outside a TOML file.** Environment-only deployments cannot set them.
-- **No permissions model.** Every bearer token the server issues carries `["read","write"]`, and bearer tokens gate almost nothing: `POST /push` checks that a presented token names the principal being written to, and no other route requires one.
+- **No Cyphr route requires a permission.** The integrating service supplies the login policy and protects its own routes; `POST /push` checks that a presented token names the principal being written to, and no other Cyphr route requires one.
 - **No freshness guarantee on witness sync.** A captured, genuinely-signed upstream response can be replayed indefinitely to hold a witness at a stale state.
 - **No coherent keyed witness.** A witness given a signing key signs what it serves while publishing no key to verify those signatures with.

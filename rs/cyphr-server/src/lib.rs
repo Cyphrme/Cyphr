@@ -27,7 +27,6 @@ pub mod rate_limit;
 pub mod receipt;
 pub mod revoke;
 pub mod routes;
-pub mod sync;
 pub mod transport;
 
 use std::sync::Arc;
@@ -92,6 +91,10 @@ pub struct AppState {
     /// auth state beyond short expiry).
     pub challenges: auth::login::ChallengeStore,
 
+    /// The permissions a login is granted, supplied by the integrating
+    /// service ([`AppState::with_login_policy`]). Defaults to granting none.
+    pub login_policy: Arc<dyn auth::policy::LoginPolicy>,
+
     /// Durable, server-local naked-revoke observations (SPEC §6.4). Its
     /// own store, distinct from the rebuildable index: a naked revoke
     /// mutates no chain and must survive a reindex, so it cannot live in
@@ -106,13 +109,6 @@ pub struct AppState {
 
     /// Storage write probe behind `GET /healthz`.
     pub health: metrics::HealthProbe,
-
-    /// Per-principal locks for synchronizing witness state sync execution.
-    pub sync_locks: std::sync::Arc<
-        tokio::sync::Mutex<
-            std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
-        >,
-    >,
 }
 
 impl AppState {
@@ -141,9 +137,6 @@ impl AppState {
             .timeout(std::time::Duration::from_secs(10))
             .build()?;
 
-        let sync_locks =
-            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
-
         let health = metrics::HealthProbe::new(&config.record_dir());
         health.watch(observations.latch());
 
@@ -154,12 +147,19 @@ impl AppState {
             receipt_signer: None,
             principal: None,
             challenges: auth::login::ChallengeStore::new(),
+            login_policy: Arc::new(auth::policy::NoPermissions),
             observations,
             http_client,
             metrics: metrics::Metrics::default(),
             health,
-            sync_locks,
         })
+    }
+
+    /// Grant logins the permissions `policy` decides, instead of none.
+    #[must_use]
+    pub fn with_login_policy(mut self, policy: Arc<dyn auth::policy::LoginPolicy>) -> Self {
+        self.login_policy = policy;
+        self
     }
 
     /// Route every receipt and tip attestation through

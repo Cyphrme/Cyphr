@@ -29,8 +29,13 @@ pub fn run(cli: &Cli, command: &DataCommands) -> crate::Result<()> {
             msg,
             now,
             sign_only,
-        } => action(cli, identity, signer, msg, *now, *sign_only),
-        DataCommands::Commit { identity, signer } => commit(cli, identity, signer),
+            upgrade,
+        } => action(cli, identity, signer, msg, *now, *sign_only, *upgrade),
+        DataCommands::Commit {
+            identity,
+            signer,
+            upgrade,
+        } => commit(cli, identity, signer, *upgrade),
         DataCommands::Submit {
             identity,
             peer,
@@ -92,8 +97,24 @@ fn action(
     msg: &str,
     now: Option<i64>,
     sign_only: bool,
+    upgrade: bool,
 ) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
+    // A recorded action needs a committed principal. Checked before anything
+    // is signed, and the genesis commit is made only on the user's `--upgrade`.
+    let mut recorded = None;
+    if !sign_only {
+        let store = parse_store(cli)?;
+        let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
+        if principal.pg().is_none() {
+            if !upgrade {
+                return Err(Error::NoGenesisCommit { upgradable: true });
+            }
+            super::init::commit_genesis(&mut principal, &keystore, &[], &cli.authority)?;
+            save_principal_to_engine(&store, &keystore, &principal)?;
+        }
+        recorded = Some((store, principal));
+    }
     let signer = keystore.signer(signer_tmb)?;
     let now = now.unwrap_or_else(current_timestamp);
     let signed = sign(
@@ -102,13 +123,7 @@ fn action(
     )?;
     let czd = signed.czd.to_b64();
 
-    if !sign_only {
-        let store = parse_store(cli)?;
-        let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
-        // An action is recorded against a committed principal, so the
-        // genesis commit precedes the first action (as for any command).
-        super::init::commit_genesis(&mut principal, &keystore, &[], &cli.authority)?;
-        save_principal_to_engine(&store, &keystore, &principal)?;
+    if let Some((store, mut principal)) = recorded {
         principal.verify_and_record_action(&signed.pay_bytes, &signed.sig, signed.czd.clone())?;
 
         let principal_id = get_principal_id_from_principal(&principal, &keystore)?;
@@ -128,8 +143,6 @@ fn action(
 
 /// Commit one `ds/create` of `signer_tmb` onto `principal`, its id the
 /// Data Root of the Data Tree as the principal holds it now (SPEC 4.8.2).
-/// Shared by `data commit` and rebase replay, which must name the rebased
-/// tree's root and never an earlier one's.
 pub(crate) fn apply_ds_create(
     principal: &mut CliPrincipal,
     keystore: &impl KeyBackend,
@@ -137,7 +150,7 @@ pub(crate) fn apply_ds_create(
     authority: &str,
 ) -> crate::Result<String> {
     let signer = keystore.signer(signer_tmb)?;
-    super::init::commit_genesis(principal, keystore, &[], authority)?;
+    super::init::require_genesis_commit(principal, true)?;
 
     let now = current_timestamp();
     let mut scope = principal.begin_commit();
@@ -156,10 +169,13 @@ pub(crate) fn apply_ds_create(
 
 /// `cyphr data commit`: sign a `ds/create` whose `id` is MR over the DT
 /// this client holds, finalized as one commit; that `id` becomes DR.
-fn commit(cli: &Cli, identity: &str, signer_tmb: &str) -> crate::Result<()> {
+fn commit(cli: &Cli, identity: &str, signer_tmb: &str, upgrade: bool) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
     let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
+    if principal.pg().is_none() && upgrade {
+        super::init::commit_genesis(&mut principal, &keystore, &[], &cli.authority)?;
+    }
     let dr = apply_ds_create(&mut principal, &keystore, signer_tmb, &cli.authority)?;
     save_principal_to_engine(&store, &keystore, &principal)?;
 

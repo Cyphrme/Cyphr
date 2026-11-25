@@ -1,9 +1,10 @@
 // Scenario S03: offline.
 // Fault: an offline device, then a partition that lets a real fork form.
 // Alice's laptop is offline and commits while her phone commits via P1.
-// Must hold: case 1, the laptop push is refused as stale and rebases, no fork; an
-// action the laptop recorded but never committed survives the rebase, re-signed
-// and named in the rebase output (SPEC 15.9), and reaches the peers;
+// Must hold: case 1, the laptop push is refused as stale, the laptop trusts the
+// peer and redoes its commit, no fork; an action the laptop recorded but never
+// committed survives, as signed (or is dropped and named, never re-signed), and
+// reaches the peers;
 // case 2, the commits reach different partitioned peers (a real principal fork),
 // each branch extended twice: Error plus evidence at every peer, both extended
 // heads live and neither settled. Both branches being extended, no further
@@ -60,7 +61,7 @@ async fn s03_offline() {
         "the laptop must be offline"
     );
     h.ok(laptop.commit_data(&pr, "laptop, offline").await);
-    // A further action recorded and left uncommitted when the rebase comes.
+    // A further action recorded and left uncommitted when the remote is trusted.
     let pending = h.ok(laptop.record_data(&pr, "laptop, uncommitted").await);
     let before_offline = h.peer_view("p1", &pr).await.expect("P1 holds the base");
     let offline_push = h.ok(laptop.push(&pr, &["p1"]).await);
@@ -97,21 +98,28 @@ async fn s03_offline() {
         "a refused push must not move the peer"
     );
     let p1_actions = h.peer_actions("p1", &pr).await.expect("P1 holds actions");
-    let rebased = h.ok(laptop.rebase(&pr).await);
-    assert_ne!(
-        rebased.tip, phone_tip,
-        "a rebase adds the laptop's own commit"
+    let adopted = h.ok(laptop.trust_remote(&pr).await);
+    assert_eq!(
+        adopted.tip, phone_tip,
+        "the laptop holds the peer's tip once its diverged commit is gone"
+    );
+    assert_eq!(
+        adopted.discarded.len(),
+        1,
+        "only the laptop's own commit is discarded: {:?}",
+        adopted.discarded
     );
     // SPEC 6.5: the laptop's key is active on the adopted chain at the
-    // action's own `now`, so the rebase keeps the action as signed (a
-    // re-signed copy would be a duplicate under a new digest) and re-signs
-    // nothing.
+    // action's own `now`, so adopting keeps the action as signed; anything
+    // it could not keep would be dropped and named, never re-signed.
     assert!(
-        rebased.resigned.iter().all(|r| r.czd != pending),
-        "the rebase keeps the uncommitted action as signed: {:?}",
-        rebased.resigned
+        adopted.dropped.iter().all(|czd| *czd != pending),
+        "adopting keeps the uncommitted action as signed: {:?}",
+        adopted.dropped
     );
-    let merged = h.ok(laptop.push(&pr, &both).await).accepted("rebased push");
+    let redone = h.ok(laptop.commit_recorded(&pr).await);
+    assert_ne!(redone, phone_tip, "redoing adds the laptop's own commit");
+    let merged = h.ok(laptop.push(&pr, &both).await).accepted("redone push");
     for peer in both {
         let v = h
             .settled_view(peer, &pr)
@@ -493,7 +501,7 @@ async fn evidence(h: &Harness, peer: &str, p: &Principal) -> usize {
     let body: serde_json::Value = h
         .http
         .get(format!("http://{addr}/evidence"))
-        .query(&[("pr", p.0.as_str())])
+        .query(&[("pg", p.0.as_str())])
         .send()
         .await
         .expect("evidence request")

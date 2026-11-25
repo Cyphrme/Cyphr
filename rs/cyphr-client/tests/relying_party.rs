@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use common::*;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr_client::login::{self, LoginRequest, SoftwareIssuer};
 use cyphr_client::{
     Anchor, BindingKind, ChannelBinding, ConnectError, Connector, PullPeer, Refusal, RelyingParty,
     Request, RpConfig, SessionBinding, UnmetCurrency,
@@ -23,8 +24,14 @@ const BOUND: Duration = Duration::from_secs(30);
 const REFRESH: Duration = Duration::from_secs(10);
 
 fn config() -> RpConfig {
+    let site = coz::Alg::Ed25519.generate_keypair();
     RpConfig {
         audience: AUDIENCE.to_owned(),
+        issuer: std::sync::Arc::new(SoftwareIssuer::new(
+            site.alg.name(),
+            &site.prv_bytes,
+            &site.pub_bytes,
+        )),
         pull_age_bound: BOUND,
         refresh_interval: REFRESH,
     }
@@ -147,18 +154,34 @@ fn peer<'a>(name: &'a str, m: &'a Mirror) -> PullPeer<'a, Mirror> {
     PullPeer { name, connector: m }
 }
 
-/// A login signed by `by`, the Coz the principal's device hands the
+/// A login signed by `by`, the request the principal's device hands the
 /// relying party for `challenge`.
-fn login(by: &Kp, pg: &str, audience: &str, challenge: &str) -> coz::CozJson {
-    let pay = json!({
+fn login(by: &Kp, pg: &str, audience: &str, challenge: &coz::CozJson) -> LoginRequest {
+    login_signed(by, pg, audience, challenge, None)
+}
+
+fn login_signed(
+    by: &Kp,
+    pg: &str,
+    audience: &str,
+    challenge: &coz::CozJson,
+    h: Option<&ChannelBinding>,
+) -> LoginRequest {
+    let mut pay = json!({
         "alg": by.kp.alg.name(),
         "now": T0,
         "tmb": by.tmb.to_b64(),
-        "typ": format!("{audience}/cyphr/auth/login"),
-        "pr": pg,
-        "challenge": challenge,
+        "typ": format!("{audience}{}", login::REQUEST_TYP_SUFFIX),
+        "pg": pg,
+        "challenge": challenge.pay["nonce"],
     });
-    serde_json::from_value(sign_as(by, pay)).expect("coz json")
+    if let Some(h) = h {
+        pay["h"] = Base64UrlUnpadded::encode_string(h.as_bytes()).into();
+    }
+    LoginRequest {
+        coz: serde_json::from_value(sign_as(by, pay)).expect("coz json"),
+        challenge: Some(challenge.clone()),
+    }
 }
 
 /// A genesis commit opened by `opener` over `{opener} + others`: its line
@@ -217,7 +240,7 @@ async fn pin_decides_which_chain_the_relying_party_trusts() {
     let mut pg_only =
         RelyingParty::new(&pg, Anchor::GenesisCommit(pg.clone()), config(), pin_clock);
     pg_only.refresh(&[peer("pinned", &pinned)]).await;
-    let c = pg_only.challenge();
+    let c = pg_only.challenge().expect("challenge");
     assert_eq!(
         pg_only.sign_in(&login(&a, &pg, AUDIENCE, &c)),
         Err(Refusal::Stale(UnmetCurrency::NoPull)),
@@ -231,7 +254,7 @@ async fn pin_decides_which_chain_the_relying_party_trusts() {
         pin_clock,
     );
     rp.refresh(&[peer("impostor", &impostor)]).await;
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     assert_eq!(
         rp.sign_in(&login(&a, &pg, AUDIENCE, &c)),
         Err(Refusal::Stale(UnmetCurrency::NoPull)),
@@ -240,16 +263,31 @@ async fn pin_decides_which_chain_the_relying_party_trusts() {
 
     rp.refresh(&[peer("impostor", &impostor), peer("pinned", &pinned)])
         .await;
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     let session = rp
         .sign_in(&login(&a, &pg, AUDIENCE, &c))
         .expect("signed in");
     assert_eq!(session.principal, pg);
     assert_eq!(session.key, a.tmb);
     assert_eq!(session.trust.tip.commits, 1);
+    assert_eq!(
+        rp.sign_in(&login(&a, &pg, AUDIENCE, &c)),
+        Err(Refusal::ChallengeInvalid),
+        "a redeemed challenge signs one login"
+    );
+
+    // A challenge another issuer signed, for this audience and fresh, is
+    // refused though the login answering it is valid.
+    let other = config();
+    let foreign =
+        login::issue_challenge(other.issuer.as_ref(), AUDIENCE, pin_clock()).expect("issues");
+    assert_eq!(
+        rp.sign_in(&login(&a, &pg, AUDIENCE, &foreign)),
+        Err(Refusal::ChallengeInvalid)
+    );
 
     // A login for another service, and a replay of a spent challenge.
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     assert_eq!(
         rp.sign_in(&login(&a, &pg, "other.example", &c)),
         Err(Refusal::AudienceMismatch)
@@ -260,9 +298,11 @@ async fn pin_decides_which_chain_the_relying_party_trusts() {
     );
 }
 
-fn session_challenge_spent(live: &str) -> String {
-    // Any value the relying party did not issue reads as spent.
-    format!("{live}x")
+/// `live` altered, so it is not one the relying party signed.
+fn session_challenge_spent(live: &coz::CozJson) -> coz::CozJson {
+    let mut forged = live.clone();
+    forged.pay["nonce"] = "not-the-nonce-it-signed".into();
+    forged
 }
 
 static LIFE_CLOCK: AtomicI64 = AtomicI64::new(T0);
@@ -299,7 +339,7 @@ async fn session_ends_on_stale_view_and_on_replayed_removal() {
         life_clock,
     );
     rp.refresh(&[peer("p1", &mirror)]).await;
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     let session = rp
         .sign_in(&login(&device, &pg, AUDIENCE, &c))
         .expect("signed in");
@@ -317,7 +357,7 @@ async fn session_ends_on_stale_view_and_on_replayed_removal() {
         age: Duration::from_secs(31),
         bound: BOUND,
     });
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     assert_eq!(
         rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
         Err(stale.clone())
@@ -334,7 +374,7 @@ async fn session_ends_on_stale_view_and_on_replayed_removal() {
         Err(Refusal::NoSession),
         "an ended session stays ended"
     );
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     assert_eq!(
         rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
         Err(Refusal::KeyNotActive)
@@ -384,7 +424,7 @@ async fn anchor_is_reported_and_subject_is_the_replayed_pg() {
         other => panic!("enrolled at the genesis key, reports {other:?}"),
     }
     rp.refresh(&[peer("p1", &mirror)]).await;
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     let session = rp
         .sign_in(&login(&b, &pg, AUDIENCE, &c))
         .expect("signed in");
@@ -420,21 +460,10 @@ impl Connector for OnChannel {
 fn login_committing(
     by: &Kp,
     pg: &str,
-    challenge: &str,
+    challenge: &coz::CozJson,
     h: Option<&ChannelBinding>,
-) -> coz::CozJson {
-    let mut pay = json!({
-        "alg": by.kp.alg.name(),
-        "now": T0,
-        "tmb": by.tmb.to_b64(),
-        "typ": format!("{AUDIENCE}/cyphr/auth/login"),
-        "pr": pg,
-        "challenge": challenge,
-    });
-    if let Some(h) = h {
-        pay["h"] = Base64UrlUnpadded::encode_string(h.as_bytes()).into();
-    }
-    serde_json::from_value(sign_as(by, pay)).expect("coz json")
+) -> LoginRequest {
+    login_signed(by, pg, AUDIENCE, challenge, h)
 }
 
 /// Claim (SPEC 17.5 session binding): a native client's login commits to
@@ -469,7 +498,7 @@ async fn login_commits_to_its_channel_and_the_token_stays_on_it() {
 
     // Refused: the login names another channel, none, or a channel with no
     // carrier channel.
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     assert_eq!(
         rp.sign_in_on(&login_committing(&g, &pg, &c, Some(&elsewhere)), &on_here),
         Err(Refusal::ChannelMismatch)
@@ -501,14 +530,14 @@ async fn login_commits_to_its_channel_and_the_token_stays_on_it() {
     );
     // The same login on a second channel is refused, though its challenge
     // is spent: the second sign-in needs a fresh login.
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     let reposted = login_committing(&g, &pg, &c, Some(&here));
     assert_eq!(
         rp.sign_in_on(&reposted, &on_elsewhere),
         Err(Refusal::ChannelMismatch)
     );
 
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     let browser = rp
         .sign_in(&login_committing(&g, &pg, &c, None))
         .expect("edge");
@@ -562,7 +591,7 @@ async fn archrev_b1_proved_fork_survives_a_pull_the_rival_peer_misses() {
         .refresh(&[peer("honest", &honest_peer), peer("rival", &rival_peer)])
         .await;
     assert!(!report.forks.is_empty(), "the rival peer shows a fork");
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     assert_eq!(
         rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
         Err(Refusal::Forked)
@@ -571,7 +600,7 @@ async fn archrev_b1_proved_fork_survives_a_pull_the_rival_peer_misses() {
     // The rival peer no longer shows it; only the honest peer answers.
     let report = rp.refresh(&[peer("honest", &honest_peer)]).await;
     assert!(report.forks.is_empty(), "this pull shows no fork");
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     assert_eq!(
         rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
         Err(Refusal::Forked),
@@ -642,7 +671,7 @@ async fn a_relying_party_signs_in_after_the_fork_it_proved_is_resolved() {
     let tied = forked_peer(&pg, &standing, &abandoned, 2);
     let report = rp.refresh(&[peer("p1", &tied)]).await;
     assert_eq!(report.forks.len(), 1, "the fork is proved");
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     assert_eq!(
         rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
         Err(Refusal::Forked),
@@ -651,7 +680,7 @@ async fn a_relying_party_signs_in_after_the_fork_it_proved_is_resolved() {
 
     let settled = forked_peer(&pg, &resolved, &abandoned, 2);
     rp.refresh(&[peer("p1", &settled)]).await;
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     assert!(
         rp.sign_in(&login(&device, &pg, AUDIENCE, &c)).is_ok(),
         "only one branch is extended: the principal is Active"
@@ -693,7 +722,7 @@ async fn a_relying_party_on_the_lost_branch_refuses_its_own_branchs_keys() {
     let report = rp.refresh(&[peer("second", &second)]).await;
     assert_eq!(report.forks.len(), 1, "the extended chain shows the fork");
 
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     assert_eq!(
         rp.sign_in(&login(&thief, &pg, AUDIENCE, &c)),
         Err(Refusal::LostBranch),
@@ -843,7 +872,7 @@ async fn a_lost_branch_is_refused_when_the_fork_is_located_by_proofs() {
     // pins the refusal, not the label, until the locate path also fetches
     // the kept line's extension (the whole-chain path, which does, gives
     // `LostBranch`: see the test above).
-    let c = rp.challenge();
+    let c = rp.challenge().expect("challenge");
     let got = rp.sign_in(&login(&thief, &pg, AUDIENCE, &c));
     assert!(
         matches!(got, Err(Refusal::Forked | Refusal::LostBranch)),

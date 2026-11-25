@@ -395,16 +395,17 @@ async fn after_revocation(r: &Revoked) -> WireBundle {
     bundle
 }
 
-/// Backs SPEC 6.4 and 15.8: a revoke inside a commit is state of its own
-/// branch only; it is no naked revoke ("signed outside of a commit"), so
-/// it does not stop the key on a rival branch. The canonical commit at 1
-/// revokes `golden`; a `golden`-signed rival R is retained at 1, and B
-/// over R extends it, the only extended branch: B is admitted as the tip
-/// and the principal is Active, at the engine seam every holder ingests
-/// through.
-/// Turns red if an in-chain revoke disqualifies a rival branch's commits.
+/// Backs SPEC 6.4: a revoke inside a commit stops the key from the commit's
+/// receipt on every branch, not on its own branch only (the spec author on
+/// #203: "A revoked stops the key at the time the revoke was received").
+/// The canonical commit at 1 revokes `golden`. A `golden`-signed rival R at
+/// 1 dated after that receipt is refused as a dead key and not kept ("Why
+/// would we keep an invalid signature?"), and so is B over R, so the
+/// principal stays Active on the revoking chain, at the engine seam every
+/// holder ingests through. Turns red if an in-chain revoke leaves the key
+/// alive on a rival branch.
 #[tokio::test]
-async fn an_in_chain_revoke_is_state_of_its_own_branch() {
+async fn an_in_chain_revoke_stops_the_key_on_every_branch() {
     let r = revoked().await;
     let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     r.f.submit(&e, &r.f.first).await.expect("commit 0");
@@ -412,17 +413,26 @@ async fn an_in_chain_revoke_is_state_of_its_own_branch() {
         .await
         .expect("the revocation");
     let pool = load_pool();
+    let after = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64
+        + 10;
     let mut rival = r.f.base.fork().await.expect("fork");
-    create_key(&mut rival, &r.f.golden, &kp(&pool, "key_b"), NOW + 11).await;
-    create_key(&mut rival, &r.f.golden, &kp(&pool, "bob"), NOW + 12).await;
-    assert!(
-        r.f.submit(&e, &blobs(&rival, 1)).await.is_err(),
-        "R is a rival"
-    );
-    r.f.submit(&e, &blobs(&rival, 2))
-        .await
-        .expect("B extends the only extended branch");
+    create_key(&mut rival, &r.f.golden, &kp(&pool, "key_b"), after).await;
+    create_key(&mut rival, &r.f.golden, &kp(&pool, "bob"), after + 1).await;
+    for position in [1, 2] {
+        let refused = r.f.submit(&e, &blobs(&rival, position)).await;
+        assert!(
+            matches!(
+                refused,
+                Err(cyphr_storage::engine::EngineError::DeadKey { .. })
+            ),
+            "position {position}: {refused:?}"
+        );
+    }
     assert!(!e.is_errored(&r.f.id).await.expect("verdict"));
+    assert_eq!(e.list_branches(&r.f.id).await.expect("branches").len(), 1);
 }
 
 /// Backs the retention bound on promotion: `golden` already has its

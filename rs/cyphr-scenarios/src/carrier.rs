@@ -24,17 +24,9 @@ pub trait Accept: Send {
     fn local_addr(&self) -> SocketAddr;
 }
 
-/// Which wire a carrier rides on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CarrierKind {
-    Tcp,
-    Udp,
-}
-
 /// A transport: bind a listener, or connect to an address, optionally from
 /// a chosen local source IP so the far side sees one address per node.
 pub trait Carrier: Send + Sync + 'static {
-    fn kind(&self) -> CarrierKind;
     fn bind(&self) -> BoxFuture<'_, io::Result<Box<dyn Accept>>>;
     fn connect(
         &self,
@@ -97,10 +89,6 @@ impl Accept for TcpAccept {
 }
 
 impl Carrier for TcpCarrier {
-    fn kind(&self) -> CarrierKind {
-        CarrierKind::Tcp
-    }
-
     fn bind(&self) -> BoxFuture<'_, io::Result<Box<dyn Accept>>> {
         Box::pin(async {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
@@ -128,37 +116,6 @@ impl Carrier for TcpCarrier {
             }
             Ok(Box::new(socket.connect(addr).await?) as Box<dyn Duplex>)
         })
-    }
-}
-
-/// The datagram carrier slot. It exists so the seam's two kinds are both
-/// representable; every operation reports `Unsupported` until a transport
-/// needs it.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct UdpCarrier;
-
-fn unsupported<T>() -> io::Result<T> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "the Udp carrier is not implemented",
-    ))
-}
-
-impl Carrier for UdpCarrier {
-    fn kind(&self) -> CarrierKind {
-        CarrierKind::Udp
-    }
-
-    fn bind(&self) -> BoxFuture<'_, io::Result<Box<dyn Accept>>> {
-        Box::pin(async { unsupported() })
-    }
-
-    fn connect(
-        &self,
-        _addr: SocketAddr,
-        _src: Option<IpAddr>,
-    ) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>> {
-        Box::pin(async { unsupported() })
     }
 }
 

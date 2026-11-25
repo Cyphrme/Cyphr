@@ -26,8 +26,11 @@ A revoke stops a key from now on. It does not reach back.
   verifier that follows a peer, cut a revoked key off at the moment that
   node first received the revoke, never at the revoke's `now` or `rvk`
   (SPEC 14.12; forge #203). From then on a message the key signs is
-  refused if its own `now` is at or after the cutoff. A later revoke of
-  the same key changes nothing.
+  refused if its own `now` is at or after the cutoff. That holds for a
+  revoke sent alone and for one a commit carries: a key revoked inside a
+  commit has the cutoff of that commit's receipt, on every branch of the
+  principal, and its data actions follow the same cutoff. A later revoke
+  of the same key changes nothing.
 - **A held commit is never re-judged.** A commit the node already holds
   stays, whatever a later revoke says. A thief's commit that was accepted
   before the revoke arrived stays counted.
@@ -39,7 +42,9 @@ A revoke stops a key from now on. It does not reach back.
   specification gives is recovery, not prevention: the owner removes the
   key and mutates the principal forward (SPEC 6.4, 14.12). A server also
   records when it first saw each commit, so a backdated commit shows a gap
-  between its `now` and its first-seen time.
+  between its `now` and its first-seen time: the spec author's answer is
+  that backdating "should be obvious to a durable network of witnesses"
+  (forge #203).
 - **Nodes can disagree about a late revoke.** Two nodes receive a revoke
   at different times. A message the dead key signed, dated between the two
   receipt times, is accepted by one and refused by the other, and nothing
@@ -252,9 +257,15 @@ These are guarantees a reader might assume. None is provided today.
 - **Timestamps.** The `now` in a receipt is the server's own clock, which
   no one else attests.
 - **Bearer tokens.** A token lives 15 minutes and cannot be revoked. A
-  server issues every token with read and write permission. No route
-  requires a token. `POST /push` is authorized by the bundle's own
+  server grants a login the permissions its service's policy returns, and
+  none without one. No Cyphr route requires a token. `POST /push` is authorized by the bundle's own
   signatures, and checks a token only when the request presents one.
+- **Unlinkable accounts.** A principal's PG and each key's `tmb` are the
+  same at every site it signs in to. Two services that compare the
+  identifiers they hold can tell that one person has an account at both.
+  Sign-on here follows the login design of the specification's author, which
+  does not hide the identifier from the service; nothing derives a
+  per-service identifier.
 - **Key custody.** A key stored by the CLI is software-held and
   unencrypted, and nothing can record how a key is held. See
   [key storage](key-storage.md).

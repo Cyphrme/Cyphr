@@ -7,8 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
-use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
-use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+use cyphr_server::config::{ServerConfig, ServerMode};
 
 fn unix_now() -> i64 {
     let secs = std::time::SystemTime::now()
@@ -83,30 +82,43 @@ async fn witness_refuses_an_hour_old_tip_report() {
     for b in [&genesis, &first] {
         assert!(push(&app, &id, b).await.is_success(), "authority takes it");
     }
-    let (_, fresh) = common::get_json(app.clone(), &format!("/patch?pr={id}")).await;
+    let (_, fresh) = common::get_json(app.clone(), &format!("/patch?pg={id}")).await;
     let body = Arc::new(Mutex::new(fresh.clone()));
     let (url, relay) = replayer(body.clone()).await;
 
-    let identity = astate.identity.clone().expect("identity");
     let wdir = tempfile::tempdir().expect("witness dir");
     let witness = Arc::new(
         cyphr_server::AppState::new(ServerConfig {
             mode: ServerMode::Witness,
             data_dir: wdir.path().join("data"),
-            authority_url: Some(url),
-            authority_identity: Some(AuthorityIdentity {
-                alg: identity.alg().name().to_string(),
-                pub_key: identity.pub_key().to_vec(),
-            }),
+            gossip: common::pinned_gossip(url, &astate),
             ..Default::default()
         })
         .expect("witness"),
     );
-    let synced = sync_from_authority(&witness, &id).await;
-    assert!(
-        matches!(synced, SyncOutcome::Synced { .. }),
-        "the relayed genuine body syncs: {synced:?}"
-    );
+    // The relay carries only the one body, so the witness already holds the
+    // authority's server principal.
+    let pg = astate
+        .principal
+        .as_ref()
+        .expect("principal")
+        .pg()
+        .to_string();
+    for entry in &astate
+        .engine
+        .get_patch(&pg, None, None)
+        .await
+        .expect("server")
+        .entries
+    {
+        witness
+            .engine
+            .submit_commit(&pg, None, &entry.bundle)
+            .await
+            .expect("server principal chain");
+    }
+    let synced = cyphr_server::gossip::try_fetch_from_peers(&witness, &id).await;
+    assert!(synced.is_ok(), "the relayed genuine body syncs: {synced:?}");
 
     // The authority moves on; the relay replays its hour-old word.
     let second = common::key_commit_by(&mut p, "golden", "alice", now + 2).await;
@@ -118,7 +130,7 @@ async fn witness_refuses_an_hour_old_tip_report() {
         now - 3600,
     );
     *body.lock().expect("body") = stale;
-    let replayed = sync_from_authority(&witness, &id).await;
+    let replayed = cyphr_server::gossip::try_fetch_from_peers(&witness, &id).await;
     relay.abort();
     let held = witness
         .engine
@@ -131,7 +143,7 @@ async fn witness_refuses_an_hour_old_tip_report() {
         held.commit_count
     );
     assert!(
-        matches!(replayed, SyncOutcome::Failed { .. }),
+        replayed.is_err(),
         "an hour-old report was taken as current: {replayed:?}, witness at {} of 3 commits",
         held.commit_count
     );

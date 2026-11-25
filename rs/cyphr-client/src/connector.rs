@@ -113,7 +113,7 @@ pub enum Method {
 pub struct Request {
     /// What to do with the target.
     pub method: Method,
-    /// The request target, e.g. `/patch?pr=...`.
+    /// The request target, e.g. `/patch?pg=...`.
     pub target: String,
     /// The payload; empty for a `Get`.
     pub body: Vec<u8>,

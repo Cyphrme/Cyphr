@@ -4,7 +4,7 @@
 //!
 //! The chain is the store's (append-only, so a record built from it never
 //! regresses); this file holds only what the store has no place for. It
-//! sits beside the store directory, so a rebase's store swap leaves it be.
+//! sits beside the store directory, so a store swap leaves it be.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

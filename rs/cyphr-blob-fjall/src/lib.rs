@@ -101,24 +101,12 @@ impl std::fmt::Display for EmlLogsError {
 
 impl std::error::Error for EmlLogsError {}
 
-/// Suffixes of the per-principal keyspaces of the layout before the fixed
-/// triplet. The fixed names carry no leading underscore, so none ends in
-/// one of these.
-const LEGACY_SUFFIXES: [&str; 3] = ["_eml_leaves", "_eml_nodes", "_eml_metadata"];
-
 impl EmlLogs {
     /// The logs of `db`, opening the fixed keyspaces once.
     ///
-    /// A database written under the per-principal keyspace layout is
-    /// migrated by dropping those keyspaces: the logs are caches of the
-    /// blobs (I1) and replay rebuilds each on its next load. Generation
-    /// records are left as they are; a record then names a scope that is
-    /// empty, which replay fills. This costs about seven fsyncs per legacy
-    /// keyspace, once, so progress is logged.
-    ///
     /// # Errors
     ///
-    /// A keyspace does not open, or a legacy one does not delete.
+    /// A keyspace does not open.
     pub fn new(db: Database) -> Result<Self, EmlLogsError> {
         let err = |what: &str| {
             let what = what.to_owned();
@@ -129,15 +117,6 @@ impl EmlLogs {
             .map_err(|e| err("opening the generation record")(&e))?;
         let keyspaces =
             LogKeyspaces::open(db.clone()).map_err(|e| err("opening the log keyspaces")(&e))?;
-        let legacy: Vec<String> = db
-            .list_keyspace_names()
-            .into_iter()
-            .map(|name| name.to_string())
-            .filter(|name| LEGACY_SUFFIXES.iter().any(|s| name.ends_with(s)))
-            .collect();
-        if !legacy.is_empty() {
-            migrate_legacy_layout(&db, &legacy).map_err(EmlLogsError)?;
-        }
         Ok(Self {
             keyspaces,
             generations,
@@ -185,33 +164,6 @@ impl EmlLogs {
             .drop_scope()
             .map_err(|e| format!("retiring log generation {generation}: {e}"))
     }
-}
-
-/// Drop the legacy keyspaces `legacy`. An interrupted drop is finished by
-/// the next start, which finds the keyspaces still listed.
-fn migrate_legacy_layout(db: &Database, legacy: &[String]) -> Result<(), String> {
-    let started = std::time::Instant::now();
-    eprintln!(
-        "migrating the commit logs to the fixed keyspace layout: dropping {} legacy keyspaces \
-         (they rebuild from the blobs on first load)",
-        legacy.len()
-    );
-    for (done, name) in legacy.iter().enumerate() {
-        let keyspace = db
-            .keyspace(name, KeyspaceCreateOptions::default)
-            .map_err(|e| format!("fjall keyspace '{name}' open: {e}"))?;
-        db.delete_keyspace(keyspace)
-            .map_err(|e| format!("deleting legacy keyspace '{name}': {e}"))?;
-        let done = done + 1;
-        if done % 30 == 0 || done == legacy.len() {
-            eprintln!(
-                "  dropped {done}/{} legacy keyspaces, {:.1}s elapsed",
-                legacy.len(),
-                started.elapsed().as_secs_f64()
-            );
-        }
-    }
-    Ok(())
 }
 
 impl cyphr_storage::engine::LogFactory<storage_fjall::FjallStorage> for EmlLogs {

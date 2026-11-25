@@ -12,7 +12,7 @@
 data_dir   = "/var/lib/cyphr"
 listen     = "127.0.0.1:3000" # ":0" picks a free port and prints it
 log_format = "pretty"         # "json" for a log pipeline
-mode       = "authority"
+mode       = "service"        # or "witness": refuses writes, follows its peers
 
 # signing_key_path = "/etc/cyphr/signing-key.json"
 # audience = "login.example.com"
@@ -23,9 +23,16 @@ mode       = "authority"
 # cap counts an IPv6 /64 as one address.
 # transport_listen = "127.0.0.1:3100"
 
-# Witness mode instead pulls from an upstream:
-# mode = "witness"
-# authority_url = "https://authority.example.com"
+# Peers to gossip with, in either mode. An entry is a URL, or a table that
+# also names the Principal Genesis of that peer's server principal (what its
+# GET /server publishes), so its signed tip reports are checked against the
+# keys of that principal's chain. A witness fetches a principal it does not
+# hold from these peers when read; `fetch_on_read` overrides the mode's
+# default (on for a witness, off for a service).
+# [gossip]
+# peers = ["https://peer.example.com", { url = "https://other.example.com", pg = "SHA-512:..." }]
+# interval_secs = 60
+# fetch_on_read = true
 
 [admission]
 policy = "open" # or "invite" with tokens_path = "/var/lib/cyphr/invites.txt"

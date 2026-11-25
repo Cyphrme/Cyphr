@@ -104,7 +104,7 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     // The receipt names the principal in its default wire spelling, the
     // bare digest (SPEC 2.2.3); the pushed id is the engine's labelled PG.
     assert_eq!(
-        claims["pr"],
+        claims["pg"],
         serde_json::json!(cyphr_storage::engine::bare_digest(principal_id))
     );
     assert_eq!(claims["sequence"], payload["sequence"]);
@@ -131,7 +131,7 @@ async fn attestor_tip_response_carries_signed_tip_report() {
     assert_eq!(push_status, StatusCode::CREATED);
 
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
 
     let (payload, claims) =
@@ -140,7 +140,7 @@ async fn attestor_tip_response_carries_signed_tip_report() {
     // The receipt names the principal in its default wire spelling, the
     // bare digest (SPEC 2.2.3); the pushed id is the engine's labelled PG.
     assert_eq!(
-        claims["pr"],
+        claims["pg"],
         serde_json::json!(cyphr_storage::engine::bare_digest(principal_id))
     );
     assert_eq!(
@@ -276,7 +276,7 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
     envelope_payload(&push_envelope);
 
-    let (tip_status, tip_envelope) = get_json(app, &format!("/tip?pr={principal_id}")).await;
+    let (tip_status, tip_envelope) = get_json(app, &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     envelope_payload(&tip_envelope);
 }
@@ -381,7 +381,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     // Step 3: fetch the server's own chain via the ordinary public /patch
     // surface -- the server is an ordinary principal in its own store.
     let (patch_status, patch_envelope) =
-        get_json(app.clone(), &format!("/patch?pr={pinned_pg}")).await;
+        get_json(app.clone(), &format!("/patch?pg={pinned_pg}")).await;
     assert_eq!(patch_status, StatusCode::OK, "{patch_envelope:?}");
     let entries = patch_envelope["payload"]["entries"]
         .as_array()

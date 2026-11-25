@@ -131,7 +131,7 @@ fn anchor_that_is_only_the_pg_is_refused() {
         &format!("--keys={key},{second}"),
         "--genesis-commit",
     ]);
-    let pg = init["pr"].as_str().expect("pr").to_owned();
+    let pg = init["pg"].as_str().expect("pg").to_owned();
     accepted(&a.push(&pg, &s.url), "push");
     let ident = format!("--identity={pg}");
     let peer = format!("--peer={}", s.url);
@@ -222,14 +222,14 @@ fn verdict_follows_the_branch_the_principal_resolves_to() {
 }
 
 /// Claim (SPEC 4.8.2, 15.8, 15.9): a fork of data commits made after a
-/// rebase (whose re-signed actions put the rebased history's actions at
-/// several heights) is still evidence a verifier can replay: the peer that
+/// device adopted the peer's history over its own (whose recorded actions
+/// then sit at several heights) is still evidence a verifier can replay: the peer that
 /// retains the rival serves an item that verifies, so a verifier asking only
 /// that peer reports Error. Defect that turns it red: evidence for the
 /// rival that does not verify at its `pre` (the verifier then sees no fork
-/// and says Active). End-to-end: yes (two servers, two devices, a rebase).
+/// and says Active). End-to-end: yes (two servers, two devices, an adoption).
 #[test]
-fn data_fork_after_a_rebase_is_evidence_the_verifier_replays() {
+fn data_fork_after_adopting_the_remote_is_evidence_the_verifier_replays() {
     let s2 = Server::start();
     // Peer 1 pulls from peer 2, so it comes to hold B's branch as a rival.
     let s1 = Server::start_gossiping(&[&s2.url]);
@@ -244,14 +244,21 @@ fn data_fork_after_a_rebase_is_evidence_the_verifier_replays() {
         u.setup(&["data", "commit", &ident, &signer]);
     };
 
-    // B commits data offline; A moves peer 1 on; B rebases onto it.
+    // B commits data offline; A moves peer 1 on; B adopts it and redoes
+    // its commit.
     data(&b, "offline");
     data(&a, "online");
     accepted(&a.push(&id, &s1.url), "A's data commit to peer 1");
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    b.setup(&["rebase", &ident, &format!("--peer={}", s1.url)]);
-    accepted(&b.push(&id, &s1.url), "B's rebased history to peer 1");
-    accepted(&b.push(&id, &s2.url), "B's rebased history to peer 2");
+    b.setup(&[
+        "fetch",
+        &ident,
+        &format!("--peer={}", s1.url),
+        "--trust-remote",
+    ]);
+    b.setup(&["data", "commit", &ident, &signer]);
+    accepted(&b.push(&id, &s1.url), "B's redone history to peer 1");
+    accepted(&b.push(&id, &s2.url), "B's redone history to peer 2");
     accepted(
         &a.run(&["fetch", &ident, &format!("--peer={}", s1.url)]),
         "A catches up",
@@ -458,15 +465,15 @@ fn human_recovery_is_a_local_revisable_choice_that_leaves_the_verdict_error() {
     );
 }
 
-/// Claim: a rebase whose backup name is already taken (two
-/// rebases in one second name the backup by the second) keeps the existing
+/// Claim (NETSIM-2): an adoption whose backup name is already taken (two
+/// adoptions in one second name the backup by the second) keeps the existing
 /// backup and writes its own, instead of failing to rename onto it. The
-/// names for every second the rebase can finish in are taken beforehand, so
-/// the collision does not depend on timing. Defect that turns it red: the
-/// backup named by the second alone, so the rebase dies with `Directory not
-/// empty`. End-to-end: yes (a server, two devices, a rebase).
+/// names for every second the adoption can finish in are taken beforehand,
+/// so the collision does not depend on timing. Defect that turns it red: the
+/// backup named by the second alone, so the adoption dies with `Directory
+/// not empty`. End-to-end: yes (a server, two devices, an adoption).
 #[test]
-fn rebase_keeps_an_existing_backup_of_the_same_second() {
+fn adoption_keeps_an_existing_backup_of_the_same_second() {
     let s1 = Server::start();
     let a = User::new();
     let id = a.new_identity();
@@ -486,15 +493,20 @@ fn rebase_keeps_an_existing_backup_of_the_same_second() {
         .expect("clock after epoch")
         .as_secs();
     let taken: Vec<_> = (now - 1..now + 120)
-        .map(|t| b.dir.path().join(format!("data.pre-rebase-{t}")))
+        .map(|t| b.dir.path().join(format!("data.pre-adopt-{t}")))
         .collect();
     for dir in &taken {
         std::fs::create_dir(dir).expect("taken backup");
         std::fs::write(dir.join("earlier"), b"an earlier backup").expect("earlier backup");
     }
 
-    let r = b.run(&["rebase", &ident, &format!("--peer={}", s1.url)]);
-    accepted(&r, "rebase with this second's backup name taken");
+    let r = b.run(&[
+        "fetch",
+        &ident,
+        &format!("--peer={}", s1.url),
+        "--trust-remote",
+    ]);
+    accepted(&r, "adoption with this second's backup name taken");
     for dir in &taken {
         assert!(
             dir.join("earlier").exists(),

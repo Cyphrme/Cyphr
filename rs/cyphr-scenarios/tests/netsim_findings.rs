@@ -183,16 +183,17 @@ async fn a_principal_signs_in_after_its_fork_is_resolved() {
 }
 
 // Found by the large run (seed 20261117): a device paired into a principal
-// opened by several keys fails `cyphr rebase` with "cannot resolve genesis for
-// identity ...: no stored commits or keystore key", so two devices of such a
-// principal cannot reconcile a Stale refusal (SPEC 15.9). Pairing itself, and
+// opened by several keys fails `cyphr fetch --trust-remote` with "cannot
+// resolve genesis for identity ...: no stored commits or keystore key", so two
+// devices of such a principal cannot reconcile a Stale refusal (SPEC 15.9). Pairing itself, and
 // the paired device's first commit, work. NETSIM pairs only single-key
 // principals until this is fixed.
 //
-// Must hold: the second of two devices committing from one tip rebases and
-// both commits reach the chain, for a multikey principal as for any other.
+// Must hold: the second of two devices committing from one tip trusts the
+// remote, redoes its commit and both commits reach the chain, for a multikey principal as for any
+// other.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_paired_device_of_a_multikey_principal_rebases() {
+async fn a_paired_device_of_a_multikey_principal_trusts_the_remote() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     let (alice, phone) = (h.client("alice"), h.client("phone"));
     let pr = h.ok(alice.create_multikey_principal().await);
@@ -205,8 +206,9 @@ async fn a_paired_device_of_a_multikey_principal_rebases() {
     h.ok(phone.commit_data(&pr, "second").await);
     let stale = h.ok(phone.push(&pr, &["p1"]).await).refused("stale push");
     assert_eq!(stale, cyphr_scenarios::actions::RefusalKind::Stale);
-    h.ok(phone.rebase(&pr).await);
-    h.ok(phone.push(&pr, &["p1"]).await).accepted("rebased");
+    h.ok(phone.trust_remote(&pr).await);
+    h.ok(phone.commit_recorded(&pr).await);
+    h.ok(phone.push(&pr, &["p1"]).await).accepted("redone");
 }
 
 // Found while pinning NETSIM's oracle: a fork whose kept branch ends in a key
@@ -298,7 +300,7 @@ async fn fork_items(h: &Harness, peer: &str, p: &Principal) -> usize {
     let body: serde_json::Value = h
         .http
         .get(format!("http://{}/evidence", h.peer(peer).addr()))
-        .query(&[("pr", p.0.as_str())])
+        .query(&[("pg", p.0.as_str())])
         .send()
         .await
         .expect("evidence request")
@@ -453,7 +455,7 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     // /proof?pr&size&claim=member:<i>` is `{certificate, bundle}`; nothing
     // echoed, no default to the tip.
     let peer = h.peer("p1").addr();
-    let resp = get(&h, peer, "/tip", &[("pr", pr.0.as_str())]).await;
+    let resp = get(&h, peer, "/tip", &[("pg", pr.0.as_str())]).await;
     assert_eq!(resp.status(), 200, "/tip");
     let body: serde_json::Value = resp.json().await.expect("json");
     let head: Root = serde_json::from_value(body["payload"]["root"].clone())
@@ -483,7 +485,7 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
             &h,
             peer,
             "/proof",
-            &[("pr", pr.0.as_str()), ("size", &n), ("claim", &claim)],
+            &[("pg", pr.0.as_str()), ("size", &n), ("claim", &claim)],
         )
         .await;
         assert_eq!(resp.status(), 200, "index {index} of {}", head.size);

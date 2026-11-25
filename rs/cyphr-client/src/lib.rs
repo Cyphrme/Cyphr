@@ -13,6 +13,7 @@ mod embedded;
 pub mod evidence;
 mod exchange;
 mod extension;
+pub mod login;
 mod patch;
 mod peer;
 mod relying_party;
@@ -21,13 +22,12 @@ mod revoke;
 mod sync;
 
 pub use embedded::{FollowReport, GossipTips, PeerPull};
-pub use exchange::{Bundle, BundleActions, BundleChain, BundleConnector, BundleError};
+pub use exchange::{BundleActions, BundleChain, BundleConnector, BundleError, ExchangeBundle};
 pub use extension::{
-    Extension, ExtensionFailure, confirm_extension, verify_extension, verify_extension_at,
+    ExtensionFailure, ExtensionOffer, confirm_extension, verify_extension, verify_extension_at,
 };
 pub use relying_party::{
-    LOGIN_TYP_SUFFIX, Refusal, RelyingParty, RpConfig, Session, SessionBinding, Trust,
-    UnmetCurrency,
+    Refusal, RelyingParty, RpConfig, Session, SessionBinding, Trust, UnmetCurrency,
 };
 pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 pub use sync::{
@@ -49,12 +49,12 @@ pub use connector::{
 #[cfg(feature = "http")]
 pub use http::{HttpConnector, HttpOptions, MAX_RESPONSE_BYTES};
 pub use patch::{
-    ActionBundle, AuthorityKey, BranchPatch, EntryDefect, ForkPatch, PatchEntry, PatchFailure,
-    PatchRequest, Statement, VerifiedPatch, fetch_patch, verify_authenticated_envelope,
-    verify_held_envelope, verify_patch_body,
+    ActionBundle, BranchPatch, EntryDefect, ForkPatch, PatchEntry, PatchFailure, PatchRequest,
+    PeerKey, Statement, VerifiedPatch, fetch_patch, fetch_patch_keyed, fetch_tip_body,
+    statement_signer, verify_authenticated_envelope, verify_held_envelope, verify_patch_body,
 };
 pub use peer::{HeldTip, PeerChain, PeerFailure, PeerLimits};
 pub use report::{
-    COMMIT_RECEIPT_TYP, ForkPoint, HELD_REPORT_TYP, HeldHead, HeldReport, HeldReportParseError,
-    TIP_REPORT_TYP, TipAnswer, TipReport, TipReportParseError, TipReportRoots,
+    COMMIT_RECEIPT_TYP, HELD_REPORT_TYP, HeldReport, HeldReportParseError, ReportedForkPoint,
+    ReportedHead, TIP_REPORT_TYP, TipAnswer, TipReport, TipReportParseError, TipReportRoots,
 };

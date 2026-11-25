@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::http::StatusCode;
 use cyphr_client::HttpConnector;
-use cyphr_server::gossip::Gossip;
+use cyphr_server::gossip::{Gossip, Peer};
 use cyphr_server::{AppState, build_router};
 
 mod common;
@@ -109,7 +109,7 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
     }
 
     let (url, seen) = serve_counting(app2.clone()).await;
-    let peers = [(
+    let peers = [Peer::new(
         url.clone(),
         HttpConnector::with_client(p1.http_client.clone(), &url, true).expect("connector"),
     )];
@@ -163,7 +163,7 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
     // the round verifies the new commit and nothing else.
     assert_eq!(replayed(&p1), 1, "a revoke costs no replay");
     let want = owner.pr_tagged().expect("pr");
-    let (_, tip) = get_json(app1.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
+    let (_, tip) = get_json(app1.clone(), &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
     assert_eq!(
         envelope_payload(&tip)["pr"],
         want.as_str(),
@@ -240,7 +240,7 @@ async fn a_key_added_while_idle_is_probed_for_revokes() {
         );
     }
     let (url, _seen) = serve_counting(app2.clone()).await;
-    let peers = [(
+    let peers = [Peer::new(
         url.clone(),
         HttpConnector::with_client(p1.http_client.clone(), &url, true).expect("connector"),
     )];

@@ -56,7 +56,7 @@ async fn tip_root_and_proof_answers_have_the_shapes_and_verify() {
     let size = p.commit_count() as u64;
 
     // /tip carries the head: the Root of the last commit.
-    let (status, body) = get_json(app.clone(), &format!("/tip?pr={id}")).await;
+    let (status, body) = get_json(app.clone(), &format!("/tip?pg={id}")).await;
     assert_eq!(status, StatusCode::OK, "/tip: {body:?}");
     let head: Root = serde_json::from_value(body["payload"]["root"].clone())
         .unwrap_or_else(|e| panic!("/tip has no root: {e}: {body:?}"));
@@ -67,12 +67,12 @@ async fn tip_root_and_proof_answers_have_the_shapes_and_verify() {
     );
     assert_eq!(head.size, size);
     for gone in ["/head", "/inclusion", "/consistency"] {
-        let (status, _) = get_json(app.clone(), &format!("{gone}?pr={id}&size={size}")).await;
+        let (status, _) = get_json(app.clone(), &format!("{gone}?pg={id}&size={size}")).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{gone} is gone");
     }
 
     // member: {certificate, bundle}, and the size is asked for.
-    let proof = |query: &str| get_json(app.clone(), format!("/proof?pr={id}&{query}").leak());
+    let proof = |query: &str| get_json(app.clone(), format!("/proof?pg={id}&{query}").leak());
     let (status, _) = proof("claim=member:1").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "no default to the tip");
     let (status, body) = proof(&format!("size={size}&claim=member:1")).await;

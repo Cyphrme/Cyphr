@@ -57,7 +57,7 @@ fn assert_refused_naming(toml: &str, key: &str) {
 /// Backs: a misspelled security setting cannot fall back to a default; the
 /// config is refused and the error names the typo. One case per table, since
 /// `deny_unknown_fields` is easy to forget on any single struct (admission
-/// tag enum, top level, `[limits]`, inline `RateBucket`, `[authority_identity]`).
+/// tag enum, top level, `[limits]`, inline `RateBucket`, `[gossip]`).
 /// Unit: the config loader runs before any server exists, so no HTTP surface
 /// reaches it.
 #[test]
@@ -76,10 +76,7 @@ fn unknown_keys_are_refused_in_every_config_table() {
         "[limits]\npush = { per_second = 1, burst = 1, bursts = 2 }\n",
         "bursts",
     );
-    assert_refused_naming(
-        "[authority_identity]\nalg = \"Ed25519\"\npub = \"AAAA\"\nalgg = \"x\"\n",
-        "algg",
-    );
+    assert_refused_naming("[gossip]\nintervall_secs = 5\n", "intervall_secs");
 }
 
 /// GREEN characterization: every shipped and every valid key still loads
@@ -94,15 +91,15 @@ fn known_keys_still_load() {
     assert!(matches!(cfg.admission, AdmissionConfig::Open));
 
     let cfg = load_toml(
-        "mode = \"witness\"\nauthority_url = \"https://a\"\n[admission]\npolicy = \
-         \"invite\"\ntokens_path = \"/t\"\n[limits]\npush = { per_second = 3, burst = 4 \
-         }\n[authority_identity]\nalg = \"Ed25519\"\npub = \"AAAA\"\n",
+        "mode = \"witness\"\n[gossip]\npeers = [\"https://a\", { url = \"https://b\", pg = \
+         \"SHA-512:AAAA\" }]\n[admission]\npolicy = \"invite\"\ntokens_path = \
+         \"/t\"\n[limits]\npush = { per_second = 3, burst = 4 }\n",
     )
     .expect("every valid key loads");
     assert!(matches!(cfg.admission, AdmissionConfig::Invite { .. }));
     assert_eq!(cfg.mode, ServerMode::Witness);
     assert_eq!(cfg.limits.push.burst, 4);
-    assert!(cfg.authority_identity.is_some());
+    assert_eq!(cfg.gossip.peers[1].pg(), Some("SHA-512:AAAA"));
 }
 
 // ========================================================================
@@ -138,7 +135,10 @@ async fn witness_against(url: &str) -> (axum::Router, tempfile::TempDir) {
     let config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: dir.path().join("data"),
-        authority_url: Some(url.to_string()),
+        gossip: cyphr_server::config::GossipConfig {
+            peers: vec![cyphr_server::config::PeerEntry::Url(url.to_string())],
+            ..Default::default()
+        },
         ..Default::default()
     };
     let state = Arc::new(AppState::new(config).expect("witness AppState"));
@@ -171,10 +171,10 @@ async fn malformed_pr_triggers_no_outbound_sync() {
     for route in ["/tip", "/patch"] {
         for pr in garbage {
             let before = hits.load(Ordering::SeqCst);
-            let (status, _) = get_json(app.clone(), &format!("{route}?pr={pr}")).await;
+            let (status, _) = get_json(app.clone(), &format!("{route}?pg={pr}")).await;
             assert!(!status.is_server_error(), "{route} pr={pr:.20}: {status}");
             if hits.load(Ordering::SeqCst) != before {
-                leaked.push(format!("{route}?pr={pr:.20}"));
+                leaked.push(format!("{route}?pg={pr:.20}"));
             }
         }
     }
@@ -193,7 +193,7 @@ async fn well_formed_unknown_pr_still_syncs_once_per_request() {
     let (app, _dir) = witness_against(&url).await;
     for _ in 0..2 {
         let before = hits.load(Ordering::SeqCst);
-        let (status, _) = get_json(app.clone(), &format!("/tip?pr={WELL_FORMED_UNKNOWN}")).await;
+        let (status, _) = get_json(app.clone(), &format!("/tip?pg={WELL_FORMED_UNKNOWN}")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(hits.load(Ordering::SeqCst), before + 1);
     }
@@ -226,7 +226,7 @@ async fn repeated_tip_get_does_not_replay_history() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{b:?}");
 
-    let uri = format!("/tip?pr={pid}");
+    let uri = format!("/tip?pg={pid}");
     let before = state.engine.commits_replayed();
     for _ in 0..10 {
         let (s, _) = get_json(app.clone(), &uri).await;
@@ -255,7 +255,7 @@ async fn tip_after_new_commit_is_never_stale() {
     let app = build_router(state.clone());
     let pool = load_pool();
     let pid = golden_principal_id(&pool).await;
-    let uri = format!("/tip?pr={pid}");
+    let uri = format!("/tip?pg={pid}");
     let (s, b) = post_json(
         app.clone(),
         "/push",

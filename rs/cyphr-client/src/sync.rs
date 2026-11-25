@@ -43,7 +43,7 @@ use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector, Request};
 use crate::evidence::{EvidenceFailure, names_pg, pg_names, verify_fork_items};
-use crate::extension::{Extension, ExtensionFailure, confirm_extension, verify_extension_at};
+use crate::extension::{ExtensionFailure, ExtensionOffer, confirm_extension, verify_extension_at};
 use crate::patch::{
     ActionBundle, PatchEntry, PatchFailure, PatchRequest, Step, fetch_patch,
     percent_encode_query_value, replay_order,
@@ -571,7 +571,7 @@ impl Record {
         &mut self,
         entries: &[PatchEntry],
         actions: &[ActionBundle],
-        claim: Option<&Extension>,
+        claim: Option<&ExtensionOffer>,
     ) -> Result<(), PeerFailure> {
         let Some(held) = &mut self.held else {
             self.held = Some(self.replay_full(entries, actions).await?);
@@ -712,7 +712,7 @@ impl Held {
         &mut self,
         entries: &[PatchEntry],
         actions: &[ActionBundle],
-        claim: Option<&Extension>,
+        claim: Option<&ExtensionOffer>,
         clock: Clock,
         tally: &AtomicU64,
     ) -> Result<(), PeerFailure> {
@@ -783,11 +783,14 @@ pub fn opener_of(genesis: &WireBundle) -> Result<Key, &'static str> {
     let opener = bundle
         .cozies()
         .next()
-        .and_then(|c| c.pay().get("tmb").and_then(Value::as_str))
+        .map(|c| &c.header().tmb)
         .ok_or("the genesis commit has no opener")?;
     bundle
-        .introduced_keys()
-        .find(|k| k.tmb().to_b64() == opener)
+        .genesis_keys()
+        .and_then(Result::ok)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|k| k.tmb() == opener)
         .cloned()
         .ok_or("the genesis commit does not carry its opener's key")
 }
@@ -994,7 +997,7 @@ pub async fn peer_heads<C: Connector>(
     connector: &C,
     principal_id: &str,
 ) -> Result<Option<PeerHeads>, PatchFailure> {
-    let target = format!("/branches?pr={}", percent_encode_query_value(principal_id));
+    let target = format!("/branches?pg={}", percent_encode_query_value(principal_id));
     match fetch_payload(connector, &target).await {
         Ok(payload) => Ok(Some(PeerHeads(parse_heads(&payload)?))),
         Err(PatchFailure::NonSuccess(404)) => Ok(None),
@@ -1388,7 +1391,7 @@ async fn reach<C: Connector>(
 /// What a peer's answer to a request for the proof that its tip extends
 /// the record's comes to.
 enum Offer {
-    Extends(Box<Extension>),
+    Extends(Box<ExtensionOffer>),
     /// The head the peer offered, which the held log cannot be shown to
     /// precede.
     Diverged(Root),
@@ -1409,7 +1412,7 @@ async fn offered_extension<C: Connector>(record: &Record, connector: &C) -> Offe
     // met again by the fetch that follows, which reports it.
     let Ok(payload) = fetch_payload(
         connector,
-        &format!("/tip?pr={}", percent_encode_query_value(&record.id)),
+        &format!("/tip?pg={}", percent_encode_query_value(&record.id)),
     )
     .await
     else {
@@ -1419,24 +1422,24 @@ async fn offered_extension<C: Connector>(record: &Record, connector: &C) -> Offe
     // certificate is pulled as one that serves none: every commit is still
     // replayed, so the answer decides only what is fetched, never what is
     // believed.
-    let Ok(head) = Extension::head_from_payload(&payload["root"]) else {
+    let Ok(head) = ExtensionOffer::head_from_payload(&payload["root"]) else {
         return Offer::Unavailable;
     };
     if head.size <= held_size {
         return Offer::Diverged(head);
     }
     let target = format!(
-        "/proof?pr={}&size={}&claim=extends:{held_size}",
+        "/proof?pg={}&size={}&claim=extends:{held_size}",
         percent_encode_query_value(&record.id),
         head.size
     );
     let Ok(payload) = fetch_payload(connector, &target).await else {
         return Offer::Unavailable;
     };
-    let Ok(certificate) = Extension::certificate_from_payload(&payload) else {
+    let Ok(certificate) = ExtensionOffer::certificate_from_payload(&payload) else {
         return Offer::Unavailable;
     };
-    let offer = Extension::new(head, certificate);
+    let offer = ExtensionOffer::new(head, certificate);
     match verify_extension_at(&held.principal, held_size, &offer) {
         Ok(()) => Offer::Extends(Box::new(offer)),
         Err(ExtensionFailure::NotAnExtension | ExtensionFailure::NotLonger) => {
@@ -1480,13 +1483,13 @@ async fn locate_fork<C: Connector>(
             return Some(held.principal.root_at(k as u64).as_ref() == Some(head));
         }
         let target = format!(
-            "/proof?pr={}&size={}&claim=extends:{k}",
+            "/proof?pg={}&size={}&claim=extends:{k}",
             percent_encode_query_value(&record.id),
             head.size
         );
         let payload = fetch_payload(connector, &target).await.ok()?;
-        let certificate = Extension::certificate_from_payload(&payload).ok()?;
-        let offer = Extension::new(head.clone(), certificate);
+        let certificate = ExtensionOffer::certificate_from_payload(&payload).ok()?;
+        let offer = ExtensionOffer::new(head.clone(), certificate);
         match verify_extension_at(&held.principal, k as u64, &offer) {
             Ok(()) => Some(true),
             Err(ExtensionFailure::NotAnExtension) => Some(false),
@@ -1515,7 +1518,7 @@ async fn locate_fork<C: Connector>(
         },
         None => None,
     };
-    let mut target = format!("/patch?pr={}", percent_encode_query_value(&record.id));
+    let mut target = format!("/patch?pg={}", percent_encode_query_value(&record.id));
     if let Some(pre) = &pre {
         target.push_str(&format!("&from={}", percent_encode_query_value(pre)));
     }
@@ -1757,7 +1760,7 @@ async fn evidence<C: Connector>(
     sink: &mut Sink<'_>,
 ) {
     let Some(held) = &record.held else { return };
-    let target = format!("/evidence?pr={}", percent_encode_query_value(&record.id));
+    let target = format!("/evidence?pg={}", percent_encode_query_value(&record.id));
     let Ok(payload) = fetch_payload(connector, &target).await else {
         outcome.rejected_evidence.push(EvidenceFailure::Malformed(
             "the evidence could not be fetched",
@@ -1846,7 +1849,7 @@ pub async fn fetch_resyncs<C: Connector>(
     principal_id: &str,
 ) -> Result<Vec<Value>, PatchFailure> {
     let target = format!(
-        "/resync?pr={}",
+        "/resync?pg={}",
         crate::patch::percent_encode_query_value(principal_id)
     );
     let mut found = fetch_payload(connector, &target)

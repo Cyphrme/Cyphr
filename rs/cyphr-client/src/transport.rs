@@ -479,7 +479,7 @@ pub struct BindStatement {
     coz: coz::CozJson,
     alg: String,
     h: Vec<u8>,
-    pr: String,
+    pg: String,
     role: String,
     tmb: coz::Thumbprint,
     sidecar: Option<serde_json::Value>,
@@ -524,7 +524,7 @@ impl BindStatement {
         Ok(Self {
             alg: str_field(&coz.pay, "alg")?.to_string(),
             h: b64_field(&coz.pay, "h")?,
-            pr: str_field(&coz.pay, "pr")?.to_string(),
+            pg: str_field(&coz.pay, "pg")?.to_string(),
             role: str_field(&coz.pay, "role")?.to_string(),
             tmb: coz::Thumbprint::from_bytes(b64_field(&coz.pay, "tmb")?),
             sidecar: serde_json::from_slice::<serde_json::Value>(plaintext)
@@ -536,8 +536,8 @@ impl BindStatement {
 
     /// The principal the statement claims to speak for.
     #[must_use]
-    pub fn pr(&self) -> &str {
-        &self.pr
+    pub fn pg(&self) -> &str {
+        &self.pg
     }
 
     /// The thumbprint of the key the statement claims signed it.
@@ -631,7 +631,7 @@ impl BindStatement {
 pub fn statement_pay(
     alg: &str,
     tmb: &coz::Thumbprint,
-    pr: &str,
+    pg: &str,
     role: Role,
     handshake_hash: &[u8],
     now: i64,
@@ -640,7 +640,7 @@ pub fn statement_pay(
         "alg": alg,
         "h": Base64UrlUnpadded::encode_string(handshake_hash),
         "now": now,
-        "pr": pr,
+        "pg": pg,
         "role": role.as_str(),
         "tmb": tmb.to_b64(),
         "typ": BIND_TYP,
@@ -811,10 +811,10 @@ fn verify_responder(
 ) -> Result<AuthenticatedPeer, TransportError> {
     let statement = BindStatement::parse(incoming)?;
     statement.expect(Role::Responder, h)?;
-    if !same_principal(statement.pr(), chain.pg()) {
+    if !same_principal(statement.pg(), chain.pg()) {
         return Err(TransportError::PrincipalMismatch {
             expected: chain.pg().to_string(),
-            found: statement.pr().to_string(),
+            found: statement.pg().to_string(),
         });
     }
     let key = chain

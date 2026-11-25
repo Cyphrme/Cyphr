@@ -308,7 +308,7 @@ async fn grouped_transaction_end_to_end() {
     assert_eq!(body["payload"]["commit_id"], json!(expected_tr), "push TR");
 
     // Served grouped, with the keys the commit introduced.
-    let (_, patch) = get_json(app.clone(), &format!("/patch?pr={pg}")).await;
+    let (_, patch) = get_json(app.clone(), &format!("/patch?pg={pg}")).await;
     let served = &patch["payload"]["entries"][2];
     assert_eq!(shape(served), vec![2, 1, 1], "patch shape: {served}");
     assert_eq!(served["keys"].as_array().map(Vec::len), Some(3), "keys");
@@ -336,7 +336,7 @@ async fn grouped_transaction_end_to_end() {
         .expect("reopen"),
     );
     let app = build_router(restarted.clone());
-    let (_, patch) = get_json(app.clone(), &format!("/patch?pr={pg}")).await;
+    let (_, patch) = get_json(app.clone(), &format!("/patch?pg={pg}")).await;
     assert_eq!(
         shape(&patch["payload"]["entries"][2]),
         vec![2, 1, 1],

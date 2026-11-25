@@ -56,7 +56,7 @@ pub enum Op {
         d: usize,
     },
     /// Both devices commit from one tip; the second is refused Stale and
-    /// rebases.
+    /// trusts the remote and redoes its commit.
     Concurrent {
         p: usize,
     },

@@ -1,11 +1,8 @@
 //! The capability table: what a scenario needs from the system, and how
 //! to observe whether the shipped binaries have it yet.
 //!
-//! A probe asks the running binaries, never a mock. Where a capability
-//! has no observable surface yet, its probe is [`Probe::Pending`], which
-//! reports absent until the supplying node replaces it with a real
-//! observation. The declaration order is the table order that
-//! `Harness::require` reports in.
+//! A probe asks the running binaries, never a mock. The declaration order
+//! is the table order that `Harness::require` reports in.
 
 use std::path::Path;
 
@@ -82,9 +79,6 @@ pub enum Probe {
     SessionBinding,
     /// A path under the workspace root exists.
     WorkspacePath(&'static [&'static str]),
-    /// No observable surface exists yet; reports absent. The named node
-    /// replaces this with a real probe when it lands the capability.
-    Pending(&'static str),
 }
 
 impl Capability {
@@ -111,29 +105,6 @@ impl Capability {
         }
     }
 
-    /// The node whose landing makes this capability present.
-    pub fn supplier(self) -> &'static str {
-        match self {
-            Self::Transport => "TR1",
-            Self::CliNetwork | Self::ChoicesFile => "N16",
-            Self::KeyPairing => "N22",
-            Self::KeyOps => "KOPS",
-            Self::BranchStore => "G1",
-            Self::Evidence => "N18a",
-            Self::PeerGossip => "G2",
-            Self::ClientGossip => "G3",
-            Self::Audit => "G3",
-            Self::Pinning => "G3",
-            Self::Idempotency => "N09",
-            Self::VersionCheck => "TR1",
-            Self::PeerBackup => "N19",
-            Self::PeerRollover => "N20R",
-            Self::RelyingParty => "SO2",
-            Self::SessionBinding => "SO3",
-            Self::DataCommit => "CLI2",
-        }
-    }
-
     pub fn probe(self) -> Probe {
         match self {
             // Principal-authenticated Noise (TR1): the observation is a
@@ -148,7 +119,7 @@ impl Capability {
             // answers 404; a probe with a `pr` would read a stored-branch
             // lookup's own 404 for an unknown principal as an absent route.
             Self::BranchStore => Probe::Route("/branches"),
-            Self::Evidence => Probe::Route("/evidence?pr=probe"),
+            Self::Evidence => Probe::Route("/evidence?pg=probe"),
             // Gossip is a timer inside the server calling the client's pull
             // step, with no route of its own. Its operator surface is the
             // flag that names the peers; the scenarios that need it
@@ -268,7 +239,6 @@ impl Probe {
             Probe::SessionBinding => crate::actions::observe_session_binding(h)
                 .await
                 .map_err(|e| run(e.to_string())),
-            Probe::Pending(_) => Ok(false),
         }
     }
 }

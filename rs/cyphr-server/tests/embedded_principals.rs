@@ -16,7 +16,7 @@ use common::{
 /// The tip payload minus the response's own clock.
 async fn tip(app: &axum::Router, id: &str) -> serde_json::Value {
     let (status, body) =
-        get_json(app.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
+        get_json(app.clone(), &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let mut payload = envelope_payload(&body).clone();
     payload.as_object_mut().expect("object").remove("now");

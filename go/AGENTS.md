@@ -10,7 +10,7 @@ Rust-only (`rs/`).
 Root `go.mod` covers this tree (`github.com/cyphrme/cyphr`); from the
 repo root: `go build ./go/... && go vet ./go/...`. `go test ./go/...`
 runs but fails golden categories as described below — that red is
-expected.
+expected. CI does not build Go until it is revived.
 
 ## What an agent must know
 

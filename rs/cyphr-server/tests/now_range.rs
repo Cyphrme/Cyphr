@@ -238,7 +238,7 @@ async fn assert_refused_for_time(pool: &test_fixtures::Pool, body: String, label
         words.contains(&"timestamp") || words.contains(&"now"),
         "{label}: the refusal must name the timestamp, got: {resp:?}"
     );
-    let (tip, _) = get_json(app, &format!("/tip?pr={}", golden_principal_id(pool).await)).await;
+    let (tip, _) = get_json(app, &format!("/tip?pg={}", golden_principal_id(pool).await)).await;
     assert_eq!(tip, StatusCode::NOT_FOUND, "{label}: nothing may land");
 }
 
@@ -301,7 +301,7 @@ async fn old_dated_history_is_accepted_and_replays() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{resp:?}");
 
-    let (status, tip) = get_json(app, &format!("/tip?pr={id}")).await;
+    let (status, tip) = get_json(app, &format!("/tip?pg={id}")).await;
     assert_eq!(status, StatusCode::OK, "{tip:?}");
     assert_eq!(envelope_payload(&tip)["commit_count"], serde_json::json!(1));
 }

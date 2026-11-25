@@ -13,6 +13,7 @@ use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
 use cyphr_client::HttpConnector;
+use cyphr_server::gossip::Peer;
 use cyphr_server::{AppState, build_router};
 
 mod common;
@@ -97,7 +98,7 @@ async fn push(app: &axum::Router, id: &str, bundle: &WireBundle) -> StatusCode {
 
 async fn tip_pr(app: &axum::Router, id: &str) -> String {
     let (status, body) =
-        get_json(app.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
+        get_json(app.clone(), &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     envelope_payload(&body)["pr"]
         .as_str()
@@ -109,7 +110,7 @@ async fn tip_pr(app: &axum::Router, id: &str) -> String {
 /// single tip then), by commit id.
 async fn error_heads(app: &axum::Router, id: &str) -> Vec<String> {
     let (status, body) =
-        get_json(app.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
+        get_json(app.clone(), &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let payload = envelope_payload(&body);
     assert_eq!(payload["state"], "error", "{body:?}");
@@ -202,7 +203,7 @@ async fn one_round_takes_a_peers_resolution() {
     let connector =
         HttpConnector::with_client(p2.http_client.clone(), &url, true).expect("connector");
     cyphr_server::gossip::Gossip::default()
-        .round(&p2, &[(url, connector)])
+        .round(&p2, &[Peer::new(url, connector)])
         .await;
 
     assert_eq!(tip_pr(&app2, &id).await, want, "P2 took C in one round");
@@ -285,7 +286,7 @@ async fn one_round(from: &Arc<AppState>, to: &Arc<AppState>) {
     let connector =
         HttpConnector::with_client(from.http_client.clone(), &url, true).expect("connector");
     cyphr_server::gossip::Gossip::default()
-        .round(from, &[(url, connector)])
+        .round(from, &[Peer::new(url, connector)])
         .await;
 }
 

@@ -19,7 +19,15 @@ pub fn run(cli: &Cli, command: &KeyCommands) -> crate::Result<()> {
             identity,
             key,
             signer,
-        } => add(cli, identity, key.as_deref(), signer, &cli.authority),
+            upgrade,
+        } => add(
+            cli,
+            identity,
+            key.as_deref(),
+            signer,
+            &cli.authority,
+            *upgrade,
+        ),
         KeyCommands::Revoke {
             identity,
             key,
@@ -88,10 +96,15 @@ fn add(
     key_tmb: Option<&str>,
     signer_tmb: &str,
     authority: &str,
+    upgrade: bool,
 ) -> crate::Result<()> {
     let mut keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
     let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
+    // Refused before a key is generated or anything is signed.
+    if principal.pg().is_none() && !upgrade {
+        return Err(crate::Error::NoGenesisCommit { upgradable: true });
+    }
 
     // Get or generate the new key
     let (new_key_tmb, new_key) = match key_tmb {
@@ -107,6 +120,12 @@ fn add(
         },
     };
 
+    // The same principal moves up: its genesis commit carries only its
+    // existing key, so its PG (the permanent identifier) is unchanged, and
+    // the new key is then added by the ordinary commit.
+    if principal.pg().is_none() {
+        super::init::commit_genesis(&mut principal, &keystore, &[], authority)?;
+    }
     apply_key_create(
         &mut principal,
         &keystore,
@@ -370,7 +389,7 @@ fn commit_key_tx(
         new_key,
         now,
     } = tx;
-    super::init::commit_genesis(principal, keystore, &[], authority)?;
+    super::init::require_genesis_commit(principal, false)?;
     let signer = keystore.signer(signer_tmb)?;
     let now = now.unwrap_or_else(current_timestamp);
 
@@ -398,7 +417,7 @@ fn commit_key_tx(
 }
 
 /// Commit one `key/create` of `new_key` (thumbprint `new_key_tmb`), signed
-/// by `signer_tmb`, onto `principal`. Shared by `key add` and rebase replay.
+/// by `signer_tmb`, onto `principal`.
 pub(crate) fn apply_key_create(
     principal: &mut CliPrincipal,
     keystore: &impl KeyBackend,
@@ -422,7 +441,7 @@ pub(crate) fn apply_key_create(
 }
 
 /// Commit one `key/delete` (SPEC 6.2) of `key_tmb`, signed by `signer_tmb`,
-/// onto `principal`. Shared by `key delete` and rebase replay.
+/// onto `principal`.
 pub(crate) fn apply_key_delete(
     principal: &mut CliPrincipal,
     keystore: &impl KeyBackend,
@@ -445,8 +464,7 @@ pub(crate) fn apply_key_delete(
 }
 
 /// Commit one `key/replace` (SPEC 6.3): `signer_tmb` is swapped for
-/// `new_key` (thumbprint `new_key_tmb`) atomically. Shared by `key replace`
-/// and rebase replay.
+/// `new_key` (thumbprint `new_key_tmb`) atomically.
 pub(crate) fn apply_key_replace(
     principal: &mut CliPrincipal,
     keystore: &impl KeyBackend,
@@ -472,7 +490,6 @@ pub(crate) fn apply_key_replace(
 
 /// Commit one self-`key/revoke` of `signer_tmb` onto `principal`: the
 /// standard revoke of SPEC 6.4, signed by the key itself inside a commit.
-/// Shared by `key revoke` and rebase replay.
 pub(crate) fn apply_key_revoke(
     principal: &mut CliPrincipal,
     keystore: &impl KeyBackend,

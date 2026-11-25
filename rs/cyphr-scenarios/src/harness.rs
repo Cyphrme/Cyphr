@@ -320,7 +320,7 @@ impl Harness {
         let resp = self
             .http
             .get(format!("http://{addr}/tip"))
-            .query(&[("pr", p.0.as_str())])
+            .query(&[("pg", p.0.as_str())])
             .send()
             .await
             .ok()?;
@@ -349,7 +349,7 @@ impl Harness {
         let resp = self
             .http
             .get(format!("http://{addr}/patch"))
-            .query(&[("pr", p.0.as_str())])
+            .query(&[("pg", p.0.as_str())])
             .send()
             .await
             .ok()?;

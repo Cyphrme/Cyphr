@@ -394,27 +394,32 @@ async fn authorize_initiator(
     let statement = BindStatement::parse(incoming)?;
     statement.expect(Role::Initiator, h)?;
 
-    let pr = statement.pr();
+    let claimed = statement.pg();
     let lookup = |e: cyphr_storage::engine::EngineError| SessionError::Lookup(e.to_string());
-    let stored = state.engine.get_tip(pr).await.map_err(lookup)?.is_some();
+    let stored = state
+        .engine
+        .get_tip(claimed)
+        .await
+        .map_err(lookup)?
+        .is_some();
     // The principal's one spelling, so a route keys on it whatever the
     // statement called it (a stored id may be tagged or bare).
     let pg = if stored {
         let canonical = state
             .engine
-            .canonical_principal_id(pr)
+            .canonical_principal_id(claimed)
             .await
             .map_err(lookup)?;
         cyphr_storage::engine::bare_digest(&canonical).to_string()
     } else {
-        pr.to_string()
+        claimed.to_string()
     };
     if stored {
         // A stored principal is judged by its chain alone; any sidecar the
         // statement carries is ignored, so it cannot widen who may speak.
         let principal = state
             .engine
-            .at_tip(pr)
+            .at_tip(claimed)
             .await
             .map_err(lookup)?
             .ok_or(SessionError::Initiator("the principal is not stored"))?;
@@ -440,7 +445,7 @@ async fn authorize_initiator(
                 "the sidecar key is not the key the statement names",
             ));
         }
-        if pr != key.tmb().to_b64() {
+        if claimed != key.tmb().to_b64() {
             return Err(SessionError::Initiator(
                 "an unstored principal must be its key's thumbprint",
             ));

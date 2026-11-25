@@ -182,9 +182,9 @@ fn login_body_with(pr: &str, h: Option<&[u8]>, extra: &[(&str, &str)]) -> String
     pay.alg = Some(key.alg.clone());
     pay.now = Some(now());
     pay.tmb = Some(key.compute_tmb().expect("tmb"));
-    pay.typ = Some(format!("{AUDIENCE}/cyphr/auth/login"));
+    pay.typ = Some(format!("{AUDIENCE}/user/login/request/create"));
     pay.extra.insert(
-        "pr".to_string(),
+        "pg".to_string(),
         serde_json::Value::String(cyphr_storage::engine::bare_digest(pr).to_string()),
     );
     if let Some(h) = h {

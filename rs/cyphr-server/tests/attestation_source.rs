@@ -107,7 +107,7 @@ async fn roots_derive_from_blobs() {
     assert_eq!(index_tip.cr, corrupt_cr(principal_id));
 
     // 3. GET /tip MUST NOT return a receipt signed over corrupted index values (all 4 root fields).
-    let (tip_status, tip_body) = get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+    let (tip_status, tip_body) = get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
 
     if tip_status == StatusCode::OK {
         // If it succeeded, its signed roots MUST NOT match any of the corrupted index roots!
@@ -205,7 +205,7 @@ async fn stale_index_fails_attestation() {
     // 3. GET /tip with stale/corrupted index MUST FAIL attestation.
     // Signing cache content is forbidden — it MUST NOT return 200 OK with a signed statement over
     // corrupted cache data.
-    let (tip_status, tip_body) = get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+    let (tip_status, tip_body) = get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     let is_signed_corrupt_tip = tip_status == StatusCode::OK
         && tip_body["statement"]["kind"] == "signed"
         && (tip_body["statement"]["coz"]["pay"]["roots"]["pr"] == corrupt_pr(principal_id)
@@ -275,7 +275,7 @@ async fn failure_is_typed_not_silent() {
     corrupt_indexer_tip(&state, principal_id).await;
 
     // 3. GET /tip with corrupted index.
-    let (tip_status, tip_body) = get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+    let (tip_status, tip_body) = get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
 
     // Must return an error HTTP status (not 200 OK).
     assert!(

@@ -20,7 +20,7 @@ use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
 use cyphr_client::HttpConnector;
 use cyphr_server::config::ServerConfig;
-use cyphr_server::gossip::Gossip;
+use cyphr_server::gossip::{Gossip, Peer};
 use cyphr_server::{AppState, build_router};
 
 mod common;
@@ -82,7 +82,7 @@ fn replayed(state: &AppState) -> u64 {
 async fn held_actions(app: &axum::Router, id: &str) -> usize {
     let (status, body) = get_json(
         app.clone(),
-        &format!("/patch?pr={}", id.replace(':', "%3A")),
+        &format!("/patch?pg={}", id.replace(':', "%3A")),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
@@ -127,7 +127,7 @@ async fn data_actions_reach_this_server_with_the_next_commit_by_gossip() {
     }
     let url = serve(app2.clone()).await;
     let peers = |p: &Arc<AppState>| {
-        [(
+        [Peer::new(
             url.clone(),
             HttpConnector::with_client(p.http_client.clone(), &url, true).expect("connector"),
         )]
@@ -140,7 +140,7 @@ async fn data_actions_reach_this_server_with_the_next_commit_by_gossip() {
         }
     };
     let tip_of = |app: axum::Router, id: String| async move {
-        let (_, tip) = get_json(app, &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
+        let (_, tip) = get_json(app, &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
         envelope_payload(&tip)["pr"].clone()
     };
 

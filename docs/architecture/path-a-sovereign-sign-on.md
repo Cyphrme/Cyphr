@@ -190,12 +190,12 @@ Everything in this part follows from three calls
 ```rust
 let genesis = state
     .engine
-    .resolve_genesis(&parsed.pr, &[])
+    .resolve_genesis(&parsed.pg, &[])
     .await
     .map_err(map_load_error)?;
 let principal = state
     .engine
-    .load_principal(&parsed.pr, genesis)
+    .load_principal(&parsed.pg, genesis)
     .await
     .map_err(map_load_error)?;
 authorize_login(&parsed, &principal)?;

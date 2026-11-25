@@ -253,7 +253,7 @@ async fn per_ip_rate_limit_burst_429s_and_isolates_by_ip() {
     let server = TestServer::with_limits(&limits).await;
 
     let from_a = server
-        .burst("GET", "/tip?pr=nobody", None, "127.0.0.1", BURST)
+        .burst("GET", "/tip?pg=nobody", None, "127.0.0.1", BURST)
         .await;
     assert!(
         some_429(&from_a),
@@ -263,7 +263,7 @@ async fn per_ip_rate_limit_burst_429s_and_isolates_by_ip() {
     // A distinct source IP is a distinct bucket: a modest burst from it, after
     // the first client is throttled, must NOT be collateral-throttled.
     let from_b = server
-        .burst("GET", "/tip?pr=nobody", None, "127.0.0.2", MODEST)
+        .burst("GET", "/tip?pg=nobody", None, "127.0.0.2", MODEST)
         .await;
     assert!(
         !some_429(&from_b),
@@ -307,7 +307,7 @@ async fn per_operation_push_bucket_limits_reads_independent() {
 
     // Reads have their OWN (generous) bucket; the push flood must not have
     // drained them, and per-IP is generous so nothing collateral-throttles.
-    let read = server.get("/tip?pr=nobody").await.status;
+    let read = server.get("/tip?pg=nobody").await.status;
     assert_ne!(
         read, 429,
         "reads must bucket independently of pushes -- a push flood must not throttle a read: \
@@ -606,7 +606,7 @@ async fn both_fences_compose_in_serve() {
     // Rate fence still fires alongside admission, on a route admission does not
     // gate: a read flood past the read bucket must 429.
     let flood = server
-        .burst("GET", "/tip?pr=nobody", None, "127.0.0.1", BURST)
+        .burst("GET", "/tip?pg=nobody", None, "127.0.0.1", BURST)
         .await;
     assert!(
         some_429(&flood),

@@ -155,7 +155,7 @@ async fn attestor(key_from: Option<&Path>) -> (AppState, Arc<ServerIdentity>, Te
 
 /// What a client holds of a principal after fetching `/patch` from `app`.
 async fn fetch_entries(app: &axum::Router, pr: &str) -> Vec<cyphr_client::PatchEntry> {
-    let (status, body) = get_json(app.clone(), &format!("/patch?pr={pr}")).await;
+    let (status, body) = get_json(app.clone(), &format!("/patch?pg={pr}")).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     cyphr_client::verify_patch_body(&serde_json::to_vec(&body).expect("json"), pr, None)
         .expect("patch decodes")
@@ -164,7 +164,7 @@ async fn fetch_entries(app: &axum::Router, pr: &str) -> Vec<cyphr_client::PatchE
 
 /// The signed coz of a server's `GET /tip`.
 async fn tip_of(app: &axum::Router, pr: &str) -> serde_json::Value {
-    let (status, body) = get_json(app.clone(), &format!("/tip?pr={pr}")).await;
+    let (status, body) = get_json(app.clone(), &format!("/tip?pg={pr}")).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     assert_eq!(body["statement"]["kind"], "signed", "{body:?}");
     body["statement"]["coz"].clone()
@@ -221,7 +221,7 @@ impl Pr {
 }
 
 async fn evidence_items(app: &axum::Router, pr: &str) -> Vec<serde_json::Value> {
-    let (status, body) = get_json(app.clone(), &format!("/evidence?pr={pr}")).await;
+    let (status, body) = get_json(app.clone(), &format!("/evidence?pg={pr}")).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     envelope_payload(&body)["items"]
         .as_array()
@@ -389,10 +389,10 @@ async fn fork_evidence_is_served_and_verified_offline() {
         .await
         .expect("member order on the wire is not part of what is signed");
 
-    let (status, _) = get_json(app.clone(), "/evidence?pr=probe").await;
+    let (status, _) = get_json(app.clone(), "/evidence?pg=probe").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "a malformed id");
     let unknown = common::implicit_principal_id(&pool, "bob");
-    let (status, _) = get_json(app, &format!("/evidence?pr={unknown}")).await;
+    let (status, _) = get_json(app, &format!("/evidence?pg={unknown}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "an unknown principal");
 }
 

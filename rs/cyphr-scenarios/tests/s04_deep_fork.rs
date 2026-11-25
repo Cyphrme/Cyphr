@@ -200,7 +200,7 @@ async fn both_extended(alice: usize, thief: usize) {
                 let resp = h
                     .http
                     .get(format!("http://{}/tip", h.peer(peer).addr()))
-                    .query(&[("pr", pr.0.as_str())])
+                    .query(&[("pg", pr.0.as_str())])
                     .send()
                     .await;
                 let Ok(resp) = resp else { return Ok(false) };
@@ -262,7 +262,7 @@ async fn raw_tip(h: &Harness, peer: &str, pr: &Principal) -> Option<serde_json::
     let resp = h
         .http
         .get(format!("http://{}/tip", h.peer(peer).addr()))
-        .query(&[("pr", pr.0.as_str())])
+        .query(&[("pg", pr.0.as_str())])
         .send()
         .await
         .ok()?;
@@ -389,8 +389,12 @@ async fn a_thief_prefilling_the_shared_keys_quota_cannot_keep_a_server_active() 
             assert_eq!(post(&h, name, &id, b).await, 201, "{name}: C_{i}");
         }
     }
-    h.proxy.partition("p1", "p3");
-    h.proxy.partition("p2", "p3");
+    // Every link is cut: with p1-p2 open, gossip hands p2 the owner's
+    // commits (an Extended pull) before the test posts them, and the post
+    // answers 422.
+    for (a, b) in [("p1", "p2"), ("p1", "p3"), ("p2", "p3")] {
+        h.proxy.partition(a, b);
+    }
     // p3: the thief takes the tip, then fills the quota.
     assert_eq!(post(&h, "p3", &id, &j[0]).await, 201, "J_3");
     assert_eq!(post(&h, "p3", &id, &j[1]).await, 201, "J_4");
@@ -405,8 +409,9 @@ async fn a_thief_prefilling_the_shared_keys_quota_cannot_keep_a_server_active() 
             assert_eq!(post(&h, name, &id, junk).await, 409, "{name}: junk");
         }
     }
-    h.proxy.heal("p1", "p3");
-    h.proxy.heal("p2", "p3");
+    for (a, b) in [("p1", "p2"), ("p1", "p3"), ("p2", "p3")] {
+        h.proxy.heal(a, b);
+    }
 
     let pr = Principal(id.clone());
     h.eventually(
@@ -522,7 +527,10 @@ async fn the_owner_answers_a_thiefs_tip_through_the_cli() {
     for n in 0..2 {
         h.ok(laptop.commit_data(&pr, &format!("owner answer {n}")).await);
     }
-    h.ok(laptop.push(&pr, &servers).await);
+    // Deliberately a fork against the peers holding the thief's branch, so
+    // the user's explicit choice (`--assert-local`).
+    h.ok(laptop.push_fork(&pr, &servers).await)
+        .accepted("the owner's answer");
 
     h.eventually(
         "every server to read Error at one fork point",

@@ -6,7 +6,7 @@
 //! string, and a client must read both back as absent roots.
 
 use axum::http::StatusCode;
-use cyphr_client::{AuthorityKey, verify_authenticated_envelope};
+use cyphr_client::{PeerKey, verify_authenticated_envelope};
 use cyphr_server::build_router;
 
 mod common;
@@ -43,7 +43,7 @@ async fn dying_commit_push_and_tip_attest_absent_roots_as_null() {
         let blobs = build_bundle(commit);
         common::push_body(&principal_id, &blobs)
     };
-    let authority = AuthorityKey {
+    let authority = PeerKey {
         alg: identity.alg().name().to_string(),
         pub_key: identity.pub_key().to_vec(),
     };
@@ -68,7 +68,7 @@ async fn dying_commit_push_and_tip_attest_absent_roots_as_null() {
         .expect("the client verifies the dying commit's receipt");
     assert_eq!((report.roots.sr, report.roots.ar), (None, None));
 
-    let (status, tip) = get_json(app, &format!("/tip?pr={principal_id}")).await;
+    let (status, tip) = get_json(app, &format!("/tip?pg={principal_id}")).await;
     assert_eq!(status, StatusCode::OK, "{tip:?}");
     assert!(tip["payload"]["sr"].is_null() && tip["payload"]["ar"].is_null());
     let claims = &tip["statement"]["coz"]["pay"]["roots"];

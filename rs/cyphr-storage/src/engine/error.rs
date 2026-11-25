@@ -104,3 +104,17 @@ pub enum EngineError {
     #[error("storage: {0}")]
     Storage(String),
 }
+
+impl EngineError {
+    /// Whether this is a fault of the store rather than its verdict on what
+    /// it was offered. A refusal is an answer (a held commit, a fork kept as
+    /// evidence); a fault, a failed sync included, means nothing a round
+    /// reports as kept is durable.
+    #[must_use]
+    pub fn is_store_fault(&self) -> bool {
+        matches!(
+            self,
+            Self::BlobStore(_) | Self::Indexer(_) | Self::Storage(_) | Self::DurabilityLost(_)
+        )
+    }
+}

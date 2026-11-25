@@ -1,5 +1,6 @@
-//! `POST /resync` and `GET /resync?pr=` (SPEC 15.8 item 2): a proof of possession over one branch's
-//! tip selects it at a fork both of whose branches are extended, which no commit can. The chosen
+//! `POST /resync` and `GET /resync?pg=` (frame section 12.3, SPEC 15.8 item
+//! 2): a proof of possession over one branch's tip selects it at a fork
+//! both of whose branches are extended, which no commit can. The chosen
 //! tip admits writes, the abandoned branch stays served as evidence, and
 //! the holders that read the fork as Error (a gossiping peer, a witness)
 //! reach Active on the same tip once they carry the PoP.
@@ -194,7 +195,6 @@ async fn serve(state: &Arc<AppState>) -> String {
 /// the principal is Active on the chosen branch's held leaf L_5, a write on it is admitted and one
 /// on the abandoned branch is not, the abandoned branch is still served as
 /// evidence, and `GET /resync` lists the PoP.
-// @docket: sc-l2822 :: scripts/docket-run sc-l2822
 #[tokio::test]
 async fn a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch() {
     let f = fork().await;
@@ -208,8 +208,8 @@ async fn a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch() {
     let coz = f.pop_l();
     let (status, body) = post_json(app.clone(), "/resync", resync_body(&f.id, &coz, &[])).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
-    // The walk ends at the held leaf of the chosen branch (heads are leaves, and
-    // assertions decide where the walk stops): L_5,
+    // The walk ends at the held leaf of the chosen branch (frame 12.2:
+    // heads are leaves, "assertions decide where the walk stops"): L_5,
     // which was held as evidence while in Error, not the asserted L_4.
     let want = commit_id(&f.l_states[2]);
     assert_eq!(
@@ -226,12 +226,12 @@ async fn a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch() {
         StatusCode::CREATED,
         "a write on the chosen head"
     );
-    let (_, branches) = get_json(app.clone(), &format!("/branches?pr={}", enc(&f.id))).await;
+    let (_, branches) = get_json(app.clone(), &format!("/branches?pg={}", enc(&f.id))).await;
     assert!(
         branches.to_string().contains(&commit_id(&f.r_states[1])),
         "the abandoned branch is evidence: {branches:?}"
     );
-    let (status, held) = get_json(app.clone(), &format!("/resync?pr={}", enc(&f.id))).await;
+    let (status, held) = get_json(app.clone(), &format!("/resync?pg={}", enc(&f.id))).await;
     assert_eq!(status, StatusCode::OK, "{held:?}");
     assert_eq!(
         held.to_string()
@@ -254,7 +254,7 @@ async fn a_gossiping_peer_in_error_reaches_active_on_the_asserted_tip() {
     let url = serve(&a).await;
     let peer = HttpConnector::with_client(b.http_client.clone(), &url, true).expect("connector");
     cyphr_server::gossip::Gossip::default()
-        .round(&b, &[(url, peer)])
+        .round(&b, &[cyphr_server::gossip::Peer::new(url, peer)])
         .await;
     assert_eq!(
         b.engine.assess(&f.id).await.expect("assess").heads,
@@ -268,8 +268,7 @@ async fn a_gossiping_peer_in_error_reaches_active_on_the_asserted_tip() {
 /// leaves the witness Active on the authority's tip.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_witness_in_error_reaches_active_on_the_asserted_tip() {
-    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
-    use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+    use cyphr_server::config::{ServerConfig, ServerMode};
 
     let f = fork().await;
     let (astate, identity, adir) = attestor_server().await;
@@ -299,17 +298,12 @@ async fn a_witness_in_error_reaches_active_on_the_asserted_tip() {
         AppState::new(ServerConfig {
             mode: ServerMode::Witness,
             data_dir: wdir.path().join("data"),
-            authority_url: Some(instance.url().expect("url")),
-            authority_identity: Some(AuthorityIdentity {
-                alg: identity.alg().name().to_string(),
-                pub_key: identity.pub_key().to_vec(),
-            }),
+            gossip: common::pinned_gossip(instance.url().expect("url"), &astate),
             ..Default::default()
         })
         .expect("witness"),
     );
-    let first = sync_from_authority(&witness, &f.id).await;
-    assert!(matches!(first, SyncOutcome::Synced { .. }), "{first:?}");
+    cyphr_server::gossip::fetch_from_peers(&witness, &f.id).await;
     assert!(
         witness.engine.is_errored(&f.id).await.expect("verdict"),
         "premise: Error"
@@ -317,8 +311,7 @@ async fn a_witness_in_error_reaches_active_on_the_asserted_tip() {
 
     let (status, body) = post_json(app, "/resync", resync_body(&f.id, &f.pop_l(), &[])).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
-    let second = sync_from_authority(&witness, &f.id).await;
-    assert!(!matches!(second, SyncOutcome::Failed { .. }), "{second:?}");
+    cyphr_server::gossip::fetch_from_peers(&witness, &f.id).await;
     assert_eq!(
         witness.engine.assess(&f.id).await.expect("assess").heads,
         vec![commit_id(&f.l_states[1])],

@@ -38,7 +38,7 @@ pub enum ActionError {
 /// is for humans only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefusalKind {
-    /// The sender's view is behind the peer's tip; rebase and retry.
+    /// The sender's view is behind the peer's tip or differs from it.
     Stale,
     /// The signer lacks authority for the action.
     Unauthorized,
@@ -257,6 +257,9 @@ pub struct Verdict {
     pub observed_at: std::time::Instant,
 }
 
+/// What a push came to. A refusal is a result a scenario must look at, so
+/// an outcome that is dropped unread is a compile error under `-D warnings`.
+#[must_use = "a push may have been refused; read it with `accepted` or `refused`"]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PushOutcome {
     Accepted(Tip),
@@ -299,7 +302,7 @@ pub struct Session {
     pub token: Token,
     /// The login the client signed, kept so a scenario can carry it to
     /// another channel.
-    pub login: coz::CozJson,
+    pub login: cyphr_client::login::LoginRequest,
     pub key: KeyRef,
     /// The canonical token subject: the principal, however the caller
     /// spelled it when signing in.
@@ -336,21 +339,14 @@ pub struct RpConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Backup(pub String);
 
-/// A data action a rebase re-signed at the current time, as the rebase
-/// reported it (SPEC 15.9: never silently).
+/// What trusting the remote left: the local tip, the local commits it
+/// discarded and the czds of recorded actions it dropped because the adopted
+/// history does not accept them as signed. It never re-signs.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Resigned {
-    /// The action's czd before it was re-signed.
-    pub czd: String,
-    /// The `now` it carried before it was re-signed.
-    pub was_now: i64,
-}
-
-/// What a rebase left: the local tip and the actions it re-signed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Rebased {
+pub struct Adopted {
     pub tip: Tip,
-    pub resigned: Vec<Resigned>,
+    pub discarded: Vec<String>,
+    pub dropped: Vec<String>,
 }
 
 /// How a token reaches a relying party.
@@ -524,7 +520,7 @@ impl Harness {
                 // unpadded SHA-256 PG, which is never one a peer holds.
                 let bogus = format!("{i:0>43}");
                 let url = if i % 2 == 0 {
-                    format!("{base}/evidence?pr={bogus}")
+                    format!("{base}/evidence?pg={bogus}")
                 } else {
                     format!("{base}/revoked?tmbs={bogus}")
                 };
@@ -574,6 +570,15 @@ impl Harness {
             h: self,
             config: cyphr_client::RpConfig {
                 audience: RP_AUDIENCE.to_owned(),
+                // The relying party's own key, which a site would supply.
+                issuer: {
+                    let site = coz::Alg::Ed25519.generate_keypair();
+                    std::sync::Arc::new(cyphr_client::login::SoftwareIssuer::new(
+                        site.alg.name(),
+                        &site.prv_bytes,
+                        &site.pub_bytes,
+                    ))
+                },
                 pull_age_bound: Duration::from_secs(30),
                 refresh_interval: Duration::from_secs(5),
             },
@@ -598,7 +603,7 @@ impl Client<'_> {
         self.state.lock().expect("device state")
     }
 
-    fn signer(&self, p: &Principal) -> ActionResult<String> {
+    pub(crate) fn signer(&self, p: &Principal) -> ActionResult<String> {
         self.state()
             .signer
             .get(&p.0)
@@ -682,7 +687,7 @@ impl Client<'_> {
         let v = self
             .cyphr(&["init", "--algo", "Ed25519", "--genesis-commit"])
             .await?;
-        let p = Principal(field(&v, "pr")?);
+        let p = Principal(field(&v, "pg")?);
         let key = v["keys"][0]
             .as_str()
             .ok_or_else(|| ActionError::Failed(format!("init named no key: {v}")))?
@@ -708,7 +713,7 @@ impl Client<'_> {
         }
         let keys = tmbs.join(",");
         let v = self.cyphr(&["init", "--keys", &keys]).await?;
-        let p = Principal(field(&v, "pr")?);
+        let p = Principal(field(&v, "pg")?);
         let genesis = cli::public_half(cli::key_entry(&self.dev.keystore, &tmbs[0])?);
         self.h.record_genesis(&p, genesis);
         self.state().signer.insert(p.0.clone(), tmbs[0].clone());
@@ -859,7 +864,7 @@ impl Client<'_> {
         for peer in self.known(p) {
             let url = self.url(&peer).await;
             match self
-                .cyphr(&["push", "--identity", &p.0, "--peer", &url])
+                .cyphr(&["push", "--identity", &p.0, "--peer", &url, "--assert-local"])
                 .await
             {
                 Ok(_) => accepted = true,
@@ -920,6 +925,23 @@ impl Client<'_> {
         field(&v, "commit_id").map(Tip)
     }
 
+    /// Commit the data actions recorded so far in one `ds/create` (`cyphr
+    /// data commit`, no new action): what a device redoes after trusting the
+    /// remote, since its recorded actions survived and only the commit went.
+    pub async fn commit_recorded(&self, p: &Principal) -> ActionResult<Tip> {
+        let (id, signer) = (format!("--identity={}", p.0), self.signer(p)?);
+        let v = self
+            .cyphr(&["data", "commit", &id, &format!("--signer={signer}")])
+            .await?;
+        field(&v, "commit_id").map(Tip)
+    }
+
+    /// Sign `p` with `tmb` from now on: the key a device held before an
+    /// operation that replaced it was discarded with its commit.
+    pub(crate) fn use_signer(&self, p: &Principal, tmb: &str) {
+        self.state().signer.insert(p.0.clone(), tmb.to_owned());
+    }
+
     /// Record a signed data action locally without committing it
     /// (`cyphr data action`, no `data commit`); returns its czd.
     pub async fn record_data(&self, p: &Principal, msg: &str) -> ActionResult<String> {
@@ -963,15 +985,33 @@ impl Client<'_> {
     }
 
     /// `cyphr push` to each peer in turn; the first refusal is the outcome.
+    /// A local history that differs from a peer's is refused (`Stale`):
+    /// sending it as a fork is [`Client::push_fork`].
     pub async fn push(&self, p: &Principal, to: &[&str]) -> ActionResult<PushOutcome> {
+        self.push_with(p, to, false).await
+    }
+
+    /// `cyphr push --assert-local`: the user's explicit choice to send the
+    /// local branch as a fork where it differs from a peer's history.
+    pub async fn push_fork(&self, p: &Principal, to: &[&str]) -> ActionResult<PushOutcome> {
+        self.push_with(p, to, true).await
+    }
+
+    async fn push_with(
+        &self,
+        p: &Principal,
+        to: &[&str],
+        assert_local: bool,
+    ) -> ActionResult<PushOutcome> {
         self.know(p, to);
         let mut tip = None;
         for peer in to {
             let url = self.url(peer).await;
-            match self
-                .cyphr(&["push", "--identity", &p.0, "--peer", &url])
-                .await
-            {
+            let mut args = vec!["push", "--identity", &p.0, "--peer", &url];
+            if assert_local {
+                args.push("--assert-local");
+            }
+            match self.cyphr(&args).await {
                 Ok(v) => tip = Some(field(&v, "tip")?),
                 Err(ActionError::Refused(r)) => return Ok(PushOutcome::Refused(r)),
                 Err(e) => return Err(e),
@@ -981,32 +1021,44 @@ impl Client<'_> {
             .ok_or_else(|| ActionError::Failed("push to no peer".into()))
     }
 
-    /// Re-apply local commits on the peers' newer tip after a stale refusal
-    /// (`cyphr rebase` onto the first peer this device knows for `p`).
-    pub async fn rebase(&self, p: &Principal) -> ActionResult<Rebased> {
+    /// Trust the peer over local commits that diverge from it, after a
+    /// stale refusal (`cyphr fetch --trust-remote` from the first peer this
+    /// device knows for `p`): the local commits after the parting point are
+    /// discarded and recorded data actions survive. The caller redoes what
+    /// it meant to do on the adopted tip.
+    pub async fn trust_remote(&self, p: &Principal) -> ActionResult<Adopted> {
         let peer = self.known(p).into_iter().next().ok_or_else(|| {
             ActionError::Failed(format!("`{}` knows no peer for {}", self.name, p.0))
         })?;
         let url = self.url(&peer).await;
         let v = self
-            .cyphr(&["rebase", "--identity", &p.0, "--peer", &url])
+            .cyphr(&[
+                "fetch",
+                "--identity",
+                &p.0,
+                "--peer",
+                &url,
+                "--trust-remote",
+            ])
             .await?;
-        let resigned = v["resigned_actions"]
+        let dropped = v["dropped_actions"]
             .as_array()
-            .ok_or_else(|| ActionError::Failed(format!("rebase named no resigned_actions: {v}")))?
+            .map(Vec::as_slice)
+            .unwrap_or_default()
             .iter()
-            .map(|r| {
-                Ok(Resigned {
-                    czd: field(r, "czd")?,
-                    was_now: r["was_now"].as_i64().ok_or_else(|| {
-                        ActionError::Failed(format!("re-signed action without was_now: {r}"))
-                    })?,
-                })
-            })
+            .map(|r| field(r, "czd"))
             .collect::<ActionResult<Vec<_>>>()?;
-        Ok(Rebased {
+        let discarded = v["discarded"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|d| d.as_str().map(str::to_owned))
+            .collect();
+        Ok(Adopted {
             tip: self.local_tip(p, &peer).await?,
-            resigned,
+            discarded,
+            dropped,
         })
     }
 
@@ -1141,7 +1193,7 @@ impl Client<'_> {
             .h
             .http
             .get(url)
-            .query(&[("pr", pg.as_str())])
+            .query(&[("pg", pg.as_str())])
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
@@ -1171,7 +1223,7 @@ impl Client<'_> {
     ) -> ActionResult<serde_json::Value> {
         let mut req = self.h.http.get(format!("{}{path}", self.url(peer).await));
         if let Some(pr) = pr {
-            req = req.query(&[("pr", pr)]);
+            req = req.query(&[("pg", pr)]);
         }
         let resp = req
             .send()
@@ -1358,7 +1410,6 @@ impl Client<'_> {
         key: &KeyRef,
     ) -> ActionResult<Session> {
         let (p, key) = (p.clone(), key.0.clone());
-        let entry = cli::key_entry(&self.dev.keystore, &key)?;
         let mut guard = rp.enrolled.lock().await;
         if guard.is_none() {
             let genesis = key_of_entry(&self.h.genesis_of(&p)?)?;
@@ -1381,15 +1432,39 @@ impl Client<'_> {
             .ok_or_else(|| ActionError::Failed("the session exposed no binding".into()))?
             .as_bytes()
             .to_vec();
-        let challenge = enrolled.party.challenge();
-        let login = sign_login(
-            &entry,
-            &key,
-            p.bare(),
-            &rp.config.audience,
-            &challenge,
-            Some(&h),
-        )?;
+        let challenge = enrolled
+            .party
+            .challenge()
+            .map_err(|e| ActionError::Failed(e.to_string()))?;
+        // The device signs with the real binary: the relying party's
+        // challenge is a file the person saves, and the channel is named by
+        // its hash.
+        let file = self
+            .dev
+            .save(
+                "challenge.json",
+                &serde_json::to_vec(&challenge).map_err(|e| ActionError::Failed(e.to_string()))?,
+            )
+            .map_err(|e| ActionError::Failed(e.to_string()))?;
+        let signed = self
+            .cyphr(&[
+                "login",
+                "--sign-only",
+                "--identity",
+                &p.0,
+                "--signer",
+                &key,
+                "--audience",
+                &rp.config.audience,
+                "--challenge",
+                &file.to_string_lossy(),
+                "--channel-hash",
+                &<coz::base64ct::Base64UrlUnpadded as coz::base64ct::Encoding>::encode_string(&h),
+            ])
+            .await?;
+        let login: cyphr_client::login::LoginRequest =
+            serde_json::from_value(signed["login"].clone())
+                .map_err(|e| ActionError::Failed(format!("login answer: {e}: {signed}")))?;
         let session = enrolled
             .party
             .sign_in_on(&login, &conn)
@@ -1520,46 +1595,6 @@ fn key_of_entry(entry: &serde_json::Value) -> ActionResult<cyphr::Key> {
     let tmb = coz::compute_thumbprint_for_alg(alg, &public).ok_or_else(|| bad("a usable key"))?;
     cyphr::Key::new(alg.to_owned(), tmb, public)
         .map_err(|e| ActionError::Failed(format!("keystore key: {e:?}")))
-}
-
-/// The login Coz (SPEC 17.2 Option A) `entry`'s key signs for `challenge`.
-fn sign_login(
-    entry: &serde_json::Value,
-    tmb: &str,
-    pr: &str,
-    audience: &str,
-    challenge: &str,
-    h: Option<&[u8]>,
-) -> ActionResult<coz::CozJson> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    let bytes = |name: &str| {
-        entry[name]
-            .as_str()
-            .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
-            .ok_or_else(|| ActionError::Failed(format!("keystore entry has no {name}")))
-    };
-    let alg = entry["alg"]
-        .as_str()
-        .ok_or_else(|| ActionError::Failed("keystore entry has no alg".into()))?;
-    let mut pay = serde_json::json!({
-        "alg": alg,
-        "now": cyphr::principal::system_clock(),
-        "tmb": tmb,
-        "typ": format!("{audience}{}", cyphr_client::LOGIN_TYP_SUFFIX),
-        "pr": pr,
-        "challenge": challenge,
-    });
-    if let Some(h) = h {
-        pay["h"] = Base64UrlUnpadded::encode_string(h).into();
-    }
-    let pay_bytes = serde_json::to_vec(&pay).map_err(|e| ActionError::Failed(e.to_string()))?;
-    let (sig, _) = coz::sign_json(&pay_bytes, alg, &bytes("prv_key")?, &bytes("pub_key")?)
-        .ok_or_else(|| ActionError::Failed("signing the login failed".into()))?;
-    serde_json::from_value(serde_json::json!({
-        "pay": pay,
-        "sig": Base64UrlUnpadded::encode_string(&sig),
-    }))
-    .map_err(|e| ActionError::Failed(e.to_string()))
 }
 
 fn refusal_of(r: &cyphr_client::Refusal) -> Refusal {

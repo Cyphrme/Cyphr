@@ -5,8 +5,6 @@ see "Implementation Status" below
 
 **Date:** 2026-05-11
 
-**Plan:** `docs/plans/archive/cyphr-server.md` (continuity from Phases 1-4)
-
 ---
 
 ## Context
@@ -193,7 +191,7 @@ request-response API. The four fundamental network operations:
 
 | Operation            | HTTP Mapping                 | Semantics                                                                               |
 | :------------------- | :--------------------------- | :-------------------------------------------------------------------------------------- |
-| **GetTreeHead**      | `GET /tip?pr=<PG>`           | Obtain the witness's latest trust anchor (CR, tree_size) for a principal                |
+| **GetTreeHead**      | `GET /tip?pg=<PG>`           | Obtain the witness's latest trust anchor (CR, tree_size) for a principal                |
 | **AppendTransition** | `POST /push`                 | Principal declares an auth state mutation with signed blobs + consistency proof         |
 | **ProveConsistency** | Part of push/sync payload    | Mathematical proof that CR_new is a strict append-only extension of CR_old — O(log n)   |
 | **ProveInclusion**   | Part of audit/query response | Mathematical proof that a specific commit (TR) exists in a tree with root CR — O(log n) |
@@ -479,4 +477,3 @@ nature requires fundamentally different verification primitives.
 - iroh (n0) — BLAKE3 verified streaming, P2P content-addressed networking
 - Sketch: 2026-05-07 MALT proof-verification design sketch (no longer in
   the repository)
-- Previous plan: `docs/plans/archive/cyphr-server.md`

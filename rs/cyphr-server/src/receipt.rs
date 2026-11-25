@@ -18,6 +18,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use cyphr::HashAlg;
+use cyphr::fork::Contest;
 use cyphr::signer::{SignerError, SoftwareSigner};
 use cyphr::state::TaggedDigest;
 // The canonical report parse lives in the client crate; `check_equivocation`
@@ -107,7 +108,7 @@ pub enum ReceiptError {
 /// carries them (`docs/specs/http-envelope.md` `[envelope-r-cr]`).
 ///
 /// Nested under the `roots` claim so its `pr` (the post-commit Principal
-/// Root) never collides with the receipt's top-level `pr` claim (the
+/// Root) never collides with the receipt's top-level `pg` claim (the
 /// attested principal's genesis identifier) -- the two are different
 /// facts that happen to share a SPEC field name.
 ///
@@ -140,7 +141,7 @@ impl Roots {
 /// Compose and sign a commit-acceptance receipt for `/push`'s statement
 /// slot.
 ///
-/// `pr` is the attested principal's genesis identifier; `sequence` is the
+/// `pg` is the attested principal's genesis identifier; `sequence` is the
 /// accepted commit's 0-indexed position (the post-state tip's
 /// `commit_count - 1`); `roots` is the post-state roots exactly as the
 /// tip payload carries them.
@@ -152,19 +153,19 @@ impl Roots {
 pub async fn commit_receipt(
     signer: &dyn ReceiptSigner,
     now: i64,
-    pr: impl Into<String>,
+    pg: impl Into<String>,
     sequence: u64,
     commit_id: impl Into<String>,
     roots: &Roots,
 ) -> Result<coz::CozJson, ReceiptError> {
-    let (pr, commit_id) = (pr.into(), commit_id.into());
-    validate(&pr, &commit_id, roots)?;
+    let (pg, commit_id) = (pg.into(), commit_id.into());
+    validate(&pg, &commit_id, roots)?;
     sign_statement(
         signer,
         now,
         COMMIT_RECEIPT_TYP,
         [
-            ("pr", Value::String(pr)),
+            ("pg", Value::String(pg)),
             ("sequence", Value::from(sequence)),
             ("commit_id", Value::String(commit_id)),
             ("roots", roots.to_value()),
@@ -186,21 +187,21 @@ pub async fn commit_receipt(
 pub async fn tip_report(
     signer: &dyn ReceiptSigner,
     now: i64,
-    pr: impl Into<String>,
+    pg: impl Into<String>,
     sequence: u64,
     commit_id: impl Into<String>,
     roots: &Roots,
     commit_count: u64,
     last_updated: i64,
 ) -> Result<coz::CozJson, ReceiptError> {
-    let (pr, commit_id) = (pr.into(), commit_id.into());
-    validate(&pr, &commit_id, roots)?;
+    let (pg, commit_id) = (pg.into(), commit_id.into());
+    validate(&pg, &commit_id, roots)?;
     sign_statement(
         signer,
         now,
         TIP_REPORT_TYP,
         [
-            ("pr", Value::String(pr)),
+            ("pg", Value::String(pg)),
             ("sequence", Value::from(sequence)),
             ("commit_id", Value::String(commit_id)),
             ("roots", roots.to_value()),
@@ -231,16 +232,16 @@ pub struct HeldClaim {
 pub async fn held_report(
     signer: &dyn ReceiptSigner,
     now: i64,
-    pr: impl Into<String>,
+    pg: impl Into<String>,
     fork_height: u64,
     fork_pre: Option<&str>,
     heads: &[HeldClaim],
 ) -> Result<coz::CozJson, ReceiptError> {
-    let pr = pr.into();
-    parse_genesis_id_str(&pr)
+    let pg = pg.into();
+    parse_genesis_id_str(&pg)
         .map(drop)
         .map_err(|source| ReceiptError::Field {
-            field: "pr",
+            field: "pg",
             source,
         })?;
     let digest = |field: &'static str, s: &str| {
@@ -259,7 +260,7 @@ pub async fn held_report(
         now,
         HELD_REPORT_TYP,
         [
-            ("pr", Value::String(pr)),
+            ("pg", Value::String(pg)),
             (
                 "fork_point",
                 serde_json::json!({"height": fork_height, "pre": fork_pre}),
@@ -288,22 +289,22 @@ pub async fn held_report(
 /// is parsed (and discarded) at construction, not just at the wire
 /// boundary, so a value that is not valid never reaches a signature.
 ///
-/// `pr` is the attested principal's GENESIS IDENTIFIER, not a tagged
+/// `pg` is the attested principal's GENESIS IDENTIFIER, not a tagged
 /// digest: SPEC §2.2.3's DEFAULT identifier form is bare canonical b64ut --
 /// tagging is the labeled exemption `commit_id`/`roots` use, not this
 /// field. At Level 1/2 a principal's genesis identifier IS its raw
 /// thumbprint via implicit promotion, so requiring a tag here would reject
 /// every Level 1/2 principal's receipt.
-fn validate(pr: &str, commit_id: &str, roots: &Roots) -> Result<(), ReceiptError> {
+fn validate(pg: &str, commit_id: &str, roots: &Roots) -> Result<(), ReceiptError> {
     fn digest(field: &'static str, s: &str) -> Result<(), ReceiptError> {
         s.parse::<TaggedDigest>()
             .map(drop)
             .map_err(|source| ReceiptError::Field { field, source })
     }
-    parse_genesis_id_str(pr)
+    parse_genesis_id_str(pg)
         .map(drop)
         .map_err(|source| ReceiptError::Field {
-            field: "pr",
+            field: "pg",
             source,
         })?;
     digest("commit_id", commit_id)?;
@@ -417,6 +418,14 @@ pub enum EquivocationVerdict {
     DifferentSequence,
     /// The two reports are claim-identical -- not a conflict.
     IdenticalClaims,
+    /// The pair differs at one position and one of its commits was
+    /// abandoned: the earlier report names a commit on a branch the fork
+    /// rule over what the witness holds has since passed over, because a
+    /// valid resolution (a `resync/create` proof, or a commit extending the
+    /// other branch) settled the fork (SPEC 15.8: "the abandoned branch's
+    /// transactions become permanently invalid"). A server that follows the
+    /// fork rule signs both reports, so this is not equivocation.
+    Resolved,
     /// One or both reports fail to canonicalize via [`TipReport::parse`] --
     /// a validly-signed report whose claims cannot be typed.
     ///
@@ -434,7 +443,8 @@ pub enum EquivocationVerdict {
 /// Check whether two signed tip reports constitute proven equivocation.
 ///
 /// Pure: a function over the two raw coz values plus caller-supplied key
-/// material only -- no engine, no `AppState`, no I/O, no clock, so a
+/// material and the forks a witness holds (`forks`, plain core values) --
+/// no engine, no `AppState`, no I/O, no clock, so a
 /// verifier anywhere can run it on retained bytes. `a_pub_key` verifies
 /// `a`'s signature and `b_pub_key` verifies `b`'s -- they may be
 /// identical (the degenerate same-key case) or different (a
@@ -455,13 +465,19 @@ pub enum EquivocationVerdict {
 /// other outcome (no production code calls this function today); (4) both
 /// claim the same typed `pr` and the same typed `sequence`; (5) they differ
 /// in typed `commit_id` or in any typed `roots` field -- compared by
-/// canonical value, so representation never causes a miss or a false alarm.
+/// canonical value, so representation never causes a miss or a false alarm;
+/// (6) the report signed first (either, within one second) does not name a
+/// commit the fork rule has passed over (`forks`, the [`Contest`]s of the fork rule over the
+/// commits and resync proofs a witness holds for the principal): a fork a valid
+/// resolution settled is no longer a fork, and a server that followed the
+/// rule signed both ([`EquivocationVerdict::Resolved`]).
 /// Anything else is a diagnosed non-equivocation.
 pub fn check_equivocation(
     a: &coz::CozJson,
     a_pub_key: &[u8],
     b: &coz::CozJson,
     b_pub_key: &[u8],
+    forks: &[Contest],
 ) -> EquivocationVerdict {
     let tip_typ = Value::String(TIP_REPORT_TYP.to_string());
     if a.pay["typ"] != tip_typ || b.pay["typ"] != tip_typ {
@@ -476,7 +492,7 @@ pub fn check_equivocation(
         return EquivocationVerdict::Malformed;
     };
 
-    if a_report.pr != b_report.pr {
+    if a_report.pg != b_report.pg {
         return EquivocationVerdict::DifferentPrincipal;
     }
     if a_report.sequence != b_report.sequence {
@@ -486,7 +502,37 @@ pub fn check_equivocation(
         return EquivocationVerdict::IdenticalClaims;
     }
 
+    // The pair differs. A fork resolved under the server explains it if the
+    // report signed first names a commit the resolution passed over; a
+    // report signed after it names the commit the fork rule follows. Both
+    // are dated in whole seconds, so a pair signed within one second cannot
+    // be ordered: it is explained when exactly one of its commits was
+    // passed over, and the other is not.
+    let (earlier, later) = (a.pay["now"].as_i64(), b.pay["now"].as_i64());
+    let passed_over = |report: &TipReport| abandoned(forks, &report.commit_id.to_string());
+    let explained = match (earlier, later) {
+        (Some(x), Some(y)) if x < y => passed_over(&a_report),
+        (Some(x), Some(y)) if y < x => passed_over(&b_report),
+        _ => passed_over(&a_report) != passed_over(&b_report),
+    };
+    if explained {
+        return EquivocationVerdict::Resolved;
+    }
+
     EquivocationVerdict::Proven
+}
+
+/// Whether the fork rule's walk over what a witness holds passed over
+/// `commit_id`: it is a commit the walk skipped at a resolved contest, or a
+/// tip of a branch it skipped ([`Contest::abandoned`]). A commit between
+/// the two is not listed, so a report of one is read as unexplained.
+fn abandoned(forks: &[Contest], commit_id: &str) -> bool {
+    forks.iter().any(|contest| {
+        contest
+            .abandoned
+            .iter()
+            .any(|(head, tips)| head == commit_id || tips.iter().any(|t| t == commit_id))
+    })
 }
 
 /// Verify one receipt cozy's signature against a caller-supplied key,

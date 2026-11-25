@@ -74,7 +74,7 @@ on `kind` or the status code, not on `error` text. The kinds are listed in
   envelope. `docs/specs/http-envelope.md` records it as an explicit exclusion
   (`[envelope-r-healthz]`).
 - `GET /metrics` returns `text/plain; version=0.0.4; charset=utf-8`.
-- A request whose query string does not deserialize (a missing `pr`, a
+- A request whose query string does not deserialize (a missing `pg`, a
   non-numeric `to`) is rejected by the web framework's query extractor with
   `400` before any handler runs. This reference does not pin that body's
   shape; it was not exercised.
@@ -94,14 +94,14 @@ answer as an error.
 
 | Response                                  | `statement.coz.pay.typ`       | Claims                                                                                     |
 | :---------------------------------------- | :---------------------------- | :----------------------------------------------------------------------------------------- |
-| `GET /tip`, Active                        | `cyphr-server/receipt/tip`    | `pr`, `sequence`, `commit_id`, `roots{pr,sr,ar,cr}`, `commit_count`, `last_updated`        |
-| `GET /tip`, in Error; `GET /patch`, Error | `cyphr-server/receipt/held`   | `pr`, `fork_point{height,pre}`, `heads[{commit_id,sequence,held_since}]`; no roots, no tip |
+| `GET /tip`, Active                        | `cyphr-server/receipt/tip`    | `pg`, `sequence`, `commit_id`, `roots{pr,sr,ar,cr}`, `commit_count`, `last_updated`        |
+| `GET /tip`, in Error; `GET /patch`, Error | `cyphr-server/receipt/held`   | `pg`, `fork_point{height,pre}`, `heads[{commit_id,sequence,held_since}]`; no roots, no tip |
 | `GET /patch`, Active                      | `cyphr-server/receipt/tip`    | as `/tip`; only when `to` is absent and the served range reaches the tip (else `unsigned`) |
-| `POST /push` (201)                        | `cyphr-server/receipt/commit` | `pr`, `sequence`, `commit_id`, `roots{pr,sr,ar,cr}`                                        |
+| `POST /push` (201)                        | `cyphr-server/receipt/commit` | `pg`, `sequence`, `commit_id`, `roots{pr,sr,ar,cr}`                                        |
 
 Every statement's `pay` also carries `alg`, `now` and `tmb` (the signer's
 key). `roots.cr` is JSON `null` when no commit root exists yet, never `""`.
-`pr` in a statement is the bare principal genesis identifier. Receipt design
+`pg` in a statement is the bare principal genesis identifier. Receipt design
 is in `docs/specs/receipts.md`. Wire bytes are pinned by
 `commit_receipt_matches_golden_vector` and `tip_report_matches_golden_vector`
 in `rs/cyphr-server/tests/receipts.rs`; an Error-state `/patch` is signed
@@ -109,7 +109,7 @@ only when unbounded (`to` absent).
 
 ### Principal identifiers
 
-`pr` (and `principal_id` in `/push`) accepts a tagged digest (`SHA-256:<b64>`)
+`pg` (and `principal_id` in `/push`) accepts a tagged digest (`SHA-256:<b64>`)
 or a bare canonical base64url digest. Responses name a principal by its bare
 digest.
 
@@ -176,7 +176,7 @@ above is reachable in an unexpected way.
 The principal's current tip. Semantics: `SPEC.md` §13.8 "Suggested API"
 (non-normative).
 
-Query: `pr` (string, required): principal identifier.
+Query: `pg` (string, required): principal identifier.
 
 **200, Active** (`docs/specs/http-envelope.md` `[envelope-r-cr]`):
 
@@ -237,7 +237,7 @@ Other statuses:
 | `409`  | Attestor only: the chain no longer holds the tip's commit at its position (a fork resolved during the read); read again. |
 | `500`  | The fork state is unreadable from the index, or the re-derived roots disagree with the index (a genuine divergence).     |
 
-In witness mode, a well-formed `pr` is synced from the authority before the
+In witness mode, a well-formed `pg` is synced from the authority before the
 read.
 
 Example: `tip_after_bootstrap` (`rs/cyphr-server/tests/e2e.rs`) for the
@@ -246,7 +246,7 @@ payload; `attestor_tip_response_carries_signed_tip_report`
 `tip_root_and_proof_answers_have_the_shapes_and_verify`
 (`rs/cyphr-server/tests/head_certificates.rs`) for `root`; `error_heads` in
 `rs/cyphr-server/tests/branches.rs` for the Error shape. An unknown
-principal, `GET /tip?pr=nonexistent`, is `404` (`tip_unknown_principal`).
+principal, `GET /tip?pg=nonexistent`, is `404` (`tip_unknown_principal`).
 
 **Divergence from SPEC.** SPEC §13.7 (Gossip: "Clients may check
 registration through `GET /tip?pr=<principal-root>`, which should return empty
@@ -262,7 +262,7 @@ Query:
 
 | Name   | Type          | Required | Meaning                                                                                |
 | :----- | :------------ | :------- | :------------------------------------------------------------------------------------- |
-| `pr`   | string        | yes      | Principal identifier.                                                                  |
+| `pg`   | string        | yes      | Principal identifier.                                                                  |
 | `from` | tagged digest | no       | Resync anchor. The response starts at the position after it. Omit to start at genesis. |
 | `to`   | unsigned int  | no       | Last commit sequence to serve, inclusive. Omit for the tip.                            |
 
@@ -311,14 +311,17 @@ another principal is `404`, and one held at several positions is `409`.
 | `409`  | `from` is held at several positions of the chain.                         |
 
 Example: `patch_after_bootstrap` and `patch_with_range` in
-`rs/cyphr-server/tests/e2e.rs` (`/patch?pr=<id>&to=0` returns one entry,
+`rs/cyphr-server/tests/e2e.rs` (`/patch?pg=<id>&to=0` returns one entry,
 sequence 0).
 
 **Divergences from SPEC** (§13.8, non-normative):
 
 - SPEC lists `GET /patch?from=<pr>` and `?from=<pr>&to=…` with no `pr`, and
-  says "`pr` is optional". The code requires `pr`; a request without it is
+  says "`pr` is optional". The code requires `pg`; a request without it is
   `400`.
+- SPEC writes the genesis parameter as `pr` (§13.7 `GET /tip?pr=...`). The
+  code names it `pg`, because the value is the Principal Genesis, not a
+  Principal Root.
 - SPEC writes `to=<target-pr>`, a root. The code's `to` is an integer
   commit sequence.
 
@@ -329,7 +332,7 @@ retained rival (a commit that verified at its `pre` but took a position the
 chain already held). The push that produced a rival was refused (`409`);
 `/tip` still reports the canonical chain.
 
-Query: `pr` (string, required).
+Query: `pg` (string, required).
 
 **200**, always `unsigned`:
 
@@ -373,7 +376,7 @@ Query:
 
 | Name    | Type         | Required | Meaning                                                            |
 | :------ | :----------- | :------- | :----------------------------------------------------------------- |
-| `pr`    | string       | yes      | Principal identifier.                                              |
+| `pg`    | string       | yes      | Principal identifier.                                              |
 | `size`  | unsigned int | yes      | Size in commits of the log the claim is about. Never defaulted.    |
 | `claim` | string       | yes      | `member:<index>` or `extends:<from>`, both with unsigned integers. |
 
@@ -421,7 +424,7 @@ checkable offline by replaying the principal's chain to `height`, checking
 its root is `pre`, then replaying each of `a` and `b` from there
 (`cyphr_client::evidence`). No server signature takes part.
 
-Query: `pr` (string, required): must parse as a tagged digest or a bare
+Query: `pg` (string, required): must parse as a tagged digest or a bare
 canonical genesis identifier.
 
 **200**, always `unsigned`:
@@ -454,7 +457,7 @@ server keeps no peer-equivocation evidence.
 
 | Status | When                                            |
 | :----- | :---------------------------------------------- |
-| `400`  | `pr` is not shaped like a principal identifier. |
+| `400`  | `pg` is not shaped like a principal identifier. |
 | `404`  | No such principal.                              |
 
 Example: `fork_evidence_is_served_and_verified_offline`
@@ -494,7 +497,7 @@ commits cannot learn of one from `/patch`; a peer asks here, and a holder
 that is in Error because of a fork the principal has since resolved by proof
 reaches the same verdict.
 
-Query: `pr` (string, required): the principal.
+Query: `pg` (string, required): the principal.
 
 **200**, always `unsigned`: `{"resyncs": [<coz>, …]}`. Each element is the
 `{pay, sig}` coz as it was accepted, one per asserted tip. The reader
@@ -807,38 +810,45 @@ choices this implementation made that the spec author has not yet ruled on.
 
 ## Authentication
 
-Login follows `SPEC.md` §17.2. These three routes answer `501` when the
-server has no signing key, or no configured `audience`; `GET /server` states
-which tier the server declared.
+Login follows `SPEC.md` §17.2 and the spec author's login design
+(`login/README.md` on the `zami` branch). These three routes answer `501`
+when the server has no signing key, or no configured `audience`;
+`GET /server` states which tier the server declared. The contract (the
+`typ` names, the claims, the signed challenge) is defined once in the
+`cyphr-client` crate, `cyphr_client::login`.
 
 ### `POST /auth/challenge`
 
-Issue a single-use 256-bit challenge, valid for 120 seconds. No body is
-read.
+Issue a signed challenge, valid for 120 seconds and redeemable once. No
+body is read.
 
-**200:** payload `{"challenge": "<b64url>"}`, `unsigned`. Statuses: `501`
-as above. Example: `login_challenge_flow_issues_valid_token`
+**200:** payload `{"challenge": {"pay": {...}, "sig": "<b64ut>"}}`, `unsigned`.
+The challenge is a coz the server signed with its own key: `pay` is
+`{alg, now, nonce, tmb, typ}`, `nonce` a fresh 256-bit value (b64ut) and
+`typ` `<audience>/user/login/challenge/create`. The signer returns it whole
+beside its login. Statuses: `501` as above. Example: `login_challenge_flow_issues_valid_token`
 (`rs/cyphr-server/tests/login.rs`).
 
 ### `POST /auth/login`
 
-Exchange a signed login for a bearer token. Body: a coz, JSON `{pay, sig}`
-(read as raw text; no content type is required).
+Exchange a signed login for a bearer token. Body: JSON `{pay, sig}`, plus
+`challenge` (the coz `POST /auth/challenge` served) when the login answers
+one (read as raw text; no content type is required).
 
 `pay` fields:
 
-| Field               | Required                | Meaning                                                                                    |
-| :------------------ | :---------------------- | :----------------------------------------------------------------------------------------- |
-| `typ`               | yes                     | `<audience>/cyphr/auth/login`. `<audience>` must equal the server's configured `audience`. |
-| `alg`, `tmb`, `now` | yes                     | Signing algorithm, signing key thumbprint, signer's timestamp.                             |
-| `pr`                | yes                     | The principal the signer claims. The key is looked up in that principal only.              |
-| `challenge`         | challenge-response flow | A challenge from `/auth/challenge`, consumed once. Absent selects the timestamp flow.      |
-| `h`                 | over Noise only         | The session's handshake hash, base64url. Must be present over Noise and absent over HTTP.  |
+| Field               | Required                | Meaning                                                                                                                  |
+| :------------------ | :---------------------- | :----------------------------------------------------------------------------------------------------------------------- |
+| `typ`               | yes                     | `<audience>/user/login/request/create`. `<audience>` must equal the server's configured `audience`.                      |
+| `alg`, `tmb`, `now` | yes                     | Signing algorithm, signing key thumbprint, signer's timestamp.                                                           |
+| `pg`                | yes                     | The principal the signer claims. The key is looked up in that principal only.                                            |
+| `challenge`         | challenge-response flow | The nonce of the challenge returned beside the login; the challenge is consumed once. Absent selects the timestamp flow. |
+| `h`                 | over Noise only         | The session's handshake hash, base64url. Must be present over Noise and absent over HTTP.                                |
 
 Timestamp flow: `now` must be within 60 seconds of server time.
 
 **200:** payload `{"token": "<signed coz>"}`, `unsigned`. The token carries
-`["read","write"]`, names the principal and the login key, and expires after
+the permissions the service's login policy returns (none by default), names the principal (`pg`) and the login key, and expires after
 `session_ttl_secs` (clamped to 1 through 3600 seconds). Over Noise it is
 bound to that session's handshake hash; over HTTP it is bound to the key.
 
@@ -853,13 +863,15 @@ Examples (all in `rs/cyphr-server/tests/login.rs`):
 `login_timestamp_flow_issues_valid_token`,
 `login_challenge_flow_issues_valid_token`, `login_rejects_replayed_challenge`.
 
-**Divergences from SPEC** (§17.2 examples). The code requires `pr` in the
-payload, which neither example carries (the code names the reason: a key can
-belong to several principals, so a `tmb` alone is ambiguous). It requires
-the `typ` to end in `/cyphr/auth/login`, so Option B's
-`<authority>/<service>/auth/login` is accepted only when `<service>` is
-`cyphr`. It adds `h` for Noise. The code's own header marks these field
-choices as interim, pending the spec author's review.
+**Divergences from SPEC** (§17.2 examples). The code requires `pg` in the
+payload, which neither example carries (a key can belong to several
+principals, so a `tmb` alone is ambiguous). It takes the spec author's `typ`
+names (`<authority>/user/login/request/create`) rather than §17.2's
+`<authority>/<service>/auth/login`, and the challenge is the spec author's
+server-signed coz rather than a bare nonce. It adds `h` for Noise.
+Verification is §17.2's: the signature is valid, `tmb` is an active key of
+the claimed principal, the principal is Active, and the challenge or
+timestamp is fresh.
 
 ### `POST /auth/session`
 
@@ -873,7 +885,7 @@ credential; no header is read.
 {
   "v": 1,
   "payload": {
-    "pr": "<bare PG>",
+    "pg": "<bare PG>",
     "key": "<login key tmb>",
     "binding": "key",
     "exp": 1700000900

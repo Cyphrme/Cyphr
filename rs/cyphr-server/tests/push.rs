@@ -89,7 +89,7 @@ async fn push_never_reports_failure_for_a_write_that_landed() {
 
     let (tip_status, tip_body) = get_json(
         app.clone(),
-        &format!("/tip?pr={NON_CANONICAL_PRINCIPAL_ID}"),
+        &format!("/tip?pg={NON_CANONICAL_PRINCIPAL_ID}"),
     )
     .await;
     assert_eq!(

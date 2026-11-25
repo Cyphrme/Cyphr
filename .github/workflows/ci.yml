@@ -90,30 +90,6 @@ jobs:
       - run: cargo fuzz run fuzz_tip_report -- -max_total_time=60
       - run: cargo fuzz run fuzz_evidence -- -max_total_time=60
 
-  # Non-gating: go/ predates the EML/EMT refactor and its golden tests are
-  # red by design (go/AGENTS.md: "Do not fix parity here"). The job still
-  # runs so the drift stays visible. continue-on-error also keeps a failing
-  # leg from cancelling its sibling; the rust matrix is a separate job and
-  # is unaffected.
-  go:
-    continue-on-error: true
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: go
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-          cache-dependency-path: go/go.sum
-      - run: go build ./...
-      - run: go test ./...
-      - run: go vet ./...
-
   fmt:
     runs-on: ubuntu-latest
     steps:
@@ -186,31 +162,3 @@ jobs:
         with:
           workspaces: rs
       - run: cargo check --target wasm32-unknown-unknown -p cyphr --locked
-
-  go-vuln:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: go
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-          cache-dependency-path: go/go.sum
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: govulncheck ./...
-
-  go-static:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: go
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-          cache-dependency-path: go/go.sum
-      - run: go install honnef.co/go/tools/cmd/staticcheck@latest
-      - run: staticcheck ./...

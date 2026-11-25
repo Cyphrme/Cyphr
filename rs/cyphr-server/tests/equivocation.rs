@@ -234,7 +234,7 @@ async fn same_key_pair_proves_equivocation() {
     assert_eq!(push_status, StatusCode::CREATED);
 
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     assert_eq!(
         tip_envelope["statement"]["kind"],
@@ -244,7 +244,7 @@ async fn same_key_pair_proves_equivocation() {
     let real: coz::CozJson = serde_json::from_value(tip_envelope["statement"]["coz"].clone())
         .expect("real tip cozy deserializes");
 
-    let real_pr = real.pay["pr"].as_str().expect("real pr").to_string();
+    let real_pr = real.pay["pg"].as_str().expect("real pr").to_string();
     let real_sequence = real.pay["sequence"].as_u64().expect("real sequence");
     let real_commit_count = real.pay["commit_count"]
         .as_u64()
@@ -267,7 +267,13 @@ async fn same_key_pair_proves_equivocation() {
     .expect("compose a conflicting tip report under the same key");
 
     assert_eq!(
-        receipt::check_equivocation(&real, identity.pub_key(), &conflicting, identity.pub_key()),
+        receipt::check_equivocation(
+            &real,
+            identity.pub_key(),
+            &conflicting,
+            identity.pub_key(),
+            &[]
+        ),
         EquivocationVerdict::Proven
     );
 }
@@ -295,12 +301,12 @@ async fn cross_key_pair_proves_equivocation() {
     assert_eq!(push_status, StatusCode::CREATED);
 
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     let real: coz::CozJson = serde_json::from_value(tip_envelope["statement"]["coz"].clone())
         .expect("real tip cozy deserializes");
 
-    let real_pr = real.pay["pr"].as_str().expect("real pr").to_string();
+    let real_pr = real.pay["pg"].as_str().expect("real pr").to_string();
     let real_sequence = real.pay["sequence"].as_u64().expect("real sequence");
     let real_commit_count = real.pay["commit_count"]
         .as_u64()
@@ -328,7 +334,8 @@ async fn cross_key_pair_proves_equivocation() {
             &real,
             identity.pub_key(),
             &conflicting,
-            rotated_identity.pub_key()
+            rotated_identity.pub_key(),
+            &[]
         ),
         EquivocationVerdict::Proven
     );
@@ -371,7 +378,7 @@ async fn different_principal_pair_is_not_equivocation() {
     .expect("compose report b");
 
     assert_eq!(
-        receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key()),
+        receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key(), &[]),
         EquivocationVerdict::DifferentPrincipal
     );
 }
@@ -407,7 +414,7 @@ async fn different_sequence_pair_is_not_equivocation() {
     .expect("compose report b");
 
     assert_eq!(
-        receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key()),
+        receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key(), &[]),
         EquivocationVerdict::DifferentSequence
     );
 }
@@ -444,7 +451,7 @@ async fn bad_signature_pair_is_not_equivocation() {
     .expect("compose report b");
 
     assert_eq!(
-        receipt::check_equivocation(&a, identity.pub_key(), &b, wrong_identity.pub_key()),
+        receipt::check_equivocation(&a, identity.pub_key(), &b, wrong_identity.pub_key(), &[]),
         EquivocationVerdict::InvalidSignature
     );
 }
@@ -478,7 +485,7 @@ async fn wrong_typ_pair_is_not_equivocation() {
     .expect("compose commit receipt");
 
     assert_eq!(
-        receipt::check_equivocation(&tip, identity.pub_key(), &commit, identity.pub_key()),
+        receipt::check_equivocation(&tip, identity.pub_key(), &commit, identity.pub_key(), &[]),
         EquivocationVerdict::WrongTyp
     );
 }
@@ -498,7 +505,7 @@ fn restamp_pr(
     identity: &ServerIdentity,
     p: serde_json::Value,
 ) -> coz::CozJson {
-    tip.pay["pr"] = p;
+    tip.pay["pg"] = p;
     let pay_bytes = serde_json::to_vec(&tip.pay).expect("serialize restamped pay");
     let (sig, _cad) = identity.sign(&pay_bytes).expect("re-sign restamped pay");
     tip.sig = sig;
@@ -571,13 +578,14 @@ proptest! {
             restamp_sequence(a, &identity, malformed_value.clone())
         };
 
-        let verdict = receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key());
+        let verdict =
+            receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key(), &[]);
         prop_assert_eq!(
             verdict,
             EquivocationVerdict::Malformed,
             "a report with malformed {} = {:?} MUST diagnose Malformed, not silently Proven or \
              silently folded in with an honest non-conflict verdict",
-            if malformed_on_pr { "pr" } else { "sequence" },
+            if malformed_on_pr { "pg" } else { "sequence" },
             malformed_value
         );
     }

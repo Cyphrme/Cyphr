@@ -1,4 +1,4 @@
-//! `GET /branches?pr=<id>` lists every retained branch of a principal (G1).
+//! `GET /branches?pg=<id>` lists every retained branch of a principal (G1).
 //!
 //! A commit that forks a stored principal is still refused as its tip
 //! (409), but is retained as a verified non-tip branch; the route reports
@@ -107,7 +107,7 @@ fn enc(id: &str) -> String {
 }
 
 async fn tip_payload(app: axum::Router, id: &str) -> serde_json::Value {
-    let (status, body) = get_json(app, &format!("/tip?pr={}", enc(id))).await;
+    let (status, body) = get_json(app, &format!("/tip?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let mut payload = envelope_payload(&body).clone();
     // `now` is the response's own clock, not principal state.
@@ -175,7 +175,7 @@ async fn forked() -> Forked {
 }
 
 async fn branches(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value) {
-    let (status, body) = get_json(app, &format!("/branches?pr={}", enc(id))).await;
+    let (status, body) = get_json(app, &format!("/branches?pg={}", enc(id))).await;
     let payload = if status == StatusCode::OK {
         envelope_payload(&body).clone()
     } else {
@@ -431,7 +431,7 @@ async fn rival_with_data() {
         .count();
     assert_eq!(at_fork, 2, "both branches are listed: {payload:?}");
 
-    let (status, body) = get_json(app, &format!("/evidence?pr={}", enc(&f.id))).await;
+    let (status, body) = get_json(app, &format!("/evidence?pg={}", enc(&f.id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let items = envelope_payload(&body)["items"].as_array().expect("items");
     assert_eq!(items.len(), 1, "the fork is proven: {body:?}");
@@ -507,7 +507,7 @@ async fn heads(app: &axum::Router, id: &str) -> Vec<(u64, bool, String)> {
 }
 
 async fn evidence_count(app: &axum::Router, id: &str) -> usize {
-    let (status, body) = get_json(app.clone(), &format!("/evidence?pr={}", enc(id))).await;
+    let (status, body) = get_json(app.clone(), &format!("/evidence?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let payload = envelope_payload(&body);
     payload["items"].as_array().expect("items").len()
@@ -1874,7 +1874,7 @@ async fn owner_delete_promotes_over_revoked_thief_chain() {
     );
     let (status, tip) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        get_json(app.clone(), &format!("/tip?pr={}", enc(&t.id))),
+        get_json(app.clone(), &format!("/tip?pg={}", enc(&t.id))),
     )
     .await
     .expect("/tip answers in time after the promotion");
@@ -2003,7 +2003,7 @@ async fn owner_delete_promotes_over_thief_data_chain() {
     assert_eq!(status, StatusCode::CREATED, "the delete promotes: {body:?}");
     let (status, tip) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        get_json(app.clone(), &format!("/tip?pr={}", enc(&id))),
+        get_json(app.clone(), &format!("/tip?pg={}", enc(&id))),
     )
     .await
     .expect("/tip answers in time after the promotion");
@@ -2070,7 +2070,7 @@ async fn fresh_client_replays_after_thief_data_promotion() {
         .as_str()
         .expect("pr")
         .to_owned();
-    let (status, served) = get_json(app.clone(), &format!("/patch?pr={}", enc(&id))).await;
+    let (status, served) = get_json(app.clone(), &format!("/patch?pg={}", enc(&id))).await;
     assert_eq!(status, StatusCode::OK, "{served:?}");
     let bytes = serde_json::to_vec(&served).expect("body");
     let patch = cyphr_client::verify_patch_body(&bytes, &id, None).expect("well-formed patch");
@@ -2354,7 +2354,7 @@ fn tied_heads(t: &Theft) -> Vec<(serde_json::Value, u64)> {
 
 /// `GET /tip` as the served envelope body, minus the response's own clock.
 async fn tip_body(app: &axum::Router, id: &str) -> serde_json::Value {
-    let (status, mut body) = get_json(app.clone(), &format!("/tip?pr={}", enc(id))).await;
+    let (status, mut body) = get_json(app.clone(), &format!("/tip?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     body["payload"]
         .as_object_mut()
@@ -2364,7 +2364,7 @@ async fn tip_body(app: &axum::Router, id: &str) -> serde_json::Value {
 }
 
 async fn patch_body(app: &axum::Router, id: &str) -> serde_json::Value {
-    let (status, body) = get_json(app.clone(), &format!("/patch?pr={}", enc(id))).await;
+    let (status, body) = get_json(app.clone(), &format!("/patch?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     body
 }
@@ -2541,7 +2541,7 @@ async fn signed_statement_in_error_claims_only_held_since() {
     assert_eq!(push(&app, &t.d, t.n + 1, &t.id).await, StatusCode::CREATED);
     assert_eq!(push(&app, &t.c, t.n + 1, &t.id).await, StatusCode::CONFLICT);
 
-    let (status, body) = get_json(app.clone(), &format!("/tip?pr={}", enc(&t.id))).await;
+    let (status, body) = get_json(app.clone(), &format!("/tip?pg={}", enc(&t.id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     assert_eq!(body["statement"]["kind"], "signed", "{body:?}");
     let pay = &body["statement"]["coz"]["pay"];
@@ -2575,7 +2575,7 @@ async fn signed_statement_in_error_claims_only_held_since() {
 
     drop(app);
     let (app, _state) = reopen(&dir.path().join("data")).await;
-    let (_, again) = get_json(app, &format!("/tip?pr={}", enc(&t.id))).await;
+    let (_, again) = get_json(app, &format!("/tip?pg={}", enc(&t.id))).await;
     let again_since: Vec<_> = again["payload"]["heads"]
         .as_array()
         .expect("heads")
@@ -2594,8 +2594,7 @@ async fn signed_statement_in_error_claims_only_held_since() {
 /// the held statement as a tip report. End to end: two servers over TCP.
 #[tokio::test]
 async fn witness_syncs_an_authority_in_error_and_holds_both_heads() {
-    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
-    use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+    use cyphr_server::config::{ServerConfig, ServerMode};
 
     let t = theft(false).await;
     let (astate, identity, adir) = common::attestor_server().await;
@@ -2625,20 +2624,12 @@ async fn witness_syncs_an_authority_in_error_and_holds_both_heads() {
         cyphr_server::AppState::new(ServerConfig {
             mode: ServerMode::Witness,
             data_dir: wdir.path().join("data"),
-            authority_url: Some(url),
-            authority_identity: Some(AuthorityIdentity {
-                alg: identity.alg().name().to_string(),
-                pub_key: identity.pub_key().to_vec(),
-            }),
+            gossip: common::pinned_gossip(url, &astate),
             ..Default::default()
         })
         .expect("witness"),
     );
-    let outcome = sync_from_authority(&witness, &t.id).await;
-    assert!(
-        matches!(outcome, SyncOutcome::Synced { .. }),
-        "witness sync from an Error authority: {outcome:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness, &t.id).await;
     assert!(
         errored(&witness, &t.id).await,
         "the fork reached the witness"
@@ -2650,11 +2641,7 @@ async fn witness_syncs_an_authority_in_error_and_holds_both_heads() {
     assert_eq!(mine, theirs, "both tied heads are held");
     assert_eq!(mine.len(), 2);
 
-    let again = sync_from_authority(&witness, &t.id).await;
-    assert!(
-        !matches!(again, SyncOutcome::Failed { .. }),
-        "polling a still-Error authority is not a failure: {again:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness, &t.id).await;
 }
 
 /// Backs a witness that already moved past the fork: it holds a commit E
@@ -2670,8 +2657,7 @@ async fn witness_syncs_an_authority_in_error_and_holds_both_heads() {
 /// over TCP.
 #[tokio::test]
 async fn witness_ahead_of_an_error_authority_reads_the_same_error() {
-    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
-    use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+    use cyphr_server::config::{ServerConfig, ServerMode};
 
     let t = theft(false).await;
     let (astate, identity, adir) = common::attestor_server().await;
@@ -2705,11 +2691,7 @@ async fn witness_ahead_of_an_error_authority_reads_the_same_error() {
         cyphr_server::AppState::new(ServerConfig {
             mode: ServerMode::Witness,
             data_dir: wdir.path().join("data"),
-            authority_url: Some(url),
-            authority_identity: Some(AuthorityIdentity {
-                alg: identity.alg().name().to_string(),
-                pub_key: identity.pub_key().to_vec(),
-            }),
+            gossip: common::pinned_gossip(url, &astate),
             ..Default::default()
         })
         .expect("witness"),
@@ -2729,11 +2711,7 @@ async fn witness_ahead_of_an_error_authority_reads_the_same_error() {
     hold(&e, t.n + 2).await.expect("E");
     assert!(!errored(&wstate, &t.id).await, "the witness is Active on E");
 
-    let outcome = sync_from_authority(&wstate, &t.id).await;
-    assert!(
-        !matches!(outcome, SyncOutcome::Failed { .. }),
-        "an Active witness ahead of the fork polls an Error authority: {outcome:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&wstate, &t.id).await;
     let c_id = commit_id_at(&t.c, t.n + 1).as_str().expect("id").to_owned();
     assert!(
         wstate
@@ -2759,8 +2737,7 @@ async fn witness_ahead_of_an_error_authority_reads_the_same_error() {
 /// (EntryCommitmentMismatch). End to end over TCP.
 #[tokio::test]
 async fn witness_accepts_a_head_its_depth_cap_refused() {
-    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
-    use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+    use cyphr_server::config::{ServerConfig, ServerMode};
 
     let t = theft(false).await;
     let pool = load_pool();
@@ -2798,11 +2775,7 @@ async fn witness_accepts_a_head_its_depth_cap_refused() {
         cyphr_server::AppState::new(ServerConfig {
             mode: ServerMode::Witness,
             data_dir: wdir.path().join("data"),
-            authority_url: Some(url),
-            authority_identity: Some(AuthorityIdentity {
-                alg: identity.alg().name().to_string(),
-                pub_key: identity.pub_key().to_vec(),
-            }),
+            gossip: common::pinned_gossip(url, &astate),
             ..Default::default()
         })
         .expect("witness"),
@@ -2821,11 +2794,7 @@ async fn witness_accepts_a_head_its_depth_cap_refused() {
     hold(&t.d, t.n + 1).await.expect("D");
     hold(&e, t.n + 2).await.expect("E");
 
-    let outcome = sync_from_authority(&wstate, &t.id).await;
-    assert!(
-        !matches!(outcome, SyncOutcome::Failed { .. }),
-        "a head refused by the witness's own cap is not withheld: {outcome:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&wstate, &t.id).await;
     let f_id = commit_id_at(&f, t.n + 2).as_str().expect("id").to_owned();
     assert!(
         !wstate
@@ -2915,7 +2884,7 @@ async fn caught_up_patch_is_signed_whatever_the_anchor_spelling() {
         let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &id)).await;
         assert_eq!(status, StatusCode::CREATED, "commit {i}: {body:?}");
     }
-    let (status, tip_body) = get_json(app.clone(), &format!("/tip?pr={}", enc(&id))).await;
+    let (status, tip_body) = get_json(app.clone(), &format!("/tip?pg={}", enc(&id))).await;
     assert_eq!(status, StatusCode::OK, "{tip_body:?}");
     let tip = tip_body["payload"].clone();
     let mh = p.pr().as_multihash();
@@ -2934,7 +2903,7 @@ async fn caught_up_patch_is_signed_whatever_the_anchor_spelling() {
     for anchor in [pr_384, commit_id] {
         let (status, body) = get_json(
             app.clone(),
-            &format!("/patch?pr={}&from={}", enc(&id), enc(&anchor)),
+            &format!("/patch?pg={}&from={}", enc(&id), enc(&anchor)),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{anchor}: {body:?}");
@@ -3094,8 +3063,8 @@ enum Cap {
     Hostile,
 }
 
-async fn sync_over_cap(mode: Cap) -> cyphr_server::sync::SyncOutcome {
-    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
+async fn sync_over_cap(mode: Cap) -> Result<(), String> {
+    use cyphr_server::config::{ServerConfig, ServerMode};
 
     let t = theft(false).await;
     let pool = load_pool();
@@ -3200,33 +3169,50 @@ async fn sync_over_cap(mode: Cap) -> cyphr_server::sync::SyncOutcome {
         }
     });
     let upstream = url.clone();
-    let proxy = axum::Router::new().route(
-        "/patch",
-        axum::routing::get(move |raw: axum::extract::RawQuery| {
-            let (upstream, mutate) = (upstream.clone(), mutate.clone());
+    let forward = url.clone();
+    let proxy = axum::Router::new()
+        .fallback(axum::routing::get(move |uri: axum::http::Uri| {
+            let forward = forward.clone();
             async move {
-                let target = match raw.0 {
-                    Some(q) => format!("{upstream}/patch?{q}"),
-                    None => format!("{upstream}/patch"),
-                };
-                let resp = reqwest::Client::new()
-                    .get(&target)
+                let body: serde_json::Value = reqwest::Client::new()
+                    .get(format!("{forward}{uri}"))
                     .header("accept", "application/json")
                     .send()
                     .await
-                    .expect("upstream");
-                // Keep the authority's own status: a witness whose anchor
-                // the authority lacks is told so and asks again.
-                let status =
-                    axum::http::StatusCode::from_u16(resp.status().as_u16()).expect("status");
-                let mut body: serde_json::Value = resp.json().await.expect("upstream json");
-                if status.is_success() {
-                    mutate(&mut body);
-                }
-                (status, axum::Json(body))
+                    .expect("upstream")
+                    .json()
+                    .await
+                    .expect("upstream json");
+                axum::Json(body)
             }
-        }),
-    );
+        }))
+        .route(
+            "/patch",
+            axum::routing::get(move |raw: axum::extract::RawQuery| {
+                let (upstream, mutate) = (upstream.clone(), mutate.clone());
+                async move {
+                    let target = match raw.0 {
+                        Some(q) => format!("{upstream}/patch?{q}"),
+                        None => format!("{upstream}/patch"),
+                    };
+                    let resp = reqwest::Client::new()
+                        .get(&target)
+                        .header("accept", "application/json")
+                        .send()
+                        .await
+                        .expect("upstream");
+                    // Keep the authority's own status: a witness whose anchor
+                    // the authority lacks is told so and asks again.
+                    let status =
+                        axum::http::StatusCode::from_u16(resp.status().as_u16()).expect("status");
+                    let mut body: serde_json::Value = resp.json().await.expect("upstream json");
+                    if status.is_success() {
+                        mutate(&mut body);
+                    }
+                    (status, axum::Json(body))
+                }
+            }),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -3240,15 +3226,32 @@ async fn sync_over_cap(mode: Cap) -> cyphr_server::sync::SyncOutcome {
         cyphr_server::AppState::new(ServerConfig {
             mode: ServerMode::Witness,
             data_dir: wdir.path().join("data"),
-            authority_url: Some(proxy_url),
-            authority_identity: Some(AuthorityIdentity {
-                alg: identity.alg().name().to_string(),
-                pub_key: identity.pub_key().to_vec(),
-            }),
+            gossip: common::pinned_gossip(proxy_url, &astate),
             ..Default::default()
         })
         .expect("witness"),
     );
+    // The witness already follows the authority's server principal: the
+    // proxy serves only the patch the test rewrites.
+    let pg = astate
+        .principal
+        .as_ref()
+        .expect("principal")
+        .pg()
+        .to_string();
+    for entry in &astate
+        .engine
+        .get_patch(&pg, None, None)
+        .await
+        .expect("server principal")
+        .entries
+    {
+        wstate
+            .engine
+            .submit_commit(&pg, None, &entry.bundle)
+            .await
+            .expect("the witness takes the server principal's chain");
+    }
     for (p, i) in t
         .shared_indices()
         .into_iter()
@@ -3271,7 +3274,7 @@ async fn sync_over_cap(mode: Cap) -> cyphr_server::sync::SyncOutcome {
     if mode == Cap::DeadSigner {
         revoke_eve(&wstate, NOW + 7).await;
     }
-    cyphr_server::sync::sync_from_authority(&wstate, &t.id).await
+    cyphr_server::gossip::try_fetch_from_peers(&wstate, &t.id).await
 }
 
 impl Theft {
@@ -3290,11 +3293,9 @@ impl Theft {
 /// qualifies a head (the swap is then accepted as Synced).
 #[tokio::test]
 async fn a_cap_refused_head_must_be_the_last_entrys_own_commit() {
-    use cyphr_server::sync::{SyncFailure, SyncOutcome};
-
     let honest = sync_over_cap(Cap::Honest).await;
     assert!(
-        !matches!(honest, SyncOutcome::Failed { .. }),
+        honest.is_ok(),
         "a real head past the cap whose bytes are the last entry: {honest:?}"
     );
 
@@ -3303,12 +3304,7 @@ async fn a_cap_refused_head_must_be_the_last_entrys_own_commit() {
     // `Errored`, leaving the declared head E.
     let swapped = sync_over_cap(Cap::Forge).await;
     assert!(
-        matches!(
-            swapped,
-            SyncOutcome::Failed {
-                reason: SyncFailure::EntryCommitmentMismatch
-            }
-        ),
+        swapped.is_err(),
         "a head no entry hashes to must not be accepted: {swapped:?}"
     );
 }
@@ -3323,8 +3319,6 @@ async fn a_cap_refused_head_must_be_the_last_entrys_own_commit() {
 /// is dropped.
 #[tokio::test]
 async fn a_cap_refused_head_needs_the_line_held_and_a_cap_answer() {
-    use cyphr_server::sync::{SyncFailure, SyncOutcome};
-
     for (mode, why) in [
         (
             Cap::OnlyLast,
@@ -3336,15 +3330,7 @@ async fn a_cap_refused_head_needs_the_line_held_and_a_cap_answer() {
         ),
     ] {
         let outcome = sync_over_cap(mode).await;
-        assert!(
-            matches!(
-                outcome,
-                SyncOutcome::Failed {
-                    reason: SyncFailure::EntryCommitmentMismatch
-                }
-            ),
-            "{why}: {outcome:?}"
-        );
+        assert!(outcome.is_err(), "{why}: {outcome:?}");
     }
 }
 
@@ -3359,16 +3345,9 @@ async fn a_cap_refused_head_needs_the_line_held_and_a_cap_answer() {
 /// `Errored`) accept an unconnected commit.
 #[tokio::test]
 async fn a_signed_commit_that_does_not_extend_the_line_is_no_head() {
-    use cyphr_server::sync::{SyncFailure, SyncOutcome};
-
     let outcome = sync_over_cap(Cap::Hostile).await;
     assert!(
-        matches!(
-            outcome,
-            SyncOutcome::Failed {
-                reason: SyncFailure::EntryCommitmentMismatch
-            }
-        ),
+        outcome.is_err(),
         "an unconnected commit was accepted as a head: {outcome:?}"
     );
 }

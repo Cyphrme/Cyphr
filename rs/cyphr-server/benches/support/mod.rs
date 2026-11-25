@@ -151,9 +151,9 @@ pub fn login_body(id: &str) -> String {
             .as_secs() as i64,
     );
     pay.tmb = Some(s.compute_tmb().expect("tmb"));
-    pay.typ = Some(format!("{AUDIENCE}/cyphr/auth/login"));
+    pay.typ = Some(format!("{AUDIENCE}/user/login/request/create"));
     let bare = id.split_once(':').map_or(id, |(_, b)| b);
-    pay.extra.insert("pr".into(), bare.into());
+    pay.extra.insert("pg".into(), bare.into());
     let bytes = serde_json::to_vec(&pay).expect("pay");
     let (sig, _) = coz::sign_json(&bytes, &s.alg, &prv, &pubb).expect("sign");
     serde_json::to_string(&coz::CozJson {

@@ -8,7 +8,7 @@
 // sampled verdicts and sign-ins), at the servers' default limits.
 //
 //   N1  every holder of an unforked principal agrees with the owner's chain
-//   N2  honest ops are accepted, or refused Stale then accepted after rebase
+//   N2  honest ops are accepted, or refused Stale then accepted after trusting the remote
 //   N3  `verify-all` on a stopped peer changes nothing it serves
 //   N4  a fork is Error with both heads and evidence at every holder, and
 //       the owner's resolution settles every holder, abandoned branch kept

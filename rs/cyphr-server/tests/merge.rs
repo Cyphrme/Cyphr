@@ -233,7 +233,7 @@ async fn bootstrap(app: &Router, peer: &mut Peer, added_key: &str, now: i64) {
 
 /// The tip fields a merge must not move on a principal that did not ack.
 async fn tip(app: &Router, peer: &Peer) -> Value {
-    let (status, body) = get_json(app.clone(), &format!("/tip?pr={}", peer.id())).await;
+    let (status, body) = get_json(app.clone(), &format!("/tip?pg={}", peer.id())).await;
     assert_eq!(status, StatusCode::OK, "tip of {}: {body:?}", peer.name);
     // The attestor server signs its responses; the payload is the same.
     let p = &body["payload"];

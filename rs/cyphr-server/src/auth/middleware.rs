@@ -1,4 +1,6 @@
-//! Reusable bearer-token admission logic for HTTP routes (SPEC.md 17.4).
+//! Reusable bearer-token admission logic for HTTP routes (SPEC.md 17.4):
+//! [`authenticate`] and [`require`] for a route that needs a token or a
+//! permission.
 //!
 //! This module wraps [`auth::token::verify_token`](crate::auth::token) for
 //! use at a route: [`check_push_admission`] is `/push`'s specific
@@ -15,8 +17,9 @@ use axum::http::HeaderMap;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_storage::engine::{EngineError, bare_digest};
 
-use super::ServerIdentity;
 use super::token::Claims;
+use super::{ServerIdentity, server_now};
+use crate::AppState;
 use crate::error::AppError;
 use crate::observation::{ObservationError, ObservationStore};
 
@@ -119,7 +122,7 @@ pub async fn check_session_key(
         other => SessionError::Storage(other),
     };
     let principal = engine
-        .at_tip(&claims.pr)
+        .at_tip(&claims.pg)
         .await
         .map_err(load_error)?
         .ok_or(SessionError::UnknownPrincipal)?;
@@ -154,10 +157,59 @@ pub async fn check_session_key(
     Ok(())
 }
 
+/// The claims of `token`, once every check a session owes has passed: the
+/// signature and `exp`, the channel it arrived on, and the login key still
+/// being active in the principal's chain ([`check_session_key`]).
+pub async fn authenticate(
+    state: &AppState,
+    token: &str,
+    channel: Option<&[u8]>,
+) -> Result<Claims, AppError> {
+    let identity = state.identity.as_deref().ok_or_else(|| {
+        AppError::not_implemented(
+            "this server runs without a signing identity; it issues and accepts no bearer tokens",
+        )
+    })?;
+    let claims = identity
+        .verify_token(token, server_now())
+        .map_err(|e| AppError::unauthorized(format!("bearer token rejected: {e}")))?;
+    check_channel(&claims, channel)?;
+    check_session_key(&state.engine, &state.observations, &claims).await?;
+    Ok(claims)
+}
+
+/// A route's requirement of a request: an `Authorization: Bearer` token
+/// that authenticates ([`authenticate`]) and carries the permission `perm`.
+///
+/// The service that defines the route chooses `perm` and the policy that
+/// grants it ([`LoginPolicy`](super::policy::LoginPolicy)); this checks
+/// only that the signed claims name it.
+///
+/// # Errors
+///
+/// 401 for an absent or refused token, 403 for a valid token without
+/// `perm`.
+pub async fn require(
+    state: &AppState,
+    headers: &HeaderMap,
+    channel: Option<&[u8]>,
+    perm: &str,
+) -> Result<Claims, AppError> {
+    let token = bearer_token(headers)
+        .ok_or_else(|| AppError::unauthorized("this route requires a bearer token"))?;
+    let claims = authenticate(state, token, channel).await?;
+    if !claims.perms.iter().any(|p| p == perm) {
+        return Err(AppError::forbidden(format!(
+            "bearer token does not carry the `{perm}` permission"
+        )));
+    }
+    Ok(claims)
+}
+
 /// `/push`'s admission knob (ARCHITECT RULING R7): a bearer token is
 /// never required -- the pushed commit bundle's own signatures are the
 /// real authorization -- but if one IS presented it must verify, its
-/// `pr` claim must name the same principal as `target_principal` (compared
+/// `pg` claim must name the same principal as `target_principal` (compared
 /// in canonical form, so either id spelling matches), and the key that
 /// logged in must still be active in that principal (#162).
 ///
@@ -194,7 +246,7 @@ pub async fn check_push_admission(
         .canonical_principal_id(target_principal)
         .await
         .map_err(AppError::engine)?;
-    if claims.pr != bare_digest(&canonical) {
+    if claims.pg != bare_digest(&canonical) {
         return Err(AppError::unauthorized(
             "bearer token does not authorize this principal",
         ));

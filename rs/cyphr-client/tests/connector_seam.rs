@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_client::{
-    AuthorityKey, BindingError, BindingKind, BindingPolicy, ChannelBinding, ConnectError,
-    Connector, HttpConnector, PatchFailure, PatchRequest, Request, fetch_patch,
+    BindingError, BindingKind, BindingPolicy, ChannelBinding, ConnectError, Connector,
+    HttpConnector, PatchFailure, PatchRequest, PeerKey, Request, fetch_patch,
     verify_authenticated_envelope,
 };
 
@@ -21,14 +21,14 @@ fn b64(b: u8) -> String {
 }
 
 struct Authority {
-    key: AuthorityKey,
+    key: PeerKey,
     prv: Vec<u8>,
 }
 
 fn authority() -> Authority {
     let kp = coz::Alg::Ed25519.generate_keypair();
     Authority {
-        key: AuthorityKey {
+        key: PeerKey {
             alg: kp.alg.name().to_string(),
             pub_key: kp.pub_bytes.clone(),
         },
@@ -51,7 +51,7 @@ fn patch_body(auth: &Authority, pr: &str) -> Vec<u8> {
     let pay = serde_json::json!({
         "alg": auth.key.alg,
         "typ": "cyphr-server/receipt/tip",
-        "pr": pr,
+        "pg": pr,
         "sequence": 1,
         "commit_id": digest(9),
         "roots": { "pr": digest(1), "sr": digest(2), "ar": digest(3), "cr": digest(4) },
