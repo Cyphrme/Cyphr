@@ -909,11 +909,11 @@ Three `[limits]` settings bound how long a client may hold a connection
 without finishing its work, so a stalled client cannot pin a connection for
 ever.
 
-| Setting                    | Default | What it bounds                                                                                                         |
-| :------------------------- | :------ | :--------------------------------------------------------------------------------------------------------------------- |
-| `header_read_timeout_secs` | 10      | How long a client may take to send a request's headers; past it the connection is dropped.                             |
+| Setting                    | Default | What it bounds                                                                                                                                                                                                                                          |
+| :------------------------- | :------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `header_read_timeout_secs` | 10      | How long a client may take to send a request's headers; past it the connection is dropped.                                                                                                                                                              |
 | `request_timeout_secs`     | 60      | How long a whole exchange may take, from the request's first byte to the response's last byte delivered. A handler still running at the limit is answered `408`; a client that drips its request or its read of the response is cut off a second later. |
-| `idle_timeout_secs`        | 120     | How long a connection may carry no byte in either direction, a keep-alive between requests included, before it closes. |
+| `idle_timeout_secs`        | 120     | How long a connection may carry no byte in either direction, a keep-alive between requests included, before it closes.                                                                                                                                  |
 
 Zero is refused at start. They apply to the HTTP listener; the Noise
 transport has its own idle timeout.

@@ -1,19 +1,17 @@
 //! The HTTP listener: an accept loop with the bounds a public socket
 //! needs, in place of `axum::serve`, which has none.
 //!
-//! - **Header read.** A client that does not finish its request head in
-//!   [`Timeouts::header_read`] is dropped (slowloris).
-//! - **The exchange.** From a request's first byte to the last byte of its
-//!   response, [`Timeouts::request`]: a handler still running at the limit is
-//!   answered `408`, and a client that drips its request or its read of the
-//!   response is cut off [`DELIVERY_GRACE`] later, which is what the `408`
-//!   needs to get out.
-//! - **Connections.** At most [`Timeouts::max_connections`] are served at
-//!   once; at the cap the loop stops accepting, so a new client waits in the
-//!   kernel's accept queue instead of being accepted and dropped.
-//! - **Idle.** A connection with no byte read or written for
-//!   [`Timeouts::idle`] is closed: an idle keep-alive, or a peer that has
-//!   stopped.
+//! - **Header read.** A client that does not finish its request head in [`Timeouts::header_read`]
+//!   is dropped (slowloris).
+//! - **The exchange.** From a request's first byte to the last byte of its response,
+//!   [`Timeouts::request`]: a handler still running at the limit is answered `408`, and a client
+//!   that drips its request or its read of the response is cut off [`DELIVERY_GRACE`] later, which
+//!   is what the `408` needs to get out.
+//! - **Connections.** At most [`Timeouts::max_connections`] are served at once; at the cap the loop
+//!   stops accepting, so a new client waits in the kernel's accept queue instead of being accepted
+//!   and dropped.
+//! - **Idle.** A connection with no byte read or written for [`Timeouts::idle`] is closed: an idle
+//!   keep-alive, or a peer that has stopped.
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -185,7 +183,8 @@ impl AsyncWrite for BoundedStream {
         // hyper flushes only once its write buffer is empty, so a flush that
         // completes after the body was handed over is the response's last
         // byte delivered: the exchange is over.
-        if matches!(polled, Poll::Ready(Ok(()))) && self.exchange.finished.swap(false, Ordering::SeqCst)
+        if matches!(polled, Poll::Ready(Ok(())))
+            && self.exchange.finished.swap(false, Ordering::SeqCst)
         {
             self.hard = None;
             self.exchange.set_started(None);
@@ -410,7 +409,9 @@ mod tests {
             held.push(conn);
         }
 
-        let mut waiting = TcpStream::connect(addr).await.expect("the kernel queues it");
+        let mut waiting = TcpStream::connect(addr)
+            .await
+            .expect("the kernel queues it");
         waiting
             .write_all(b"GET /ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
             .await
