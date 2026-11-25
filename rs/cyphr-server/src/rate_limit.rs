@@ -190,7 +190,7 @@ impl Fences {
             Op::Push => Some(&self.push),
             Op::Login => Some(&self.login),
             Op::Revoke => Some(&self.revoke),
-            Op::Other => None,
+            Op::Probe | Op::Other => None,
         }
     }
 }
@@ -223,6 +223,10 @@ enum Op {
     Push,
     Login,
     Revoke,
+    /// An operator's probe (`/healthz`, `/metrics`): the read fence is a
+    /// client's allowance, and a monitor that polls must not spend it or be
+    /// refused by it, so a probe is held by the per-IP fence alone.
+    Probe,
     Other,
 }
 
@@ -234,6 +238,7 @@ fn classify(method: &Method, path: &str) -> Op {
         (&Method::POST, "/push" | "/resync") => Op::Push,
         (&Method::POST, "/revoke") => Op::Revoke,
         (&Method::POST, "/auth/challenge") | (&Method::POST, "/auth/login") => Op::Login,
+        (&Method::GET, "/healthz" | "/metrics") => Op::Probe,
         (&Method::GET, _) => Op::Read,
         _ => Op::Other,
     }
@@ -534,6 +539,8 @@ mod tests {
         assert!(classify(&Method::POST, "/revoke") == Op::Revoke);
         assert!(classify(&Method::POST, "/auth/login") == Op::Login);
         assert!(classify(&Method::GET, "/tip") == Op::Read);
+        assert!(classify(&Method::GET, "/healthz") == Op::Probe);
+        assert!(classify(&Method::GET, "/metrics") == Op::Probe);
         assert!(classify(&Method::GET, "/e/abc") == Op::Read);
         assert!(classify(&Method::PUT, "/whatever") == Op::Other);
     }

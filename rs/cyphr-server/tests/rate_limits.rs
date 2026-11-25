@@ -271,6 +271,31 @@ async fn per_ip_rate_limit_burst_429s_and_isolates_by_ip() {
     );
 }
 
+/// Claim: the probes an operator polls are not held by the read bucket.
+/// With the read bucket tripping and the per-IP bucket generous, a burst of
+/// `/tip` reads 429s while `/healthz` and `/metrics` keep answering.
+/// Turns red if a probe is classified as a read.
+/// End-to-end scenario: yes (a real router and its fences).
+#[tokio::test]
+async fn the_probes_are_not_held_by_the_read_bucket() {
+    let mut limits = Limits::generous();
+    limits.read = (TRIP_PER_SECOND, TRIP_BURST);
+    let server = TestServer::with_limits(&limits).await;
+
+    let reads = server
+        .burst("GET", "/tip?pg=nobody", None, "127.0.0.1", BURST)
+        .await;
+    assert!(some_429(&reads), "the read bucket must be tripped: {reads:?}");
+
+    for path in ["/healthz", "/metrics"] {
+        let probes = server.burst("GET", path, None, "127.0.0.1", BURST).await;
+        assert!(
+            !some_429(&probes),
+            "{path} must not be held by the read bucket: {probes:?}"
+        );
+    }
+}
+
 // ========================================================================
 // Per-operation limits: independent buckets; reads survive a
 // push flood; /revoke takes ORDINARY limits, no exemption
