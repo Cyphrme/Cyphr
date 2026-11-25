@@ -516,14 +516,14 @@ per-store judgment argued in module docs rather than a runnable test.
 Enumerated before drafting. Dispositions describe what acceptance of this
 proposal would imply; this document itself changes none of them.
 
-| Document                            | Disposition if accepted                                                                                                                                                                                                    |
-| :---------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Document                            | Disposition if accepted                                                                                                                                                                                                  |
+| :---------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SPEC.md` §16                       | untouched by this proposal — its §16.3.2 "relational" label (SPEC §16.3.2) is contradicted by the shipped implementation under either answer; amending it is its owner's call, and this proposal supplies the motivation |
-| `docs/specs/storage-engine.md`      | amended — two-layer separation survives; the "relational" noun, the layout description, and the registry's role change; gains the EML co-location exception                                                                |
-| `docs/specs/indexer.md`             | amended — gains the membership test, the one-writer contract, and the generated registry; its rebuildability claims survive unchanged                                                                                      |
-| `docs/specs/blob-store.md`          | untouched — the record layer keeps the trait as it stands                                                                                                                                                                  |
-| `docs/specs/blob-store-fjall.md`    | untouched by this proposal — the physical layout does not change (its pre-existing staleness is reported separately, not smuggled in here)                                                                                 |
-| `docs/guides/operating-a-server.md` | amended — the data-directory section is redrawn; the warning its table carries today becomes what the layout itself says                                                                                                   |
+| `docs/specs/storage-engine.md`      | amended — two-layer separation survives; the "relational" noun, the layout description, and the registry's role change; gains the EML co-location exception                                                              |
+| `docs/specs/indexer.md`             | amended — gains the membership test, the one-writer contract, and the generated registry; its rebuildability claims survive unchanged                                                                                    |
+| `docs/specs/blob-store.md`          | untouched — the record layer keeps the trait as it stands                                                                                                                                                                |
+| `docs/specs/blob-store-fjall.md`    | untouched by this proposal — the physical layout does not change (its pre-existing staleness is reported separately, not smuggled in here)                                                                               |
+| `docs/guides/operating-a-server.md` | amended — the data-directory section is redrawn; the warning its table carries today becomes what the layout itself says                                                                                                 |
 
 ## Appendix: what the system stores today
 

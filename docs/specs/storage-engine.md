@@ -245,7 +245,6 @@ is no option to turn it off.
 - **Cost**: One data sync per accepted commit, about 8 ms on a path of about
   40 ms. Syncing once per bundle of commits is deferred.
 
-
 - **PRE**: Validation has succeeded; commit is finalized.
 - **POST**: All blobs exist in the BlobStore. Index entry exists for the
   commit.

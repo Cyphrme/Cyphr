@@ -52,7 +52,6 @@ MAY still be possible even in an unrecoverable state (SPEC.md §2.2.11).
 > from designated recovery agents regardless of whether the principal is
 > considered unrecoverable.
 
-
 **[recovery-proactive]**: Self-recovery mechanisms MUST be established before
 key loss or revocation. None of the protocol's recovery mechanisms can prevent
 or reverse an unrecoverable state once it has occurred.

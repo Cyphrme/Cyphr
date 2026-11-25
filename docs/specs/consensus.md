@@ -183,7 +183,6 @@ binds no other party.
 | Any     | Ignore         | Principal dropped from gossip                         |
 | Any     | ClientMismatch | Witness and client disagree on message validity       |
 
-
 #### Error Handling
 
 **[error-reject-atomic]**: Implementations MUST reject transactions with

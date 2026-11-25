@@ -126,7 +126,6 @@ for multi-threaded executors.
 > prevent use from multi-threaded executors. The explicit `impl Future +
 Send` form is used instead to enforce this bound at the trait level.
 
-
 **[runtime-agnostic]**: The `BlobStore` trait MUST NOT depend on any
 specific async runtime (tokio, smol, async-std, etc.) in its signature.
 All methods use bare `impl Future + Send` via RPITIT, which is executor-

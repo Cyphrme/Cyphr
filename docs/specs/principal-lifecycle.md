@@ -128,7 +128,6 @@ inputs determine lifecycle state.
 | **Dead**    | —         | —        | false       | false                       | false         |
 | **Nuked**   | true      | —        | —           | false (all revoked/deleted) | —             |
 
-
 **[errored-orthogonal]**: The `Errored` flag MUST be orthogonal to the base
 lifecycle state. Any base state (Active, Frozen, Deleted, Zombie, Dead, Nuked)
 MAY simultaneously be errored. `Errored` indicates fork detection or chain

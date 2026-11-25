@@ -330,7 +330,6 @@ key is compromised. The `tmb` signing the revoke MUST be the key being revoked
 > share a word, is an open question for the spec author — not resolved
 > here.
 
-
 **[revoke-naked]**: SUPERSEDED discriminator — see resolution note below.
 Historically: a revoke MAY omit `pre` (naked revoke). A naked revoke
 does NOT mutate PR. Third parties MAY sign naked revokes to declare a key
@@ -351,7 +350,6 @@ error state (see `consensus.md`).
 > concept should be retired, is an open design question for the spec
 > author. It is NOT resolved by this pass — deliberately left open rather
 > than inventing a replacement mechanism.
-
 
 **[revoke-self-signed]**: Revoke MUST be self-signed — the key signing the
 revoke coz MUST be the same key identified by `tmb`. Third-party revokes are
@@ -425,7 +423,6 @@ prior state MUST be rejected.
 > commit that doesn't chain from the real prior state) is unchanged and is
 > now the sole job of arrow verification (`Error::CommitMismatch` in
 > `rs/cyphr/src/principal/apply.rs`'s commit finalization).
-
 
 **[no-unauthorized-transaction]**: A transaction signed by a key not active in
 KR at the pre-mutation state MUST be rejected. There MUST NOT be a state where
