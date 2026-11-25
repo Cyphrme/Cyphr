@@ -24,7 +24,7 @@ use crate::{AppState, receipt};
 #[derive(Debug, Deserialize)]
 pub struct TipQuery {
     /// Principal genesis identifier (tagged digest).
-    pub pr: String,
+    pub pg: String,
 }
 
 /// Query parameters for `GET /revoked`.
@@ -76,7 +76,7 @@ pub struct ResyncResponse {
 #[derive(Debug, Deserialize)]
 pub struct ResyncQuery {
     /// Principal genesis identifier.
-    pub pr: String,
+    pub pg: String,
 }
 
 /// Response for `GET /resync`.
@@ -94,7 +94,7 @@ const MAX_REVOKED_ASKS: usize = 128;
 #[derive(Debug, Deserialize)]
 pub struct PatchQuery {
     /// Principal genesis identifier.
-    pub pr: String,
+    pub pg: String,
     /// Resync anchor: a tagged content digest (Zami #140; the anchor root
     /// is PR). Raw string here -- the `patch` handler parses it into a
     /// [`cyphr::state::TaggedDigest`] and refuses a malformed value with the
@@ -381,21 +381,21 @@ async fn fetch_on_read(state: &Arc<AppState>, pr: &str) {
     crate::gossip::fetch_on_read(state, pr).await;
 }
 
-/// `GET /tip?pr=<PG>` — current principal state.
+/// `GET /tip?pg=<PG>` — current principal state.
 #[tracing::instrument(skip(state))]
 pub async fn tip(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    fetch_on_read(&state, &query.pr).await;
+    fetch_on_read(&state, &query.pg).await;
 
     let tip = state
         .engine
-        .get_tip(&query.pr)
+        .get_tip(&query.pg)
         .await
         .map_err(AppError::engine)?;
 
-    let t = tip.ok_or_else(|| AppError::not_found(format!("principal {} not found", query.pr)))?;
+    let t = tip.ok_or_else(|| AppError::not_found(format!("principal {} not found", query.pg)))?;
 
     // In Error no commit is the tip (SPEC 15.5): the answer is the fork and
     // its heads, and nothing canonical is attested.
@@ -404,7 +404,7 @@ pub async fn tip(
     // to the tip it may have corrupted.
     if let Some(error) = state
         .engine
-        .error_state(&query.pr)
+        .error_state(&query.pg)
         .await
         .map_err(|e| AppError::internal(format!("fork state unreadable from the index: {e}")))?
     {
@@ -510,7 +510,7 @@ async fn held_statement(
     }
 }
 
-/// `GET /branches?pr=<PG>` -- every branch head the store holds for the
+/// `GET /branches?pg=<PG>` -- every branch head the store holds for the
 /// principal: its canonical tip and each retained rival, a commit that
 /// verified at its `pre` but took a position the chain already held.
 ///
@@ -522,11 +522,11 @@ pub async fn branches(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    fetch_on_read(&state, &query.pr).await;
+    fetch_on_read(&state, &query.pg).await;
 
     let branches = state
         .engine
-        .list_branches(&query.pr)
+        .list_branches(&query.pg)
         .await
         .map_err(AppError::engine)?;
     Ok(Json(Envelope::unsigned(BranchesResponse { branches })))
@@ -536,7 +536,7 @@ pub async fn branches(
 #[derive(Debug, Deserialize)]
 pub struct ProofQuery {
     /// Principal genesis identifier.
-    pub pr: String,
+    pub pg: String,
     /// The size, in commits, of the log the claim is about. Raw string,
     /// parsed in the handler so a malformed value is refused with the app's
     /// JSON error envelope. Asked for, never defaulted to the tip.
@@ -613,7 +613,7 @@ fn parse_claim(raw: &str) -> Result<ProofClaim, AppError> {
     }
 }
 
-/// `GET /proof?pr=<PG>&size=<n>&claim=<claim>` -- the certificate that a
+/// `GET /proof?pg=<PG>&size=<n>&claim=<claim>` -- the certificate that a
 /// claim holds of the log of the principal's first `n` commits (SPEC 4.4),
 /// whatever algorithm the commits involved were made under:
 ///
@@ -643,7 +643,7 @@ pub async fn proof(
 ) -> Result<impl IntoResponse, AppError> {
     let size = proof_count("size", &query.size)?;
     let asked = parse_claim(&query.claim)?;
-    let t = provable_tip(&state, &query.pr).await?;
+    let t = provable_tip(&state, &query.pg).await?;
     let log = proving_log(&state, &t).await?;
     let held = |i: u64| {
         usize::try_from(i)
@@ -691,7 +691,7 @@ pub async fn proof(
     Ok(Json(Envelope::unsigned(payload)))
 }
 
-/// `GET /evidence?pr=<PG>` -- every principal fork the store holds
+/// `GET /evidence?pg=<PG>` -- every principal fork the store holds
 /// evidence of, each item self-describing and checkable offline.
 ///
 /// An item is `{kind: "principal-fork", pg, height, pre, a, b}`: two
@@ -713,19 +713,19 @@ pub async fn evidence(
 ) -> Result<impl IntoResponse, AppError> {
     // A malformed id is the caller's error (400), not an unknown principal
     // (404): the harness probes for this route with an id that is not one.
-    if query.pr.parse::<cyphr::state::TaggedDigest>().is_err()
-        && receipt::parse_genesis_id_str(&query.pr).is_err()
+    if query.pg.parse::<cyphr::state::TaggedDigest>().is_err()
+        && receipt::parse_genesis_id_str(&query.pg).is_err()
     {
         return Err(AppError::bad_request(format!(
             "pr is not a principal identifier: {}",
-            query.pr
+            query.pg
         )));
     }
-    fetch_on_read(&state, &query.pr).await;
+    fetch_on_read(&state, &query.pg).await;
 
     let (principal, forks) = state
         .engine
-        .fork_evidence(&query.pr)
+        .fork_evidence(&query.pg)
         .await
         .map_err(AppError::engine)?;
     let pg = cyphr_storage::engine::bare_digest(&principal).to_string();
@@ -816,7 +816,7 @@ pub async fn resync(
     ))
 }
 
-/// `GET /resync?pr=<principal>` -- the resync proofs this peer holds for
+/// `GET /resync?pg=<principal>` -- the resync proofs this peer holds for
 /// the principal, one per asserted tip, as the `{pay, sig}` coz each
 /// arrived in. A reader re-verifies each against the branch it holds
 /// (`cyphr::resync::verify_resync`): the peer is a mirror of the proof,
@@ -828,7 +828,7 @@ pub async fn resyncs(
 ) -> Result<impl IntoResponse, AppError> {
     let resyncs = state
         .engine
-        .resyncs(&query.pr)
+        .resyncs(&query.pg)
         .await
         .map_err(AppError::engine)?;
     Ok(Json(Envelope::unsigned(ResyncsResponse { resyncs })))
@@ -1002,13 +1002,13 @@ async fn sign_patch_envelope(
     }
 }
 
-/// `GET /patch?pr=<PG>&from=<n>&to=<n>` — commit chain delta.
+/// `GET /patch?pg=<PG>&from=<n>&to=<n>` — commit chain delta.
 #[tracing::instrument(skip(state))]
 pub async fn patch(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PatchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    fetch_on_read(&state, &query.pr).await;
+    fetch_on_read(&state, &query.pg).await;
 
     // Retyped from a bare sequence to a content digest (Zami #140; S0.1: the
     // anchor root is PR). Parsed here, once, at the same boundary the
@@ -1026,7 +1026,7 @@ pub async fn patch(
 
     let response = state
         .engine
-        .get_served_patch(&query.pr, anchor.as_ref(), query.to)
+        .get_served_patch(&query.pg, anchor.as_ref(), query.to)
         .await
         .map_err(AppError::engine)?;
 
@@ -1036,14 +1036,14 @@ pub async fn patch(
     // each deciding independently whether a tip lookup is warranted.
     let tip = state
         .engine
-        .get_tip(&query.pr)
+        .get_tip(&query.pg)
         .await
         .map_err(AppError::engine)?;
 
     if response.entries.is_empty() && tip.is_none() {
         return Err(AppError::not_found(format!(
             "principal {} not found",
-            query.pr
+            query.pg
         )));
     }
 
@@ -1128,12 +1128,12 @@ pub async fn patch(
     // held one `/tip` signs, naming the heads, and a bounded `to`
     // (which could stop short of them) is served unsigned as above.
     let coz = match tip {
-        Some(_) if in_error => held_patch_statement(&state, &query.pr, query.to.is_some()).await,
+        Some(_) if in_error => held_patch_statement(&state, &query.pg, query.to.is_some()).await,
         Some(t) => {
             sign_patch_envelope(
                 &state,
                 &t,
-                &query.pr,
+                &query.pg,
                 query.to.is_some(),
                 served_end.as_deref(),
                 from,

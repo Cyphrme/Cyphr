@@ -317,7 +317,7 @@ impl Harness {
         let body: serde_json::Value = self
             .http
             .get(format!("http://{addr}/resync"))
-            .query(&[("pr", p.0.as_str())])
+            .query(&[("pg", p.0.as_str())])
             .send()
             .await
             .unwrap_or_else(|e| panic!("peer `{peer}`: resync read failed: {e}"))
@@ -339,7 +339,7 @@ impl Harness {
         }
     }
 
-    /// Items the chosen peers serve at `GET /evidence?pr=`, each verified
+    /// Items the chosen peers serve at `GET /evidence?pg=`, each verified
     /// offline against keys the harness read from the peers themselves. A
     /// served item that does not verify fails the scenario. PROVISIONAL: the
     /// item shape is owned by the evidence route.
@@ -375,7 +375,7 @@ impl Harness {
             let resp = self
                 .http
                 .get(format!("http://{addr}/evidence"))
-                .query(&[("pr", p.0.as_str())])
+                .query(&[("pg", p.0.as_str())])
                 .send()
                 .await
                 .unwrap_or_else(|e| panic!("peer `{name}`: evidence read failed: {e}"));
@@ -430,7 +430,7 @@ impl Harness {
         let Ok(resp) = self
             .http
             .get(format!("http://{addr}/patch"))
-            .query(&[("pr", p.0.as_str())])
+            .query(&[("pg", p.0.as_str())])
             .send()
             .await
         else {
@@ -454,7 +454,7 @@ impl Harness {
         let resp = self
             .http
             .get(format!("http://{addr}/tip"))
-            .query(&[("pr", p.0.as_str())])
+            .query(&[("pg", p.0.as_str())])
             .send()
             .await
             .ok()?;

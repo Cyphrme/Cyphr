@@ -282,7 +282,7 @@ where
     }
 }
 
-/// What `GET path?pr=` answers at a peer, the envelope's payload.
+/// What `GET path?pg=` answers at a peer, the envelope's payload.
 async fn payload(
     h: &Harness,
     peer: &str,
@@ -314,7 +314,7 @@ pub(crate) async fn evidence_count(
     peer: &str,
     p: &Principal,
 ) -> Result<usize, String> {
-    let v = payload(h, peer, "/evidence", &[("pr", &p.0)]).await?;
+    let v = payload(h, peer, "/evidence", &[("pg", &p.0)]).await?;
     Ok(v["items"].as_array().map_or(0, Vec::len))
 }
 
@@ -674,7 +674,7 @@ async fn snapshot(
         for path in ["/branches", "/evidence"] {
             out.push((
                 format!("principal {p} {path}"),
-                payload(h, peer, path, &[("pr", &ps.pr.0)]).await?,
+                payload(h, peer, path, &[("pg", &ps.pr.0)]).await?,
             ));
         }
         if !ps.revoked.is_empty() {

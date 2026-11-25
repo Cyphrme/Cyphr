@@ -196,7 +196,7 @@ pub async fn replay_on_fresh_peer(
     let count = || async {
         let r = http
             .get(format!("http://{}/tip", peer.addr()))
-            .query(&[("pr", id.as_str())])
+            .query(&[("pg", id.as_str())])
             .send()
             .await
             .map_err(|e| e.to_string())?;

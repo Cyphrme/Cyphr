@@ -60,11 +60,11 @@ pub const DEFAULT_TTL_SECS: i64 = 15 * 60;
 /// A bearer token is just a Coz message the server signed; without a
 /// fixed, checked `typ` any *other* message the server key ever signs
 /// (a future signed notice, a different protocol message) whose payload
-/// happens to carry `pr`/`exp`/`perms`/`tmb` would verify as a bearer
+/// happens to carry `pg`/`exp`/`perms`/`tmb` would verify as a bearer
 /// token. Stamping issuance and checking verification against this one
 /// constant makes the two symmetric, so a token's kind is bound into
 /// the signature, not merely assumed by the reader.
-pub const BEARER_TOKEN_TYP: &str = "cyphr-server/auth/token";
+pub const BEARER_TOKEN_TYP: &str = cyphr_client::login::BEARER_TYP;
 
 /// The signed claim naming the thumbprint (b64ut) of the principal key
 /// that logged in. The server signs it, so a holder cannot rebind a
@@ -82,7 +82,7 @@ pub const CHANNEL_FIELD: &str = "cb";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claims {
     /// The principal's genesis identifier.
-    pub pr: String,
+    pub pg: String,
     /// Permissions the token authorizes.
     pub perms: Vec<String>,
     /// Unix expiry timestamp.
@@ -124,7 +124,7 @@ pub enum TokenError {
 }
 
 impl ServerIdentity {
-    /// Issue the bearer token a successful login mints: `pr`, authorizing
+    /// Issue the bearer token a successful login mints: `pg`, authorizing
     /// `perms`, expiring `ttl_secs` after `now`, plus the thumbprint of the
     /// key that logged in. That thumbprint is signed into the token so
     /// route protection can end the session when the key leaves the chain
@@ -142,14 +142,14 @@ impl ServerIdentity {
     /// (mirrors [`ServerIdentity::sign`]).
     pub fn issue_login_token(
         &self,
-        pr: impl Into<String>,
+        pg: impl Into<String>,
         login_tmb: &coz::Thumbprint,
         perms: Vec<String>,
         now: i64,
         ttl_secs: i64,
         channel: Option<&[u8]>,
     ) -> Option<String> {
-        self.issue(pr.into(), Some(login_tmb), perms, now, ttl_secs, channel)
+        self.issue(pg.into(), Some(login_tmb), perms, now, ttl_secs, channel)
     }
 
     /// A login-shaped token under a fixed login key, for unit tests that
@@ -157,13 +157,13 @@ impl ServerIdentity {
     #[cfg(test)]
     pub(crate) fn issue_test_token(
         &self,
-        pr: impl Into<String>,
+        pg: impl Into<String>,
         perms: Vec<String>,
         now: i64,
         ttl_secs: i64,
     ) -> Option<String> {
         let tmb = coz::Alg::Ed25519.compute_thumbprint(&[7u8; 32])?;
-        self.issue_login_token(pr, &tmb, perms, now, ttl_secs, None)
+        self.issue_login_token(pg, &tmb, perms, now, ttl_secs, None)
     }
 
     /// A validly signed token that names no login key -- what no login
@@ -171,17 +171,17 @@ impl ServerIdentity {
     #[cfg(test)]
     pub(crate) fn issue_unbound_token(
         &self,
-        pr: impl Into<String>,
+        pg: impl Into<String>,
         perms: Vec<String>,
         now: i64,
         ttl_secs: i64,
     ) -> Option<String> {
-        self.issue(pr.into(), None, perms, now, ttl_secs, None)
+        self.issue(pg.into(), None, perms, now, ttl_secs, None)
     }
 
     fn issue(
         &self,
-        pr: String,
+        pg: String,
         login_tmb: Option<&coz::Thumbprint>,
         perms: Vec<String>,
         now: i64,
@@ -195,7 +195,7 @@ impl ServerIdentity {
         pay.now = Some(now);
         pay.tmb = Some(tmb);
         pay.typ = Some(BEARER_TOKEN_TYP.to_string());
-        pay.extra.insert("pr".to_string(), Value::String(pr));
+        pay.extra.insert("pg".to_string(), Value::String(pg));
         pay.extra
             .insert("exp".to_string(), Value::from(now + ttl_secs));
         pay.extra.insert("perms".to_string(), Value::from(perms));
@@ -267,11 +267,11 @@ fn claims_from_pay(pay: &coz::Pay) -> Result<Claims, TokenError> {
         .ok_or(TokenError::MissingClaim("tmb"))?
         .to_b64();
 
-    let pr = pay
+    let pg = pay
         .extra
-        .get("pr")
+        .get("pg")
         .and_then(Value::as_str)
-        .ok_or(TokenError::MissingClaim("pr"))?
+        .ok_or(TokenError::MissingClaim("pg"))?
         .to_string();
 
     let exp = pay
@@ -311,7 +311,7 @@ fn claims_from_pay(pay: &coz::Pay) -> Result<Claims, TokenError> {
         .transpose()?;
 
     Ok(Claims {
-        pr,
+        pg,
         perms,
         exp,
         tmb,
@@ -441,10 +441,10 @@ mod tests {
         const GOLDEN: &str = concat!(
             r#"{"pay":{"alg":"Ed25519","now":1700000000,"#,
             r#""tmb":"aaMiqIXTeW8wfSkKY_ME3BDBAfz5t-qPLabapQ1TQfNzUFPOEp4_4KTGYRUHVbe18MOVsXusLb0qAWmmoV3Yvw","#,
-            r#""typ":"cyphr-server/auth/token","pr":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA","#,
+            r#""typ":"cyphr.me/user/login/bearer/create","pg":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA","#,
             r#""exp":1700000900,"perms":["read","write"],"#,
             r#""ltmb":"OzD0J6wdMqmN0aWu42RcWFRp1DzYJeQW8KYvXdrsLOrNV8Pva_ZpjrNtvsdqWsFL_zpZUDutAiTu4W5OdIL44A"},"#,
-            r#""sig":"rdOfTv9Wm11gKJ9YT6tbj1wNs1cB8aF_yQKPjahwc3iEccPcsZF8wjJf9cJb04LHkAqhZ8BD3kYuWJi5HjaVAQ"}"#,
+            r#""sig":"1SLPRqsv9liBekrZmtRYHGylWGLXhw3QOlWaeCya-agbJ0Dmkk4WhvfGjUkkysea5LdTYHPDP9C4Iqz2pd7SBg"}"#,
         );
 
         assert_eq!(token, GOLDEN);
@@ -454,7 +454,7 @@ mod tests {
         let claims = identity
             .verify_token(&token, 1_700_000_000)
             .expect("golden-vector token must verify");
-        assert_eq!(claims.pr, PR);
+        assert_eq!(claims.pg, PR);
     }
 
     /// Backs: the login key rides in the signed token (#162). The claim

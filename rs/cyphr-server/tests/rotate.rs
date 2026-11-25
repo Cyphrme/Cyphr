@@ -163,7 +163,7 @@ async fn pin(http: &Http) -> (PeerChain, String) {
 
 /// The server's signed `/tip` for its own chain.
 async fn own_tip(http: &Http, pg: &str) -> serde_json::Value {
-    http.get_json(&format!("/tip?pr={pg}")).await
+    http.get_json(&format!("/tip?pg={pg}")).await
 }
 
 fn key_file_pub(path: &Path) -> Vec<u8> {

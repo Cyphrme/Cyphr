@@ -12,6 +12,8 @@ pub mod inspect;
 pub mod io;
 /// Key management commands.
 pub mod key;
+/// Login: sign in to a service.
+pub mod login;
 /// Network commands: push, fetch.
 pub mod network;
 /// Device pairing: request and accept.

@@ -39,7 +39,7 @@ fn implicit_spellings(pool: &test_fixtures::Pool) -> (String, String) {
 }
 
 async fn tip(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value) {
-    let (status, body) = get_json(app, &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
+    let (status, body) = get_json(app, &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
     let payload = if status == StatusCode::OK {
         envelope_payload(&body).clone()
     } else {
@@ -345,7 +345,7 @@ fn pg_spellings(p: &cyphr::Principal) -> Vec<String> {
 }
 
 async fn patch(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value) {
-    let (status, body) = get_json(app, &format!("/patch?pr={}", id.replace(':', "%3A"))).await;
+    let (status, body) = get_json(app, &format!("/patch?pg={}", id.replace(':', "%3A"))).await;
     let payload = if status == StatusCode::OK {
         envelope_payload(&body).clone()
     } else {

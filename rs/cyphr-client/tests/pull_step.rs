@@ -161,7 +161,7 @@ impl Connector for Fake {
         let (path, q) = query(&request.target);
         self.served.lock().expect("served").push(path.to_owned());
         // Revokes are asked by key; every other read names the principal.
-        let asked = q.get("pr").map(String::as_str);
+        let asked = q.get("pg").map(String::as_str);
         assert_eq!(asked, (path != "/revoked").then_some(self.pg.as_str()));
         Ok(match path {
             "/branches" => {

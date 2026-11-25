@@ -170,7 +170,7 @@ async fn syncs_from_authority() {
 
     // Query witness node for principal tip after sync from authority
     let (witness_tip_status, witness_tip_json) =
-        get_json(witness_app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(witness_app.clone(), &format!("/tip?pg={principal_id}")).await;
 
     assert_eq!(
         witness_tip_status,
@@ -239,7 +239,7 @@ async fn rejects_unverifiable_delta() {
 
     // The witness syncs the valid history first.
     let (synced, synced_json) =
-        get_json(witness_app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(witness_app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(synced, StatusCode::OK, "initial sync: {synced_json:?}");
 
     // 2. Corrupt index/state on authority node so it presents an unverifiable state delta
@@ -276,7 +276,7 @@ async fn rejects_unverifiable_delta() {
 
     // The authority refuses to serve a history its record does not back.
     let (patch_status, patch_json) =
-        get_json(auth_app.clone(), &format!("/patch?pr={principal_id}")).await;
+        get_json(auth_app.clone(), &format!("/patch?pg={principal_id}")).await;
     assert_eq!(
         patch_status,
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -285,7 +285,7 @@ async fn rejects_unverifiable_delta() {
 
     // 4. Witness sync from authority MUST succeed for valid history but REJECT the corrupted delta
     let (witness_tip_status, witness_tip_json) =
-        get_json(witness_app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(witness_app.clone(), &format!("/tip?pg={principal_id}")).await;
 
     // Witness node MUST serve valid synced state, NOT the corrupted forged root
     assert_eq!(
@@ -391,7 +391,7 @@ async fn responses_carry_freshness() {
 
     // 2. GET /tip state read query on witness node MUST carry freshness metadata
     let (_tip_status, tip_json) =
-        get_json(witness_app.clone(), "/tip?pr=n2-freshness-principal").await;
+        get_json(witness_app.clone(), "/tip?pg=n2-freshness-principal").await;
     let tip_payload = common::envelope_payload(&tip_json);
     let tip_timestamp = tip_payload
         .get("now")
@@ -793,7 +793,7 @@ async fn sync_recovers_after_bad_entry() {
 
     // `/tip` still serves the synced state -- serving is the one claim
     // this HTTP round-trip is for.
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    let (status, json) = get_json(witness_app, &format!("/tip?pg={principal}")).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -884,7 +884,7 @@ async fn sync_recovers_after_unverifiable_entry() {
     cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
 
     // `/tip` still serves the synced state.
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    let (status, json) = get_json(witness_app, &format!("/tip?pg={principal}")).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -1015,7 +1015,7 @@ async fn genuine_entries_and_identity(
     // `from` omitted entirely (genesis onward) -- the pre-N4 fixture used
     // `from=0` for this under sequence-anchor semantics, which is no longer
     // a valid anchor (Zami #140: sequence is metadata, not a digest).
-    let (pstatus, patch) = get_json(app.clone(), &format!("/patch?pr={principal}")).await;
+    let (pstatus, patch) = get_json(app.clone(), &format!("/patch?pg={principal}")).await;
     assert_eq!(pstatus, StatusCode::OK, "authority /patch: {patch:?}");
     let entries = patch["payload"]["entries"].clone();
     assert!(
@@ -1023,7 +1023,7 @@ async fn genuine_entries_and_identity(
         "authority must serve at least the genesis entry: {patch:?}"
     );
 
-    let (tstatus, tip) = get_json(app, &format!("/tip?pr={principal}")).await;
+    let (tstatus, tip) = get_json(app, &format!("/tip?pg={principal}")).await;
     assert_eq!(tstatus, StatusCode::OK, "authority /tip: {tip:?}");
     assert_eq!(
         tip["statement"]["kind"], "signed",
@@ -1117,7 +1117,7 @@ async fn witness_rejects_malformed_report_at_ingestion() {
         witness_for(common::pinned_gossip(mock_url, &authority_state)).await;
     seed_server_chain(&witness_state, &authority_state).await;
 
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    let (status, json) = get_json(witness_app, &format!("/tip?pg={principal}")).await;
     assert_ne!(
         status,
         StatusCode::OK,
@@ -1166,7 +1166,7 @@ async fn authenticated_channel_accepts_genuine_authority() {
     // there (e.g. one that rejects every genesis-only sync).
     cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
 
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    let (status, json) = get_json(witness_app, &format!("/tip?pg={principal}")).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -1279,7 +1279,7 @@ async fn cross_principal_substitution_rejected() {
     let b_for_rewrite = principal_b.clone();
     let (proxy_url, _proxy) = spawn_query_rewriting_proxy(
         authority.url.clone(),
-        Arc::new(move |_q: Option<String>| Some(format!("pr={b_for_rewrite}"))),
+        Arc::new(move |_q: Option<String>| Some(format!("pg={b_for_rewrite}"))),
     )
     .await;
 
@@ -1287,7 +1287,7 @@ async fn cross_principal_substitution_rejected() {
     cyphr_server::gossip::fetch_from_peers(&witness_state, &principal_a).await;
 
     // A's own state must be untouched -- never advanced to B's chain.
-    let (status_a, json_a) = get_json(witness_app, &format!("/tip?pr={principal_a}")).await;
+    let (status_a, json_a) = get_json(witness_app, &format!("/tip?pg={principal_a}")).await;
     if status_a == StatusCode::OK {
         let payload = common::envelope_payload(&json_a);
         assert_eq!(
@@ -1341,7 +1341,7 @@ async fn decoy_top_entry_withholding_rejected() {
         cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
     }
 
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    let (status, json) = get_json(witness_app, &format!("/tip?pg={principal}")).await;
     let payload = common::envelope_payload(&json);
     assert_eq!(
         status,
@@ -1412,7 +1412,7 @@ async fn request_side_from_rewrite_withholding_rejected() {
     // K10's post-apply reconciliation (not the response body) to catch.
     let (tip_status, tip_json) = get_json(
         authority.instance.router.clone(),
-        &format!("/tip?pr={principal}"),
+        &format!("/tip?pg={principal}"),
     )
     .await;
     assert_eq!(tip_status, StatusCode::OK, "authority /tip: {tip_json:?}");
@@ -1430,7 +1430,7 @@ async fn request_side_from_rewrite_withholding_rejected() {
             let q = q.unwrap_or_default();
             let pr = q
                 .split('&')
-                .find(|kv| kv.starts_with("pr="))
+                .find(|kv| kv.starts_with("pg="))
                 .unwrap_or("")
                 .to_string();
             Some(format!("{pr}&from={current_tip_pr}"))
@@ -1745,7 +1745,7 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
     // The honest position-1 PR digest, read back from the canonical chain's
     // own `/patch` entries -- exactly what a witness anchored there holds.
     let (_, canonical_patch) =
-        get_json(auth_app.clone(), &format!("/patch?pr={principal_id}")).await;
+        get_json(auth_app.clone(), &format!("/patch?pg={principal_id}")).await;
     let canonical_entries = canonical_patch["payload"]["entries"]
         .as_array()
         .cloned()
@@ -1773,7 +1773,7 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
         assert_eq!(status, StatusCode::CREATED, "fork chain push: {resp:?}");
     }
     let (_, fork_patch) =
-        get_json(fork_app.clone(), &format!("/patch?pr={fork_principal_id}")).await;
+        get_json(fork_app.clone(), &format!("/patch?pg={fork_principal_id}")).await;
     let fork_entries = fork_patch["payload"]["entries"]
         .as_array()
         .cloned()
@@ -1792,7 +1792,7 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
     // POSITIVE CONTROL: the honest digest anchor resumes correctly.
     let (honest_status, honest_resp) = get_json(
         auth_app.clone(),
-        &format!("/patch?pr={principal_id}&from={honest_seq1_pr}"),
+        &format!("/patch?pg={principal_id}&from={honest_seq1_pr}"),
     )
     .await;
     assert_eq!(
@@ -1815,7 +1815,7 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
     // the same resume point.
     let (fork_anchor_status, fork_anchor_resp) = get_json(
         auth_app.clone(),
-        &format!("/patch?pr={principal_id}&from={fork_seq1_pr}"),
+        &format!("/patch?pg={principal_id}&from={fork_seq1_pr}"),
     )
     .await;
     let fork_anchor_tail = if fork_anchor_status == StatusCode::OK {
@@ -1860,7 +1860,7 @@ async fn sequence_only_anchor_does_not_resume() {
         assert_eq!(status, StatusCode::CREATED, "chain push: {resp:?}");
     }
 
-    let (_, patch_resp) = get_json(auth_app.clone(), &format!("/patch?pr={principal_id}")).await;
+    let (_, patch_resp) = get_json(auth_app.clone(), &format!("/patch?pg={principal_id}")).await;
     let entries = patch_resp["payload"]["entries"]
         .as_array()
         .cloned()
@@ -1872,7 +1872,7 @@ async fn sequence_only_anchor_does_not_resume() {
     // Digest anchor: MUST resume to exactly the one entry after position 1.
     let (digest_status, digest_resp) = get_json(
         auth_app.clone(),
-        &format!("/patch?pr={principal_id}&from={seq1_pr}"),
+        &format!("/patch?pg={principal_id}&from={seq1_pr}"),
     )
     .await;
     assert_eq!(digest_status, StatusCode::OK, "{digest_resp:?}");
@@ -1886,7 +1886,7 @@ async fn sequence_only_anchor_does_not_resume() {
     // resume outcome.
     let (seq_status, seq_resp) = get_json(
         auth_app.clone(),
-        &format!("/patch?pr={principal_id}&from={seq1_number}"),
+        &format!("/patch?pg={principal_id}&from={seq1_number}"),
     )
     .await;
     let seq_tail = if seq_status == StatusCode::OK {
@@ -1937,7 +1937,7 @@ async fn anchor_digest_rejects_malformed() {
     let malformed = "SHA-256:AAAAAAAAAAAAAAAAAAAAAA";
     let (status, resp) = get_json(
         auth_app.clone(),
-        &format!("/patch?pr={principal_id}&from={malformed}"),
+        &format!("/patch?pg={principal_id}&from={malformed}"),
     )
     .await;
 
@@ -1980,7 +1980,7 @@ async fn patch_bounded_to_is_unsigned_on_attestor() {
 
     let (unbounded_status, unbounded) = get_json(
         authority.instance.router.clone(),
-        &format!("/patch?pr={principal}"),
+        &format!("/patch?pg={principal}"),
     )
     .await;
     assert_eq!(unbounded_status, StatusCode::OK, "{unbounded:?}");
@@ -1992,7 +1992,7 @@ async fn patch_bounded_to_is_unsigned_on_attestor() {
 
     let (bounded_status, bounded) = get_json(
         authority.instance.router.clone(),
-        &format!("/patch?pr={principal}&to=0"),
+        &format!("/patch?pg={principal}&to=0"),
     )
     .await;
     assert_eq!(bounded_status, StatusCode::OK, "{bounded:?}");

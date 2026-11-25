@@ -200,7 +200,7 @@ async fn both_extended(alice: usize, thief: usize) {
                 let resp = h
                     .http
                     .get(format!("http://{}/tip", h.peer(peer).addr()))
-                    .query(&[("pr", pr.0.as_str())])
+                    .query(&[("pg", pr.0.as_str())])
                     .send()
                     .await;
                 let Ok(resp) = resp else { return Ok(false) };
@@ -262,7 +262,7 @@ async fn raw_tip(h: &Harness, peer: &str, pr: &Principal) -> Option<serde_json::
     let resp = h
         .http
         .get(format!("http://{}/tip", h.peer(peer).addr()))
-        .query(&[("pr", pr.0.as_str())])
+        .query(&[("pg", pr.0.as_str())])
         .send()
         .await
         .ok()?;

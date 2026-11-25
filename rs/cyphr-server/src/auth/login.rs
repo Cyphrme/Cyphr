@@ -3,8 +3,8 @@
 //!
 //! Two flows issue a bearer token on success: challenge-response (Option
 //! A) and timestamp-based (Option B). Both sign the same login payload
-//! shape and differ only in their replay defense -- a single-use nonce
-//! versus a bounded timestamp window.
+//! shape and differ only in their replay defense -- a single-use signed
+//! challenge versus a bounded timestamp window.
 //!
 //! # Both ends are named in the signature (ruling R6)
 //!
@@ -23,20 +23,18 @@
 //!   server verifies the `tmb` is an active key of *that* principal, never inferring the principal
 //!   from the `tmb`.
 //!
-//! These interim field choices are pending the spec author's review, so
-//! this module is the single place they live (ruling R6a): field names
-//! are constants and one [`parse_login`] does all extraction and
-//! validation, making a later rename a one-module edit.
+//! The wire contract (typs, claim names, build, parse, challenge) lives in
+//! `cyphr_client::login`, shared with the user's device and a relying
+//! party. This module adds what only the server decides: the audience it
+//! accepts, the principal's key and lifecycle checks, and the token it
+//! issues.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use axum::Json;
 use axum::extract::State;
-use coz::Thumbprint;
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr_client::login::{self, LoginRequest, ParsedRequest, SpentChallenges, VerifiedRequest};
 use cyphr_storage::engine::{EngineError, bare_digest};
-use rand::RngCore;
 use serde::Serialize;
 
 use super::{ServerIdentity, server_now};
@@ -45,35 +43,18 @@ use crate::config::MAX_SESSION_TTL_SECS;
 use crate::envelope::Envelope;
 use crate::error::AppError;
 
-/// Login-payload field names. The one home for the interim R6 binding
-/// fields (ruling R6a) -- neither handler reads these strings directly.
-pub mod field {
-    /// The claimed principal: its genesis identifier / current PR as a
-    /// tagged digest. Doubles as the storage id the server loads.
-    pub const PR: &str = "pr";
-    /// The service-issued 256-bit nonce (challenge-response flow only).
-    pub const CHALLENGE: &str = "challenge";
-    /// The Noise handshake hash (b64ut) of the session the login is sent
-    /// over, signed by the client so the login names its channel. Distinct
-    /// from the token's server-signed `cb`: a client never supplies that.
-    pub const CHANNEL: &str = "h";
+impl From<login::VerifyError> for LoginError {
+    fn from(err: login::VerifyError) -> Self {
+        match err {
+            login::VerifyError::MissingField(name) => Self::MissingField(name),
+            login::VerifyError::NotALogin => Self::NotALogin,
+            login::VerifyError::AudienceMissing => Self::AudienceMissing,
+            login::VerifyError::ChannelMalformed => Self::ChannelMismatch("`h` is not base64url"),
+            login::VerifyError::ChallengeInvalid => Self::ChallengeInvalid,
+            login::VerifyError::InvalidSignature => Self::InvalidSignature,
+        }
+    }
 }
-
-/// Suffix every login `typ` must end with; the text before it is the
-/// audience (the SPEC 7.3 authority segment). A login `typ` is thus
-/// `<audience>/cyphr/auth/login`.
-pub const LOGIN_TYP_SUFFIX: &str = "/cyphr/auth/login";
-
-/// Acceptance half-window, in seconds, for the timestamp-based flow
-/// (SPEC 17.2 Option B example: ±60s). A `now` further than this from
-/// server time is rejected.
-pub const TIMESTAMP_WINDOW_SECS: i64 = 60;
-
-/// How long an issued challenge remains usable.
-pub const CHALLENGE_TTL_SECS: i64 = 120;
-
-/// Challenge nonce length: 256 bits (SPEC 17.2 / 17.3).
-pub const CHALLENGE_BYTES: usize = 32;
 
 /// Why a login was rejected. Each variant is a distinct, testable
 /// failure -- an audience or principal mismatch is never conflated with a
@@ -88,7 +69,8 @@ pub enum LoginError {
     #[error("login payload is missing required field `{0}`")]
     MissingField(&'static str),
 
-    /// `typ` is absent or is not a login request (`.../cyphr/auth/login`).
+    /// `typ` is absent or is not a login request
+    /// (`<audience>/user/login/request/create`).
     #[error("login payload `typ` is not a login request")]
     NotALogin,
 
@@ -139,107 +121,38 @@ pub enum LoginError {
     ChannelMismatch(&'static str),
 }
 
-/// A parsed, audience-verified login payload. Field extraction and the
-/// audience check are already done; the signature, key-activity, and
-/// lifecycle checks are [`authorize_login`]'s job.
-#[derive(Debug)]
-pub struct ParsedLogin {
-    /// The signing key's thumbprint.
-    pub tmb: Thumbprint,
-    /// The signing algorithm named in the payload.
-    pub alg: String,
-    /// The client's asserted timestamp.
-    pub now: i64,
-    /// The claimed principal (storage id).
-    pub pr: String,
-    /// The challenge nonce, present iff this is the challenge-response
-    /// flow.
-    pub challenge: Option<String>,
-    /// The handshake hash the login commits to, present iff the client
-    /// signed it into the login (a login sent over Noise).
-    pub channel: Option<Vec<u8>>,
-    /// The exact payload bytes the signature is over.
-    pub pay_bytes: Vec<u8>,
-    /// The detached signature.
-    pub sig: Vec<u8>,
-}
-
-/// Parse and validate a login envelope's payload against `server_audience`
-/// -- the single owner of the login-payload schema (ruling R6a). Both
-/// flows call through here; neither extracts fields itself.
+/// Parse a login request against `server_audience`: the contract's
+/// extraction and shape checks ([`login::parse_request`]) plus the one thing
+/// only the server knows, that the audience is itself.
 ///
-/// This performs the checks that need only the payload and the server's
-/// own identity: shape, audience binding, and presence of required
-/// fields. It deliberately does *not* verify the signature or touch the
+/// This deliberately does *not* verify the signature or touch the
 /// principal -- those need the loaded principal's keyring and are
 /// [`authorize_login`]'s responsibility.
 pub fn parse_login(
-    coz_json: coz::CozJson,
+    request: &LoginRequest,
     server_audience: &str,
-) -> Result<ParsedLogin, LoginError> {
-    let pay_bytes = serde_json::to_vec(&coz_json.pay)?;
-    let sig = coz_json.sig;
-    let pay: coz::Pay = serde_json::from_value(coz_json.pay)?;
-
-    let typ = pay.typ.as_deref().ok_or(LoginError::NotALogin)?;
-    let audience = typ
-        .strip_suffix(LOGIN_TYP_SUFFIX)
-        .ok_or(LoginError::NotALogin)?;
-    if audience.is_empty() {
-        return Err(LoginError::AudienceMissing);
-    }
-    if audience != server_audience {
+) -> Result<ParsedRequest, LoginError> {
+    // A wrong-typed standard claim is a malformed body (400), not a missing
+    // field (401), whatever its value; the error never echoes the value.
+    serde_json::from_value::<coz::Pay>(request.coz.pay.clone())?;
+    let parsed = login::parse_request(request)?;
+    if parsed.audience != server_audience {
         return Err(LoginError::AudienceMismatch);
     }
-
-    let tmb = pay.tmb.clone().ok_or(LoginError::MissingField("tmb"))?;
-    let alg = pay.alg.clone().ok_or(LoginError::MissingField("alg"))?;
-    let now = pay.now.ok_or(LoginError::MissingField("now"))?;
-    let pr = pay
-        .extra
-        .get(field::PR)
-        .and_then(serde_json::Value::as_str)
-        .ok_or(LoginError::MissingField(field::PR))?
-        .to_string();
-    let challenge = pay
-        .extra
-        .get(field::CHALLENGE)
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-
-    let channel = pay
-        .extra
-        .get(field::CHANNEL)
-        .map(|v| {
-            v.as_str()
-                .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
-                .ok_or(LoginError::ChannelMismatch("`h` is not base64url"))
-        })
-        .transpose()?;
-
-    Ok(ParsedLogin {
-        tmb,
-        alg,
-        now,
-        pr,
-        challenge,
-        channel,
-        pay_bytes,
-        sig,
-    })
+    Ok(parsed)
 }
 
 /// Verify a parsed login against the *claimed* principal: the signing key
 /// belongs to and is active in that principal, its signature verifies,
 /// and the principal is Active.
 ///
-/// `principal` is the one named by `login.pr`, already loaded by the
+/// `principal` is the one named by `login.pg`, already loaded by the
 /// caller. The key is looked up in *this* principal only -- never a
 /// global `tmb` index -- which is what closes the key-sharing ambiguity.
 pub fn authorize_login<S: eml::Storage>(
-    login: &ParsedLogin,
+    login: ParsedRequest,
     principal: &cyphr::Principal<S>,
-) -> Result<(), LoginError> {
+) -> Result<VerifiedRequest, LoginError> {
     // The key must be one this claimed principal knows. `get_key` returns
     // active or revoked keys; an unknown key (active only in some *other*
     // principal that shares it) is not found here and is rejected.
@@ -248,9 +161,7 @@ pub fn authorize_login<S: eml::Storage>(
         .ok_or(LoginError::KeyNotActive)?;
 
     // Proof of possession: the signature must verify against that key.
-    if coz::verify_json(&login.pay_bytes, &login.sig, key.alg(), key.pub_key()) != Some(true) {
-        return Err(LoginError::InvalidSignature);
-    }
+    let login = login.verify(key.alg(), key.pub_key())?;
 
     // A present-but-revoked key proves possession but is no longer active.
     if !principal.is_key_active(&login.tmb) {
@@ -262,38 +173,17 @@ pub fn authorize_login<S: eml::Storage>(
         return Err(LoginError::PrincipalNotActive);
     }
 
-    Ok(())
+    Ok(login)
 }
 
-/// Whether a client timestamp is within `window_secs` of server time, in
-/// either direction (SPEC 17.2 Option B). `client_now` is attacker-controlled
-/// (the raw `now` field of a signed-but-unverified-at-call-time payload), so
-/// the distance is computed with `abs_diff` rather than a subtract-then-abs,
-/// which would overflow on an i64::MIN/MAX client value.
+/// In-memory store of redeemed challenges for the challenge-response flow.
 ///
-/// `window_secs` must be non-negative: `as u64` on a negative value wraps to
-/// a huge magnitude and fail-*opens* (accepts any client_now) instead of the
-/// fail-closed behavior a negative window implies. The only caller today
-/// passes the positive constant `TIMESTAMP_WINDOW_SECS`, but this is `pub`,
-/// so the precondition is asserted rather than left as an implicit contract.
-pub fn within_window(client_now: i64, server_now: i64, window_secs: i64) -> bool {
-    debug_assert!(
-        window_secs >= 0,
-        "within_window: window_secs must be non-negative"
-    );
-    server_now.abs_diff(client_now) <= window_secs as u64
-}
-
-/// In-memory single-use challenge store for the challenge-response flow.
-///
-/// A challenge is a 256-bit nonce mapped to its expiry. Consumption
-/// removes it, so a replay of a consumed nonce finds nothing; an expired
-/// nonce is rejected even if still present. There is no revocation story
-/// beyond expiry (ruling R8's spirit): the store is per-process and
-/// disposable.
+/// A challenge is a Coz the server signed, so it needs no issuance record:
+/// only the nonces already redeemed are kept, each until its challenge
+/// could no longer verify. The store is per-process and disposable.
 #[derive(Debug, Default)]
 pub struct ChallengeStore {
-    entries: Mutex<HashMap<String, i64>>,
+    spent: Mutex<SpentChallenges>,
 }
 
 impl ChallengeStore {
@@ -302,40 +192,23 @@ impl ChallengeStore {
         Self::default()
     }
 
-    /// Issue a new single-use challenge expiring [`CHALLENGE_TTL_SECS`]
-    /// after `now`. Opportunistically drops already-expired entries so the
-    /// map does not grow without bound.
-    pub fn issue(&self, now: i64) -> String {
-        let mut buf = [0u8; CHALLENGE_BYTES];
-        rand::rngs::OsRng.fill_bytes(&mut buf);
-        let challenge = Base64UrlUnpadded::encode_string(&buf);
-
-        let mut entries = self.lock();
-        entries.retain(|_, &mut exp| exp > now);
-        entries.insert(challenge.clone(), now + CHALLENGE_TTL_SECS);
-        challenge
-    }
-
-    /// Consume a challenge: valid exactly once, and only before it
-    /// expires. Any subsequent or expired presentation is
-    /// [`LoginError::ChallengeInvalid`].
-    pub fn consume(&self, challenge: &str, now: i64) -> Result<(), LoginError> {
-        let mut entries = self.lock();
-        match entries.remove(challenge) {
-            Some(exp) if exp > now => Ok(()),
-            _ => Err(LoginError::ChallengeInvalid),
-        }
-    }
-
-    /// Lock the map, recovering rather than propagating a poisoned lock:
-    /// the map holds only nonces and expiries, so a panic mid-mutation
-    /// leaves nothing unsafe to read, and a challenge store that panics
-    /// every request after one unrelated panic is worse than one that
-    /// keeps working.
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, i64>> {
-        self.entries
+    /// Redeem the challenge `request` returns: the server's own signed
+    /// challenge for this audience, unexpired, matching the request's
+    /// nonce, and not redeemed before.
+    pub fn redeem(
+        &self,
+        identity: &ServerIdentity,
+        request: &VerifiedRequest,
+        now: i64,
+    ) -> Result<(), LoginError> {
+        // The set holds only nonces and expiries, so a panic mid-mutation
+        // leaves nothing unsafe to read; a store that panics every request
+        // after one unrelated panic is worse than one that keeps working.
+        let mut spent = self
+            .spent
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(login::redeem_challenge(identity, request, &mut spent, now)?)
     }
 }
 
@@ -346,9 +219,9 @@ impl ChallengeStore {
 /// Response for `POST /auth/challenge`.
 #[derive(Debug, Serialize)]
 pub struct ChallengeResponse {
-    /// A single-use 256-bit nonce (b64ut) to sign in the
-    /// challenge-response flow.
-    pub challenge: String,
+    /// A Coz the server signed over a single-use 256-bit nonce. The signer
+    /// returns it, whole, inside the login it signs.
+    pub challenge: coz::CozJson,
 }
 
 /// Response for a successful `POST /auth/login`.
@@ -369,14 +242,6 @@ impl From<LoginError> for AppError {
             _ => AppError::unauthorized(err.to_string()),
         }
     }
-}
-
-/// Permissions a successful login grants. There is no permissions model
-/// in v1 (route-level enforcement is a later concern), so a login
-/// authorizes the principal for the baseline read/write surface; a real
-/// policy will refine this.
-fn default_login_perms() -> Vec<String> {
-    vec!["read".to_string(), "write".to_string()]
 }
 
 /// The explicit, honest rejection a keyless server (no configured signing
@@ -445,8 +310,9 @@ fn map_load_error(err: EngineError) -> AppError {
 pub async fn challenge(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Envelope<ChallengeResponse>>, AppError> {
-    login_capability(&state)?;
-    let challenge = state.challenges.issue(server_now());
+    let (identity, audience) = login_capability(&state)?;
+    let challenge = login::issue_challenge(identity, audience, server_now())
+        .map_err(|e| AppError::internal(e.to_string()))?;
     Ok(Json(Envelope::unsigned(ChallengeResponse { challenge })))
 }
 
@@ -464,7 +330,7 @@ pub async fn login(
 ) -> Result<Json<Envelope<LoginResponse>>, AppError> {
     let (identity, audience) = login_capability(&state)?;
 
-    let coz_json: coz::CozJson = serde_json::from_str(&body).map_err(|e| {
+    let request: LoginRequest = serde_json::from_str(&body).map_err(|e| {
         AppError::bad_request(format!(
             "failed to parse login body as JSON ({})",
             super::json_fault(&e)
@@ -472,21 +338,21 @@ pub async fn login(
     })?;
 
     // One schema parse + audience binding for both flows (ruling R6a).
-    let parsed = parse_login(coz_json, audience)?;
+    let parsed = parse_login(&request, audience)?;
 
     // Read the *claimed* principal and gate on it: key active in it, and
     // it is Active. The verified state at its tip, from the same engine
     // entry the write path uses.
     let principal = state
         .engine
-        .at_tip(&parsed.pr)
+        .at_tip(&parsed.pg)
         .await
         .map_err(map_load_error)?
         .ok_or_else(|| AppError::unauthorized("login: unknown principal"))?;
-    authorize_login(&parsed, &principal)?;
+    let parsed = authorize_login(parsed, &principal)?;
     let canonical_id = state
         .engine
-        .canonical_principal_id(&parsed.pr)
+        .canonical_principal_id(&parsed.pg)
         .await
         .map_err(map_load_error)?;
 
@@ -531,24 +397,22 @@ pub async fn login(
 
     // Replay defense: the two flows diverge only here.
     let now = server_now();
-    match &parsed.challenge {
-        Some(challenge) => state.challenges.consume(challenge, now)?,
-        None => {
-            if !within_window(parsed.now, now, TIMESTAMP_WINDOW_SECS) {
-                return Err(LoginError::TimestampOutOfWindow.into());
-            }
-        },
+    if parsed.nonce.is_some() || parsed.challenge.is_some() {
+        state.challenges.redeem(identity, &parsed, now)?;
+    } else if !parsed.in_window(now) {
+        return Err(LoginError::TimestampOutOfWindow.into());
     }
 
     // The subject is the principal's one canonical id, never the spelling
     // the client typed: a relying party keys accounts on this, and two
     // spellings of one identity must not yield two accounts.
     let subject = bare_digest(&canonical_id).to_string();
+    let perms = state.login_policy.perms(&subject, &parsed.tmb);
     let token = identity
         .issue_login_token(
             subject,
             &parsed.tmb,
-            default_login_perms(),
+            perms,
             now,
             state.config.session_ttl_secs.clamp(1, MAX_SESSION_TTL_SECS),
             // Bound to the channel the login committed to; over HTTP (a
@@ -565,7 +429,7 @@ pub async fn login(
 #[derive(Debug, Serialize)]
 pub struct SessionResponse {
     /// The session's principal.
-    pub pr: String,
+    pub pg: String,
     /// The key that opened the session, which it stands or falls with.
     pub key: String,
     /// `noise-handshake-hash` for a session bound to the Noise channel that
@@ -589,15 +453,13 @@ pub async fn session(
     peer: Option<axum::Extension<crate::transport::AuthenticatedPeer>>,
     body: String,
 ) -> Result<Json<Envelope<SessionResponse>>, AppError> {
-    let (identity, _) = login_capability(&state)?;
-    let claims = identity
-        .verify_token(body.trim(), server_now())
-        .map_err(|e| AppError::unauthorized(format!("bearer token rejected: {e}")))?;
-    super::middleware::check_channel(
-        &claims,
+    login_capability(&state)?;
+    let claims = super::middleware::authenticate(
+        &state,
+        body.trim(),
         peer.as_ref().map(|p| p.0.handshake_hash.as_slice()),
-    )?;
-    super::middleware::check_session_key(&state.engine, &state.observations, &claims).await?;
+    )
+    .await?;
     let key = claims
         .login_tmb
         .clone()
@@ -608,63 +470,9 @@ pub async fn session(
         "key"
     };
     Ok(Json(Envelope::unsigned(SessionResponse {
-        pr: claims.pr,
+        pg: claims.pg,
         key,
         binding,
         exp: claims.exp,
     })))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // --- within_window ---
-
-    proptest::proptest! {
-        /// Backs: SPEC 17.2 timestamp window. For any signed `now` pair (extremes
-        /// included, so an attacker-chosen `now` can never overflow) the window
-        /// is exactly `|client - server| <= window`, computed here in i128.
-        /// Property: e2e cannot place `now` on the one-second boundary or at
-        /// `i64::MIN`.
-        #[test]
-        fn window_is_exactly_the_absolute_difference(
-            client in proptest::prelude::any::<i64>(),
-            server in proptest::prelude::any::<i64>(),
-            window in 0i64..=i64::MAX,
-        ) {
-            let diff = (i128::from(server) - i128::from(client)).abs();
-            proptest::prop_assert_eq!(
-                within_window(client, server, window),
-                diff <= i128::from(window)
-            );
-        }
-
-        /// The edge the generator rarely lands on: one second either side of
-        /// the production window.
-        #[test]
-        fn window_edges_at_the_production_constant(server in -1_000_000i64..1_000_000) {
-            let w = TIMESTAMP_WINDOW_SECS;
-            proptest::prop_assert!(within_window(server - w, server, w));
-            proptest::prop_assert!(within_window(server + w, server, w));
-            proptest::prop_assert!(!within_window(server - w - 1, server, w));
-            proptest::prop_assert!(!within_window(server + w + 1, server, w));
-        }
-    }
-
-    // --- ChallengeStore ---
-
-    /// Backs: SPEC 17.2 challenge freshness - an expired challenge cannot be redeemed.
-    /// Unit: e2e cannot advance the store clock.
-    #[test]
-    fn challenge_expires() {
-        let store = ChallengeStore::new();
-        let c = store.issue(1000);
-        // now is past the TTL.
-        let result = store.consume(&c, 1000 + CHALLENGE_TTL_SECS + 1);
-        assert!(
-            matches!(result, Err(LoginError::ChallengeInvalid)),
-            "an expired challenge must be rejected, got: {result:?}"
-        );
-    }
 }

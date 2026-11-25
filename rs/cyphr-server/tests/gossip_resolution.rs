@@ -98,7 +98,7 @@ async fn push(app: &axum::Router, id: &str, bundle: &WireBundle) -> StatusCode {
 
 async fn tip_pr(app: &axum::Router, id: &str) -> String {
     let (status, body) =
-        get_json(app.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
+        get_json(app.clone(), &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     envelope_payload(&body)["pr"]
         .as_str()
@@ -110,7 +110,7 @@ async fn tip_pr(app: &axum::Router, id: &str) -> String {
 /// single tip then), by commit id.
 async fn error_heads(app: &axum::Router, id: &str) -> Vec<String> {
     let (status, body) =
-        get_json(app.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
+        get_json(app.clone(), &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let payload = envelope_payload(&body);
     assert_eq!(payload["state"], "error", "{body:?}");

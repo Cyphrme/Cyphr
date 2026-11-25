@@ -326,7 +326,7 @@ pub enum Commands {
     /// the user moves it up, here or with their `--upgrade` flag. Refused on
     /// an identity that already has a commit.
     Upgrade {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
     },
@@ -354,14 +354,14 @@ pub enum Commands {
 
     /// Display identity state
     Inspect {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
     },
 
     /// Export identity to JSONL file
     Export {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -384,7 +384,7 @@ pub enum Commands {
     /// chooses: `cyphr fetch --trust-remote` adopts the peer's, or
     /// `--assert-local` pushes the local commits as a fork.
     Push {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -398,6 +398,52 @@ pub enum Commands {
         assert_local: bool,
     },
 
+    /// Sign in to a service: sign a login request with a key of an identity
+    ///
+    /// Signs `{alg, now, pg, tmb, typ}` with the named key, for the service
+    /// named by `--audience` (SPEC 17.2). With `--peer` the login is posted
+    /// to that Cyphr server's `/auth/login` and the bearer token it issues
+    /// is printed; with `--sign-only` the signed login is printed for any
+    /// other service to take. A login carries no challenge unless asked
+    /// (`--challenge`): a timestamp inside the service's window is enough
+    /// for most uses. The principal's `pg` and the key's `tmb` are the same
+    /// at every service, so accounts can be correlated across sites. To
+    /// sign out, delete the token.
+    #[command(group(clap::ArgGroup::new("delivery").required(true).multiple(false).args(["peer", "sign_only"])))]
+    Login {
+        /// Principal Genesis (base64url)
+        #[arg(long, allow_hyphen_values = true)]
+        identity: String,
+
+        /// Thumbprint of the key to sign with
+        #[arg(long, allow_hyphen_values = true)]
+        signer: String,
+
+        /// The service signed in to: the authority segment of the login
+        /// `typ`, which the service accepts only when it is its own name
+        #[arg(long)]
+        audience: String,
+
+        /// Post the login to this peer (e.g., http://127.0.0.1:8080) and
+        /// print the token
+        #[arg(long)]
+        peer: Option<String>,
+
+        /// Print the signed login instead of sending it
+        #[arg(long)]
+        sign_only: bool,
+
+        /// A challenge the service signed (the JSON it served), answered
+        /// instead of a timestamp
+        #[arg(long)]
+        challenge: Option<std::path::PathBuf>,
+
+        /// Handshake hash (base64url) of the authenticated channel the
+        /// login will be sent over, signed into the login
+        #[arg(long, allow_hyphen_values = true)]
+        channel_hash: Option<String>,
+    },
+
     /// Resolve a fork by a proof of possession of the local tip
     ///
     /// Signs a `resync/create` over this store's tip with a key of the
@@ -407,7 +453,7 @@ pub enum Commands {
     /// a proof on a second branch leaves it in Error for good, and recovery
     /// is the only other exit.
     Resync {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -433,7 +479,7 @@ pub enum Commands {
     /// adopted history accepts them as signed; any other is dropped and
     /// listed under `dropped_actions`, never re-signed.
     Fetch {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -452,7 +498,7 @@ pub enum Commands {
     /// The answer states how old the view is and whether a peer reported a
     /// newer tip; it never claims the view is current.
     Verify {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -476,7 +522,7 @@ pub enum Commands {
 
     /// Run `verify` on a timer, printing each round's verdict
     Watch {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -508,7 +554,7 @@ pub enum Commands {
     /// Run `verify` and print the evidence held (both branches of a fork,
     /// the resolving key, the naked revokes) in full
     Audit {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -536,7 +582,7 @@ pub enum Commands {
     /// `--clear` returns to no branch chosen. It is never stored with
     /// commits or sent to a peer, and `verify` still reports Error.
     Recover {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -572,7 +618,7 @@ pub enum GossipCommands {
     /// Write the verified record, the other branch of each fork held and
     /// the naked revokes held to a bundle file
     Export {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -584,7 +630,7 @@ pub enum GossipCommands {
     /// Replay a bundle file into the local store, as if each chain in it
     /// were a peer: nothing in it is believed except by replay
     Import {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -615,7 +661,7 @@ pub enum KeyCommands {
 
     /// Add a key to an identity
     Add {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -635,7 +681,7 @@ pub enum KeyCommands {
 
     /// Remove a key from an identity without marking it compromised (SPEC 6.2)
     Delete {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -650,7 +696,7 @@ pub enum KeyCommands {
 
     /// Swap the signing key for a new one in one commit (SPEC 6.3)
     Replace {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -687,7 +733,7 @@ pub enum KeyCommands {
 
     /// Revoke a key from an identity, by a commit signed by that key
     Revoke {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -706,7 +752,7 @@ pub enum KeyCommands {
     /// request carries only its public half, signed by the key itself as a
     /// proof of possession. Carry it to a device already in the principal.
     Request {
-        /// Principal Root (base64url) the request is for
+        /// Principal Genesis (base64url) the request is for
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -728,7 +774,7 @@ pub enum KeyCommands {
     /// Refused unless the request's proof of possession verifies, it names
     /// this identity, and its `now` is within the window.
     Accept {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -747,7 +793,7 @@ pub enum KeyCommands {
 
     /// List keys (from keystore if no identity, from identity if provided)
     List {
-        /// Principal Root (base64url) - if omitted, lists keystore keys
+        /// Principal Genesis (base64url) - if omitted, lists keystore keys
         #[arg(long, allow_hyphen_values = true)]
         identity: Option<String>,
     },
@@ -761,7 +807,7 @@ pub enum DataCommands {
     /// The action enters DT only; DR enters PR when `data commit` signs a
     /// `ds/create`. `push` sends recorded actions ahead of the commits.
     Action {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -789,7 +835,7 @@ pub enum DataCommands {
 
     /// Sign a `ds/create` over the local DT; its `id` becomes DR in PR
     Commit {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -805,7 +851,7 @@ pub enum DataCommands {
 
     /// Send a signed action (the output of `data action`) to a peer
     Submit {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
@@ -824,14 +870,14 @@ pub enum DataCommands {
 pub enum TxCommands {
     /// List cozies for an identity
     List {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
     },
 
     /// Verify coz chain integrity
     Verify {
-        /// Principal Root (base64url)
+        /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
         identity: String,
     },

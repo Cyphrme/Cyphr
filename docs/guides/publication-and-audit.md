@@ -168,7 +168,7 @@ done
         "now": 1795229090,
         "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
         "typ": "cyphr-server/receipt/commit",
-        "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+        "pg": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
         "sequence": 0,
         "commit_id": "SHA-256:eVZPpSYrDKvm8x-O1SyyvzXzqWJ6o3FSCIQloYP325Q",
         "roots": {
@@ -337,7 +337,7 @@ below reports in full, so the numbers here and there match on purpose:
         "now": 1795229120,
         "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
         "typ": "cyphr-server/receipt/commit",
-        "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+        "pg": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
         "sequence": 2,
         "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
         "roots": {
@@ -361,7 +361,7 @@ content is not in.
 The tip agrees that nothing happened:
 
 ```sh
-curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.payload
+curl -s "http://127.0.0.1:4101/tip?pg=$PR" | jq -c '.payload
   | {commit_count, commit_id, last_updated}'
 ```
 
@@ -373,7 +373,7 @@ curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.payload
 }
 ```
 
-Unchanged, `last_updated` included. `GET /patch?pr=$PR` returns the same
+Unchanged, `last_updated` included. `GET /patch?pg=$PR` returns the same
 three entries it did before. And nobody can fetch the content back — the
 content-addressed lookup does not find it:
 
@@ -452,9 +452,9 @@ a failure.
 | Request                      | Statement                                   |
 | :--------------------------- | :------------------------------------------ |
 | `POST /push`                 | `cyphr-server/receipt/commit`               |
-| `GET /tip?pr=…`              | `cyphr-server/receipt/tip`                  |
-| `GET /patch?pr=…`            | `cyphr-server/receipt/tip`, over the tip    |
-| `GET /patch?pr=…&to=…`       | Unsigned                                    |
+| `GET /tip?pg=…`              | `cyphr-server/receipt/tip`                  |
+| `GET /patch?pg=…`            | `cyphr-server/receipt/tip`, over the tip    |
+| `GET /patch?pg=…&to=…`       | Unsigned                                    |
 | `GET /server`                | Unsigned                                    |
 | `POST /auth/login`           | Unsigned; the bearer token inside is signed |
 | Anything on a keyless server | Unsigned                                    |
@@ -469,8 +469,8 @@ over it. Anchor it at the tip you already hold and you get a freshness
 statement with no payload:
 
 ```sh
-TIPPR=$(curl -s "http://127.0.0.1:4100/tip?pr=$PR" | jq -r .payload.pr)
-curl -s "http://127.0.0.1:4100/patch?pr=$PR&from=$TIPPR" \
+TIPPR=$(curl -s "http://127.0.0.1:4100/tip?pg=$PR" | jq -r .payload.pr)
+curl -s "http://127.0.0.1:4100/patch?pg=$PR&from=$TIPPR" \
   | jq -c '{n: (.payload.entries|length), kind: .statement.kind}'
 ```
 
@@ -483,11 +483,11 @@ server says the principal is.
 
 A server is an ordinary principal in its own store, so its own chain
 answers like any other's. `GET /tip` with the server's `pg` as `pr` returns
-a signed tip report, and `GET /patch?pr=<pg>` returns its chain with a
+a signed tip report, and `GET /patch?pg=<pg>` returns its chain with a
 signed tip report over it:
 
 ```sh
-curl -s "http://127.0.0.1:4100/tip?pr=SHA-512:lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q" | jq -c '.payload | {commit_count, commit_id}'
+curl -s "http://127.0.0.1:4100/tip?pg=SHA-512:lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q" | jq -c '.payload | {commit_count, commit_id}'
 ```
 
 ```json
@@ -512,7 +512,7 @@ language.
 1. Pin `pg` and the `genesis` object from `GET /server`.
 2. Re-derive the PG from that genesis key alone. If it does not match the
    pinned `pg`, stop — the published key does not back the identity.
-3. Fetch the server's own chain: `GET /patch?pr=<pg>`. The tagged form
+3. Fetch the server's own chain: `GET /patch?pg=<pg>`. The tagged form
    and the bare digest after the `SHA-512:` label both work. The response
    carries a signed tip report over the chain, which is the server vouching
    for itself; do not rely on it for this check.
@@ -594,7 +594,7 @@ Two things, and nothing else:
   names its signing key by thumbprint; the chain is what proves that
   thumbprint was the server's at that moment. Two receipts a rotation
   apart need the segment spanning both keys, which is why the whole
-  server chain from `GET /patch?pr=<pg>` is the simple thing to keep.
+  server chain from `GET /patch?pg=<pg>` is the simple thing to keep.
 
 Nothing needs the server's cooperation afterwards, and nothing needs a
 timestamp beyond what the receipts already carry.
@@ -656,8 +656,8 @@ curl -s -X POST http://127.0.0.1:4101/push \
 Now ask each server where the principal is:
 
 ```sh
-curl -s "http://127.0.0.1:4100/tip?pr=$PR" | jq -c '.statement.coz.pay'
-curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.statement.coz.pay'
+curl -s "http://127.0.0.1:4100/tip?pg=$PR" | jq -c '.statement.coz.pay'
+curl -s "http://127.0.0.1:4101/tip?pg=$PR" | jq -c '.statement.coz.pay'
 ```
 
 ```json
@@ -666,7 +666,7 @@ curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.statement.coz.pay'
   "now": 1795229090,
   "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "typ": "cyphr-server/receipt/tip",
-  "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+  "pg": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "sequence": 2,
   "commit_id": "SHA-256:82H2RINvYeqEghpLkyeg9rOOY4LWkUk9glEs8Cm--0Y",
   "roots": {
@@ -686,7 +686,7 @@ curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.statement.coz.pay'
   "now": 1795229090,
   "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "typ": "cyphr-server/receipt/tip",
-  "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+  "pg": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "sequence": 2,
   "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
   "roots": {
@@ -700,7 +700,7 @@ curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.statement.coz.pay'
 }
 ```
 
-Same `tmb`, same `pr`, same `sequence`, different `commit_id` and
+Same `tmb`, same `pg`, same `sequence`, different `commit_id` and
 different roots. Two statements one key signed, about one chain position,
 that cannot both be true.
 
@@ -747,7 +747,7 @@ function checkEquivocation(a, aPub, b, bPub) {
   if (a.pay.typ !== TIP || b.pay.typ !== TIP) return "WrongTyp";
   if (!verifyReceipt(a, aPub) || !verifyReceipt(b, bPub))
     return "InvalidSignature";
-  if (a.pay.pr !== b.pay.pr) return "DifferentPrincipal";
+  if (a.pay.pg !== b.pay.pg) return "DifferentPrincipal";
   if (a.pay.sequence !== b.pay.sequence) return "DifferentSequence";
   if (
     a.pay.commit_id === b.pay.commit_id &&
@@ -823,7 +823,7 @@ an unclosed question, and no shipped tool closes it.
 [arch-behind-is-not-fork](../architecture/equivocation-detection.md#arch-behind-is-not-fork)
 states how it closes. Take the report with the higher `sequence`, `n`,
 and the one with the lower, `m`. Fetch the principal's chain from the
-higher-sequence server — `GET /patch?pr=<pr>`, naming the principal the
+higher-sequence server — `GET /patch?pg=<pr>`, naming the principal the
 two reports disagree about — and replay it into an engine of your own,
 the way the previous section replays a server's chain. Check that the
 replayed chain reaches the higher report's signed roots at `n`, then
@@ -921,7 +921,7 @@ fork point, and both heads, and signs that as a `cyphr-server/receipt/held`
 statement:
 
 ```sh
-curl -s "http://127.0.0.1:4100/tip?pr=$PR" | jq '.payload'
+curl -s "http://127.0.0.1:4100/tip?pg=$PR" | jq '.payload'
 ```
 
 ```json
@@ -948,8 +948,8 @@ curl -s "http://127.0.0.1:4100/tip?pr=$PR" | jq '.payload'
 }
 ```
 
-`GET /branches?pr=$PR` lists the two heads and marks the one the server
-still treats as canonical, and `GET /evidence?pr=$PR` returns both
+`GET /branches?pg=$PR` lists the two heads and marks the one the server
+still treats as canonical, and `GET /evidence?pg=$PR` returns both
 branches whole. So a single server that is shown both branches does notice
 the fork and says so. What it does not do is tell any other server, or
 compare itself with one: the two servers of this guide still disagree with
@@ -970,7 +970,7 @@ and each server you are willing to ask, fetch the tip, keep the receipt,
 and compare across servers.
 
 No shipped command runs this loop. The fetch step is
-`curl -s "<url>/tip?pr=<pr>"`, saving the response body byte-exact so
+`curl -s "<url>/tip?pg=<pr>"`, saving the response body byte-exact so
 the receipt under `statement.coz` can be checked later. Anchoring at the
 tip you already hold (the `from=` form [shown
 earlier](#where-receipts-come-from)) makes the steady-state request

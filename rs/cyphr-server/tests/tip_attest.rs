@@ -73,7 +73,7 @@ async fn tip_read_during_pushes_never_500s() {
                 let mut bad = Vec::new();
                 let mut seen = Vec::new();
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    let (status, body) = get_json(app.clone(), &format!("/tip?pr={id}")).await;
+                    let (status, body) = get_json(app.clone(), &format!("/tip?pg={id}")).await;
                     if status != StatusCode::OK {
                         bad.push((status, body));
                         continue;
@@ -91,7 +91,7 @@ async fn tip_read_during_pushes_never_500s() {
 
     // The roots each push answered, by the commit it admitted.
     let mut admitted = std::collections::HashMap::new();
-    let (_, genesis) = get_json(app.clone(), &format!("/tip?pr={id}")).await;
+    let (_, genesis) = get_json(app.clone(), &format!("/tip?pg={id}")).await;
     let genesis = &genesis["payload"];
     admitted.insert(
         genesis["commit_id"].as_str().expect("commit_id").to_owned(),
@@ -123,7 +123,7 @@ async fn tip_read_during_pushes_never_500s() {
     }
     assert!(reads > 0);
 
-    let (status, tip) = get_json(app, &format!("/tip?pr={id}")).await;
+    let (status, tip) = get_json(app, &format!("/tip?pg={id}")).await;
     assert_eq!(status, StatusCode::OK, "{tip:?}");
     assert_eq!(tip["statement"]["kind"], "signed", "{tip:?}");
 }

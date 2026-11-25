@@ -352,9 +352,9 @@ async fn a_request_reads_no_more_of_the_index_as_history_grows() {
         let id = w.id.replace(':', "%3A");
         let before = w.peer.engine.chain_rows_read();
         for route in [
-            format!("/tip?pr={id}"),
-            format!("/proof?pr={id}&size={}&claim=extends:1", bundles.len() + 1),
-            format!("/proof?pr={id}&size={}&claim=member:0", bundles.len() + 1),
+            format!("/tip?pg={id}"),
+            format!("/proof?pg={id}&size={}&claim=extends:1", bundles.len() + 1),
+            format!("/proof?pg={id}&size={}&claim=member:0", bundles.len() + 1),
         ] {
             let (status, body) = get_json(app.clone(), &route).await;
             assert_eq!(status, StatusCode::OK, "{route}: {body:?}");
@@ -559,8 +559,8 @@ async fn an_unkept_principal_is_replayed_once_for_its_proofs() {
     let before = again.engine.commits_replayed();
     for _ in 0..3 {
         for route in [
-            format!("/proof?pr={q}&size=4&claim=extends:2"),
-            format!("/proof?pr={q}&size=4&claim=member:1"),
+            format!("/proof?pg={q}&size=4&claim=extends:2"),
+            format!("/proof?pg={q}&size=4&claim=member:1"),
         ] {
             let (status, body) = get_json(app.clone(), &route).await;
             assert_eq!(status, StatusCode::OK, "{route}: {body:?}");
@@ -628,15 +628,15 @@ async fn the_proof_request_is_bounded() {
     ] {
         let (status, body) = get_json(
             app.clone(),
-            &format!("/proof?pr={id}&size={size}&claim={claim}"),
+            &format!("/proof?pg={id}&size={size}&claim={claim}"),
         )
         .await;
         assert_eq!(status, want, "claim={claim} size={size}: {body:?}");
     }
-    let (status, _) = get_json(app.clone(), "/proof?pr=nobody&size=1&claim=member:0").await;
+    let (status, _) = get_json(app.clone(), "/proof?pg=nobody&size=1&claim=member:0").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    let (_, body) = get_json(app, &format!("/tip?pr={id}")).await;
+    let (_, body) = get_json(app, &format!("/tip?pg={id}")).await;
     let payload = envelope_payload(&body);
     assert_eq!(payload["root"]["size"], 3, "{body:?}");
 }
@@ -651,11 +651,11 @@ async fn a_proof_from_a_kept_principal_replays_nothing() {
     let before = w.peer.engine.commits_replayed();
     let (status, _) = get_json(
         app.clone(),
-        &format!("/proof?pr={id}&size=4&claim=extends:2"),
+        &format!("/proof?pg={id}&size=4&claim=extends:2"),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = get_json(app, &format!("/proof?pr={id}&size=4&claim=member:1")).await;
+    let (status, _) = get_json(app, &format!("/proof?pg={id}&size=4&claim=member:1")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(w.peer.engine.commits_replayed(), before);
 }

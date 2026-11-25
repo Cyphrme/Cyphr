@@ -13,6 +13,7 @@
 
 pub mod login;
 pub mod middleware;
+pub mod policy;
 pub mod principal;
 pub mod token;
 
@@ -215,6 +216,25 @@ impl ServerIdentity {
     }
 }
 
+/// The server signs login challenges with its own key.
+impl cyphr_client::login::Issuer for ServerIdentity {
+    fn alg(&self) -> &str {
+        self.alg.name()
+    }
+
+    fn pub_key(&self) -> &[u8] {
+        &self.pub_bytes
+    }
+
+    fn sign(&self, pay_bytes: &[u8]) -> Result<Vec<u8>, cyphr_client::login::IssuerError> {
+        ServerIdentity::sign(self, pay_bytes)
+            .map(|(sig, _)| sig)
+            .ok_or_else(|| {
+                cyphr_client::login::IssuerError("coz rejected the server's signing key".into())
+            })
+    }
+}
+
 /// The staging path for a key replacement: `<path>.next`, beside the key
 /// file so the final rename never crosses a filesystem.
 pub fn next_key_path(path: &Path) -> PathBuf {
@@ -378,9 +398,9 @@ mod tests {
     /// wrong-typed payload field is a typed refusal that does not echo it.
     #[test]
     fn malformed_login_payload_does_not_echo_values() {
-        let coz_json: coz::CozJson =
+        let request: cyphr_client::login::LoginRequest =
             serde_json::from_str(r#"{"pay":{"tmb":424242424242},"sig":"AAAA"}"#).expect("shape");
-        let login = login::parse_login(coz_json, "cyphr.me").expect_err("tmb must be a string");
+        let login = login::parse_login(&request, "cyphr.me").expect_err("tmb must be a string");
         assert!(matches!(login, login::LoginError::Malformed(_)));
         assert!(!login.to_string().contains("424242424242"), "{login}");
     }

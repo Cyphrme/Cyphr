@@ -43,6 +43,10 @@ cd rs && cargo metadata --no-deps --format-version 1 \
 Dependency crates stay cached, so this costs a rebuild of the workspace
 only.
 
+Concurrent builds into the shared target replace the `debug/cyphr` and
+`debug/cyphr-server` binaries that CLI and scenario tests run by path, so only
+one build or test run may use the target at a time.
+
 ## Testing policy
 
 Root R13 governs. nrd: "We want meaningful property, metamorphic and

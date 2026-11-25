@@ -33,6 +33,14 @@ pub struct Device {
 }
 
 impl Device {
+    /// Write `contents` to a file in this device's directory, as a file a
+    /// person would have saved, and return its path.
+    pub fn save(&self, name: &str, contents: &[u8]) -> std::io::Result<PathBuf> {
+        let path = self.dir.path().join(name);
+        std::fs::write(&path, contents)?;
+        Ok(path)
+    }
+
     pub fn new() -> std::io::Result<Device> {
         let dir = tempfile::tempdir()?;
         Ok(Device {

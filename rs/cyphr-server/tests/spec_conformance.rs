@@ -37,7 +37,7 @@ async fn second_commit_push_adding(
 }
 
 async fn commit_count(app: &axum::Router, id: &str) -> u64 {
-    let (status, env) = get_json(app.clone(), &format!("/tip?pr={id}")).await;
+    let (status, env) = get_json(app.clone(), &format!("/tip?pg={id}")).await;
     assert_eq!(status, StatusCode::OK, "tip of {id}: {env:?}");
     let payload = envelope_payload(&env);
     // In Error there is no single tip and so no count: the tied heads share
@@ -147,8 +147,8 @@ async fn s6_no_http_response_carries_private_key_material() {
         "premise: the attestor signs"
     );
     let (_, server) = get_json(app.clone(), "/server").await;
-    let (_, tip) = get_json(app.clone(), &format!("/tip?pr={id}")).await;
-    let (status, patch) = get_json(app, &format!("/patch?pr={id}")).await;
+    let (_, tip) = get_json(app.clone(), &format!("/tip?pg={id}")).await;
+    let (status, patch) = get_json(app, &format!("/patch?pg={id}")).await;
     assert_eq!(status, StatusCode::OK);
 
     let mut surfaces = vec![
@@ -268,9 +268,9 @@ async fn s17_2_challenge_is_256_bits_and_unique() {
     for _ in 0..10 {
         let (status, env) = post_json(app.clone(), "/auth/challenge", String::new()).await;
         assert_eq!(status, StatusCode::OK, "{env:?}");
-        let c = envelope_payload(&env)["challenge"]
+        let c = envelope_payload(&env)["challenge"]["pay"]["nonce"]
             .as_str()
-            .expect("challenge string");
+            .expect("challenge nonce");
         let bytes = Base64UrlUnpadded::decode_vec(c).expect("challenge is b64ut");
         assert_eq!(bytes.len(), 32, "challenge is not 256 bits");
         assert!(seen.insert(bytes), "a challenge repeated");

@@ -997,7 +997,7 @@ pub async fn peer_heads<C: Connector>(
     connector: &C,
     principal_id: &str,
 ) -> Result<Option<PeerHeads>, PatchFailure> {
-    let target = format!("/branches?pr={}", percent_encode_query_value(principal_id));
+    let target = format!("/branches?pg={}", percent_encode_query_value(principal_id));
     match fetch_payload(connector, &target).await {
         Ok(payload) => Ok(Some(PeerHeads(parse_heads(&payload)?))),
         Err(PatchFailure::NonSuccess(404)) => Ok(None),
@@ -1412,7 +1412,7 @@ async fn offered_extension<C: Connector>(record: &Record, connector: &C) -> Offe
     // met again by the fetch that follows, which reports it.
     let Ok(payload) = fetch_payload(
         connector,
-        &format!("/tip?pr={}", percent_encode_query_value(&record.id)),
+        &format!("/tip?pg={}", percent_encode_query_value(&record.id)),
     )
     .await
     else {
@@ -1429,7 +1429,7 @@ async fn offered_extension<C: Connector>(record: &Record, connector: &C) -> Offe
         return Offer::Diverged(head);
     }
     let target = format!(
-        "/proof?pr={}&size={}&claim=extends:{held_size}",
+        "/proof?pg={}&size={}&claim=extends:{held_size}",
         percent_encode_query_value(&record.id),
         head.size
     );
@@ -1483,7 +1483,7 @@ async fn locate_fork<C: Connector>(
             return Some(held.principal.root_at(k as u64).as_ref() == Some(head));
         }
         let target = format!(
-            "/proof?pr={}&size={}&claim=extends:{k}",
+            "/proof?pg={}&size={}&claim=extends:{k}",
             percent_encode_query_value(&record.id),
             head.size
         );
@@ -1518,7 +1518,7 @@ async fn locate_fork<C: Connector>(
         },
         None => None,
     };
-    let mut target = format!("/patch?pr={}", percent_encode_query_value(&record.id));
+    let mut target = format!("/patch?pg={}", percent_encode_query_value(&record.id));
     if let Some(pre) = &pre {
         target.push_str(&format!("&from={}", percent_encode_query_value(pre)));
     }
@@ -1760,7 +1760,7 @@ async fn evidence<C: Connector>(
     sink: &mut Sink<'_>,
 ) {
     let Some(held) = &record.held else { return };
-    let target = format!("/evidence?pr={}", percent_encode_query_value(&record.id));
+    let target = format!("/evidence?pg={}", percent_encode_query_value(&record.id));
     let Ok(payload) = fetch_payload(connector, &target).await else {
         outcome.rejected_evidence.push(EvidenceFailure::Malformed(
             "the evidence could not be fetched",
@@ -1849,7 +1849,7 @@ pub async fn fetch_resyncs<C: Connector>(
     principal_id: &str,
 ) -> Result<Vec<Value>, PatchFailure> {
     let target = format!(
-        "/resync?pr={}",
+        "/resync?pg={}",
         crate::patch::percent_encode_query_value(principal_id)
     );
     let mut found = fetch_payload(connector, &target)

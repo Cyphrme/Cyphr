@@ -131,7 +131,7 @@ fn anchor_that_is_only_the_pg_is_refused() {
         &format!("--keys={key},{second}"),
         "--genesis-commit",
     ]);
-    let pg = init["pr"].as_str().expect("pr").to_owned();
+    let pg = init["pg"].as_str().expect("pg").to_owned();
     accepted(&a.push(&pg, &s.url), "push");
     let ident = format!("--identity={pg}");
     let peer = format!("--peer={}", s.url);

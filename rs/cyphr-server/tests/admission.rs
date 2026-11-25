@@ -333,7 +333,7 @@ async fn non_push_requests_are_never_gated() {
         "GET /server must never be gated: {}",
         identity.body
     );
-    let tip = server.get("/tip?pr=nobody").await;
+    let tip = server.get("/tip?pg=nobody").await;
     assert_ne!(
         tip.status, 403,
         "GET /tip must never be gated by admission: {} {}",

@@ -52,7 +52,7 @@ pub struct PatchRequest<'a> {
 }
 
 impl PatchRequest<'_> {
-    /// The request target (`/patch?pr=...[&from=...]`) carried to the
+    /// The request target (`/patch?pg=...[&from=...]`) carried to the
     /// peer. Both values are percent-encoded so a value containing
     /// `&`/`=`/`#` cannot inject extra query parameters into the outbound
     /// request; the encoding must not depend on any other guard.
@@ -60,8 +60,8 @@ impl PatchRequest<'_> {
     pub fn target(&self) -> String {
         let pr = percent_encode_query_value(self.principal_id);
         match self.anchor {
-            Some(anchor) => format!("/patch?pr={pr}&from={}", percent_encode_query_value(anchor)),
-            None => format!("/patch?pr={pr}"),
+            Some(anchor) => format!("/patch?pg={pr}&from={}", percent_encode_query_value(anchor)),
+            None => format!("/patch?pg={pr}"),
         }
     }
 }
@@ -292,7 +292,7 @@ pub async fn fetch_tip_body<C: Connector>(
     connector: &C,
     principal_id: &str,
 ) -> Result<Vec<u8>, PatchFailure> {
-    let target = format!("/tip?pr={}", percent_encode_query_value(principal_id));
+    let target = format!("/tip?pg={}", percent_encode_query_value(principal_id));
     Ok(connector.exchange(&Request::get(target)).await?)
 }
 
@@ -523,10 +523,10 @@ pub fn verify_authenticated_envelope(
     let coz = signed_by(body, expected)?;
     let report = TipReport::parse(&coz).map_err(|_| PatchFailure::MalformedReport)?;
 
-    // `report.pr` (a bare b64ut genesis identifier, SPEC section 2.2.3's
+    // `report.pg` (a bare b64ut genesis identifier, SPEC section 2.2.3's
     // default form) and the bare form of `principal_id` share one wire
     // form: a direct string comparison, no re-encoding.
-    if report.pr.to_string() != bare_digest(principal_id) {
+    if report.pg.to_string() != bare_digest(principal_id) {
         return Err(PatchFailure::PrincipalMismatch);
     }
 
@@ -549,7 +549,7 @@ pub fn verify_held_envelope(
 ) -> Result<HeldReport, PatchFailure> {
     let coz = signed_by(body, expected)?;
     let report = HeldReport::parse(&coz).map_err(|_| PatchFailure::MalformedReport)?;
-    if report.pr.to_string() != bare_digest(principal_id) {
+    if report.pg.to_string() != bare_digest(principal_id) {
         return Err(PatchFailure::PrincipalMismatch);
     }
     Ok(report)

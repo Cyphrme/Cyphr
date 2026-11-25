@@ -82,7 +82,7 @@ async fn witness_refuses_an_hour_old_tip_report() {
     for b in [&genesis, &first] {
         assert!(push(&app, &id, b).await.is_success(), "authority takes it");
     }
-    let (_, fresh) = common::get_json(app.clone(), &format!("/patch?pr={id}")).await;
+    let (_, fresh) = common::get_json(app.clone(), &format!("/patch?pg={id}")).await;
     let body = Arc::new(Mutex::new(fresh.clone()));
     let (url, relay) = replayer(body.clone()).await;
 

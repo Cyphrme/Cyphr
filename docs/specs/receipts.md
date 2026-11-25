@@ -68,7 +68,7 @@ against the enveloped payload's own fields.
 - `cyphr-server/receipt/tip` -- a tip report (`/tip`).
 
 Each is a dedicated constant, distinct from the bearer token's
-`cyphr-server/auth/token`, so no signature the server key produces can
+`cyphr.me/user/login/bearer/create`, so no signature the server key produces can
 be replayed across purposes -- the same replay-across-purposes closure
 bearer tokens already apply.
 
@@ -83,16 +83,16 @@ bearer tokens already apply.
 
 ### Claims (both kinds)
 
-- `pr` -- the ATTESTED principal's genesis identifier (matching the
+- `pg` -- the ATTESTED principal's genesis identifier (matching the
   bearer token's field name for the same concept).
 - `sequence` -- the accepted/attested commit's 0-indexed position,
   derived as the post-state tip's `commit_count - 1`.
 - `commit_id` -- the accepted/attested commit's id.
 - `roots` -- a nested object, `{pr, sr, ar, cr}`, carrying the
   post-state roots exactly as the tip payload does. Nested so the root
-  `pr` (the post-commit Principal Root) never collides with the
-  top-level `pr` claim (the genesis identifier) -- the two are different
-  facts that happen to share a SPEC field name. `pr` is always a tagged
+  `pr` (the post-commit Principal Root) is never mistaken for the
+  top-level `pg` claim (the genesis identifier) -- the two are different
+  facts. `pr` is always a tagged
   digest string, satisfying SPEC §2.2.3's explicitly-labeled exemption.
   `sr`, `ar` and `cr` are tagged digest strings when present and MAY
   instead be JSON `null`. `cr` (the Commit Root) is `null` for a
@@ -256,7 +256,7 @@ issued it, using only HTTP responses and local replay:
    `cyphr::Principal::explicit(vec![genesis_key])` and call `pr_tagged()`.
    If the result does not equal the pinned `pg`, refuse loudly -- the
    published genesis key does not back the pinned identity.
-3. **Fetch the server's own chain via `GET /patch?pr=<pg>`.** The server
+3. **Fetch the server's own chain via `GET /patch?pg=<pg>`.** The server
    is an ordinary principal in its own store
    (`docs/specs/server-identity.md`'s TOFU story, step 4), served
    through the same public surface every other principal's chain is.
@@ -307,7 +307,7 @@ Two cozies are a proven equivocation if and only if:
    resolves or chain-checks keys itself, which is what keeps it pure
    while still covering the cross-rotation case -- the server's
    identity is its CHAIN, not any single key.
-3. Both claim the same `pr` AND the same `sequence`.
+3. Both claim the same `pg` AND the same `sequence`.
 4. They differ in `commit_id` OR in any `roots` field.
 
 Anything else is a diagnosed non-equivocation, distinguished by
@@ -347,7 +347,7 @@ whether the server admits, explains, or disputes it.
 
 This predicate pins tip-vs-tip only. A commit receipt (`/push`) and a
 tip report (`/tip`) making conflicting claims about the same
-`pr`/`sequence` is a distinct, later extension: comparing across the
+`pg`/`sequence` is a distinct, later extension: comparing across the
 two `typ` constants requires deciding which claims are even
 comparable between the two schemas (a tip report carries
 `commit_count`/`last_updated`; a commit receipt does not), which this

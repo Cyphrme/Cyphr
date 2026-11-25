@@ -13,6 +13,7 @@ mod embedded;
 pub mod evidence;
 mod exchange;
 mod extension;
+pub mod login;
 mod patch;
 mod peer;
 mod relying_party;
@@ -26,8 +27,7 @@ pub use extension::{
     ExtensionFailure, ExtensionOffer, confirm_extension, verify_extension, verify_extension_at,
 };
 pub use relying_party::{
-    LOGIN_TYP_SUFFIX, Refusal, RelyingParty, RpConfig, Session, SessionBinding, Trust,
-    UnmetCurrency,
+    Refusal, RelyingParty, RpConfig, Session, SessionBinding, Trust, UnmetCurrency,
 };
 pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 pub use sync::{

@@ -501,7 +501,7 @@ async fn evidence(h: &Harness, peer: &str, p: &Principal) -> usize {
     let body: serde_json::Value = h
         .http
         .get(format!("http://{addr}/evidence"))
-        .query(&[("pr", p.0.as_str())])
+        .query(&[("pg", p.0.as_str())])
         .send()
         .await
         .expect("evidence request")

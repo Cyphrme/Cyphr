@@ -277,14 +277,13 @@ login with a `500`. Configure both or neither.
 Pick the host your users' clients actually address — `login.example.com`,
 not `Example Inc`.
 
-**Turning on login turns on one permission level, not a model.** Every
-bearer token issued at login carries `["read", "write"]`, unconditionally --
-there is no narrower grant for a client that only needs to read. In
-practice this gates little: `POST /push` is the only route that checks a
-presented token at all, and only to confirm it names the principal being
-written to. Every other route, reads included, takes no token. Setting
-`--audience` is a decision to start issuing tokens, not a decision about
-what those tokens will be trusted to do.
+**Login grants the permissions the integrating service decides.** The
+server grants a login whatever its login policy returns, and none when the
+service supplies no policy. No Cyphr route requires a permission: `POST /push`
+is the only route that checks a presented token at all, and only to confirm
+it names the principal being written to. Setting `--audience` is a decision
+to start issuing tokens, not a decision about what those tokens will be
+trusted to do.
 
 ## What lives in the data directory
 
@@ -935,7 +934,7 @@ RUST_LOG=cyphr_server=info,tower_http=debug cyphr-server serve …
   "span": {
     "method": "GET",
     "request_id": "f2a6264a-2209-4fc1-a461-c3bc96b91a77",
-    "uri": "/tip?pr=nobody",
+    "uri": "/tip?pg=nobody",
     "name": "request"
   }
 }
@@ -1199,6 +1198,6 @@ server.
 - **No token revocation and no invite expiry.** A leaked invite token is live until spent; a leaked bearer token is live until it expires, 15 minutes later.
 - **No `Retry-After` on a `429`,** and no indication of which bucket refused, so a well-behaved client cannot back off intelligently.
 - **No admission or limits configuration outside a TOML file.** Environment-only deployments cannot set them.
-- **No permissions model.** Every bearer token the server issues carries `["read","write"]`, and bearer tokens gate almost nothing: `POST /push` checks that a presented token names the principal being written to, and no other route requires one.
+- **No Cyphr route requires a permission.** The integrating service supplies the login policy and protects its own routes; `POST /push` checks that a presented token names the principal being written to, and no other Cyphr route requires one.
 - **No freshness guarantee on witness sync.** A captured, genuinely-signed upstream response can be replayed indefinitely to hold a witness at a stale state.
 - **No coherent keyed witness.** A witness given a signing key signs what it serves while publishing no key to verify those signatures with.

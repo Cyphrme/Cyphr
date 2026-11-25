@@ -94,7 +94,7 @@ async fn observe(n: usize) -> Obs {
     let n = chain.commits;
 
     let before = replayed();
-    let tip = ok(call(&app_a, "GET", &format!("/tip?pr={id}"), String::new()).await);
+    let tip = ok(call(&app_a, "GET", &format!("/tip?pg={id}"), String::new()).await);
     let tip_replayed = replayed() - before;
     let commit_id = tip["payload"]["commit_id"].as_str().expect("commit_id");
 
@@ -102,7 +102,7 @@ async fn observe(n: usize) -> Obs {
     ok(call(
         &app_a,
         "GET",
-        &format!("/patch?pr={id}&from={commit_id}"),
+        &format!("/patch?pg={id}&from={commit_id}"),
         String::new(),
     )
     .await);
@@ -112,7 +112,7 @@ async fn observe(n: usize) -> Obs {
     let c = ok(call(
         &app_a,
         "GET",
-        &format!("/proof?pr={id}&size={n}&claim=extends:{}", n / 2),
+        &format!("/proof?pg={id}&size={n}&claim=extends:{}", n / 2),
         String::new(),
     )
     .await);
@@ -121,7 +121,7 @@ async fn observe(n: usize) -> Obs {
     let i = ok(call(
         &app_a,
         "GET",
-        &format!("/proof?pr={id}&size={n}&claim=member:{}", n / 2),
+        &format!("/proof?pg={id}&size={n}&claim=member:{}", n / 2),
         String::new(),
     )
     .await);
@@ -693,9 +693,9 @@ macro_rules! suite {
                 RIVAL_ROWS
                     .get_or_init(|| async {
                         per_size(&SIZES, |n| async move {
-                            let proof = format!("/proof?pr={{id}}&size={n}&claim=extends:{}", n / 2);
+                            let proof = format!("/proof?pg={{id}}&size={n}&claim=extends:{}", n / 2);
                             (
-                                rival_get_rows(n, "/tip?pr={id}").await,
+                                rival_get_rows(n, "/tip?pg={id}").await,
                                 rival_get_rows(n, &proof).await,
                             )
                         })

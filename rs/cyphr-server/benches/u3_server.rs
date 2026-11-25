@@ -155,7 +155,7 @@ async fn run(n: usize) {
     call(&app_b, "POST", "/push", body).await;
 
     let n = chain.commits;
-    let tip_uri = format!("/tip?pr={id}");
+    let tip_uri = format!("/tip?pg={id}");
     let c = measure(&a, None, 5, || async {
         let (st, len, _) = call(&app_a, "GET", &tip_uri, String::new()).await;
         assert_eq!(st, StatusCode::OK);
@@ -167,7 +167,7 @@ async fn run(n: usize) {
     let (_, _, tipbody) = call(&app_a, "GET", &tip_uri, String::new()).await;
     let tip: serde_json::Value = serde_json::from_slice(&tipbody).expect("tip json");
     let commit_id = tip["payload"]["commit_id"].as_str().expect("commit_id");
-    let patch_uri = format!("/patch?pr={id}&from={commit_id}");
+    let patch_uri = format!("/patch?pg={id}&from={commit_id}");
     let c = measure(&a, None, 5, || async {
         let (st, len, _) = call(&app_a, "GET", &patch_uri, String::new()).await;
         assert_eq!(st, StatusCode::OK);
@@ -180,7 +180,7 @@ async fn run(n: usize) {
         let (st, len, _) = call(
             &app_a,
             "GET",
-            &format!("/proof?pr={id}&size={n}&claim=extends:{}", n / 2),
+            &format!("/proof?pg={id}&size={n}&claim=extends:{}", n / 2),
             String::new(),
         )
         .await;
@@ -198,7 +198,7 @@ async fn run(n: usize) {
         let (st, len, _) = call(
             &app_a,
             "GET",
-            &format!("/proof?pr={id}&size={n}&claim=member:{}", n / 2),
+            &format!("/proof?pg={id}&size={n}&claim=member:{}", n / 2),
             String::new(),
         )
         .await;
