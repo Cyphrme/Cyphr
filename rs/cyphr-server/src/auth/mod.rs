@@ -109,8 +109,8 @@ struct KeyFile {
     alg: String,
     #[serde(with = "base64url_bytes")]
     pub_key: Vec<u8>,
-    #[serde(with = "base64url_bytes")]
-    prv_key: Vec<u8>,
+    #[serde(with = "base64url_secret")]
+    prv_key: zeroize::Zeroizing<Vec<u8>>,
 }
 
 /// The server's own signing key.
@@ -122,7 +122,7 @@ struct KeyFile {
 pub struct ServerIdentity {
     alg: coz::Alg,
     pub_bytes: Vec<u8>,
-    prv_bytes: Vec<u8>,
+    prv_bytes: zeroize::Zeroizing<Vec<u8>>,
 }
 
 impl std::fmt::Debug for ServerIdentity {
@@ -145,7 +145,8 @@ impl ServerIdentity {
     /// that does not match the private key.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, AuthError> {
         let path = path.as_ref();
-        let content = std::fs::read_to_string(path)?;
+        // The file text holds the private key; it is wiped once parsed.
+        let content = zeroize::Zeroizing::new(std::fs::read_to_string(path)?);
         let doc: serde_json::Value = serde_json::from_str(&content)?;
         let found = document_version(&doc)?;
         if found != u64::from(FILE_FORMAT_VERSION) {
@@ -261,7 +262,7 @@ pub(crate) fn stage_key_file(path: &Path, kp: &coz::KeyPair) -> Result<(), AuthE
         v: FILE_FORMAT_VERSION,
         alg: kp.alg.name().to_string(),
         pub_key: kp.pub_bytes.clone(),
-        prv_key: kp.prv_bytes.clone(),
+        prv_key: zeroize::Zeroizing::new(kp.prv_bytes.clone()),
     };
     let next = next_key_path(path);
     let mut options = std::fs::OpenOptions::new();
@@ -273,7 +274,7 @@ pub(crate) fn stage_key_file(path: &Path, kp: &coz::KeyPair) -> Result<(), AuthE
     // torn run keeps its old mode, so narrow it explicitly too.
     #[cfg(unix)]
     out.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-    out.write_all(&serde_json::to_vec(&file)?)?;
+    out.write_all(&zeroize::Zeroizing::new(serde_json::to_vec(&file)?))?;
     out.sync_all()?;
     Ok(())
 }
@@ -333,6 +334,34 @@ pub(crate) fn server_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Serde helper for a private key's bytes: base64url, held in a type that
+/// wipes them when it drops, with the decoded text wiped too.
+mod base64url_secret {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use serde::{Deserialize, Deserializer, Serializer, de};
+    use zeroize::{Zeroize, Zeroizing};
+
+    pub fn serialize<S>(bytes: &Zeroizing<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut text = Base64UrlUnpadded::encode_string(bytes);
+        let out = serializer.serialize_str(&text);
+        text.zeroize();
+        out
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Zeroizing<Vec<u8>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut text = String::deserialize(deserializer)?;
+        let decoded = Base64UrlUnpadded::decode_vec(&text).map_err(de::Error::custom);
+        text.zeroize();
+        decoded.map(Zeroizing::new)
+    }
 }
 
 /// Serde helper for base64url encoding/decoding of byte vectors.
@@ -401,7 +430,7 @@ mod tests {
             v: FILE_FORMAT_VERSION,
             alg: kp.alg.name().to_string(),
             pub_key: other_kp.pub_bytes, // mismatched on purpose
-            prv_key: kp.prv_bytes,
+            prv_key: zeroize::Zeroizing::new(kp.prv_bytes),
         };
         std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
 
@@ -461,7 +490,7 @@ mod tests {
             v: FILE_FORMAT_VERSION,
             alg: "NotAnAlgorithm".to_string(),
             pub_key: kp.pub_bytes,
-            prv_key: kp.prv_bytes,
+            prv_key: zeroize::Zeroizing::new(kp.prv_bytes),
         };
         std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
         assert!(matches!(

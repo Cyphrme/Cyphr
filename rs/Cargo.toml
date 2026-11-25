@@ -33,6 +33,10 @@ fjall         = "3"
 polydigest    = "0.2.1"
 storage-fjall = { package = "polydigest-storage-fjall", version = "0.3" }
 
+# Key material
+# Wipes private-key bytes when they drop.
+zeroize = "1"
+
 # Serialization
 base64ct   = { version = "1", features = ["alloc"] }
 indexmap   = { version = "2", features = ["serde"] }

@@ -692,6 +692,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tokio-rustls",
+ "zeroize",
 ]
 
 [[package]]
@@ -733,6 +734,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.17",
+ "zeroize",
 ]
 
 [[package]]
@@ -790,6 +792,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

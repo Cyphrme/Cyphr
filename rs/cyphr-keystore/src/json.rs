@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::signer::SoftwareSigner;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::{Error, KeyBackend, PublicKeyInfo};
 
@@ -21,8 +22,9 @@ fn read_versioned<T: serde::de::DeserializeOwned>(
     path: &Path,
     file: &'static str,
 ) -> Result<HashMap<String, T>, Error> {
-    let mut doc: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&fs::read_to_string(path).map_err(io_at("reading", path))?)?;
+    // The file text holds every private key; it is wiped once parsed.
+    let text = Zeroizing::new(fs::read_to_string(path).map_err(io_at("reading", path))?);
+    let mut doc: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text)?;
     if let Some(v) = doc.remove("v") {
         let found = v.as_u64().ok_or_else(|| {
             <serde_json::Error as serde::de::Error>::custom("`v` is not an unsigned integer")
@@ -39,13 +41,13 @@ fn read_versioned<T: serde::de::DeserializeOwned>(
 }
 
 /// Serialize a flat map with the current `v`.
-fn to_versioned<T: Serialize>(entries: &HashMap<String, T>) -> Result<String, Error> {
+fn to_versioned<T: Serialize>(entries: &HashMap<String, T>) -> Result<Zeroizing<String>, Error> {
     let mut doc = serde_json::Map::new();
     for (key, entry) in entries {
         doc.insert(key.clone(), serde_json::to_value(entry)?);
     }
     doc.insert("v".to_string(), FORMAT_VERSION.into());
-    Ok(serde_json::to_string_pretty(&doc)?)
+    Ok(Zeroizing::new(serde_json::to_string_pretty(&doc)?))
 }
 
 /// A stored key entry: the on-disk record.
@@ -56,8 +58,8 @@ struct StoredKey {
     #[serde(with = "base64url_bytes")]
     pub_key: Vec<u8>,
 
-    #[serde(with = "base64url_bytes")]
-    prv_key: Vec<u8>,
+    #[serde(with = "base64url_secret")]
+    prv_key: Zeroizing<Vec<u8>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     tag: Option<String>,
@@ -285,7 +287,7 @@ impl KeyBackend for JsonKeyStore {
         let stored = StoredKey {
             alg: alg.to_string(),
             pub_key: keypair.pub_bytes,
-            prv_key: keypair.prv_bytes,
+            prv_key: Zeroizing::new(keypair.prv_bytes),
             tag: tag.map(String::from),
         };
         let info = stored.info(&tmb);
@@ -319,6 +321,34 @@ impl KeyBackend for JsonKeyStore {
             &k.pub_key,
             &coz::Thumbprint::from_bytes(tmb_bytes),
         ))
+    }
+}
+
+/// Serde helper for a private key's bytes: base64url, held in a type that
+/// wipes them when it drops, with the decoded text wiped too.
+mod base64url_secret {
+    use base64ct::{Base64UrlUnpadded, Encoding};
+    use serde::{Deserialize, Deserializer, Serializer, de};
+    use zeroize::{Zeroize, Zeroizing};
+
+    pub fn serialize<S>(bytes: &Zeroizing<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut text = Base64UrlUnpadded::encode_string(bytes);
+        let out = serializer.serialize_str(&text);
+        text.zeroize();
+        out
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Zeroizing<Vec<u8>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut text = String::deserialize(deserializer)?;
+        let decoded = Base64UrlUnpadded::decode_vec(&text).map_err(de::Error::custom);
+        text.zeroize();
+        decoded.map(Zeroizing::new)
     }
 }
 

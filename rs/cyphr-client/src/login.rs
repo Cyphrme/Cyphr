@@ -334,10 +334,11 @@ pub trait Issuer: Send + Sync + std::fmt::Debug {
     fn sign(&self, pay_bytes: &[u8]) -> Result<Vec<u8>, IssuerError>;
 }
 
-/// An [`Issuer`] over raw key bytes the caller supplies.
+/// An [`Issuer`] over raw key bytes the caller supplies. The private bytes
+/// are wiped when it drops.
 pub struct SoftwareIssuer {
     alg: String,
-    prv: Vec<u8>,
+    prv: zeroize::Zeroizing<Vec<u8>>,
     pub_key: Vec<u8>,
 }
 
@@ -348,7 +349,7 @@ impl SoftwareIssuer {
     pub fn new(alg: &str, prv: &[u8], pub_key: &[u8]) -> Self {
         Self {
             alg: alg.to_owned(),
-            prv: prv.to_vec(),
+            prv: zeroize::Zeroizing::new(prv.to_vec()),
             pub_key: pub_key.to_vec(),
         }
     }
