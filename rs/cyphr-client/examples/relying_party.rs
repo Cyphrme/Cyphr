@@ -156,7 +156,10 @@ async fn publish(
         }
     }
     let body = json!({ "principal_id": pg, "txs": txs, "keys": keys });
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?
         .post(format!("{}/push", server.trim_end_matches('/')))
         .header("content-type", "application/json")
         .body(body.to_string())
