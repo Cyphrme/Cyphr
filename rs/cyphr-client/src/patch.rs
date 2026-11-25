@@ -308,10 +308,9 @@ pub fn statement_signer(body: &[u8]) -> Option<coz::Thumbprint> {
     else {
         return None;
     };
-    coz.pay["tmb"]
-        .as_str()
-        .and_then(|t| Base64UrlUnpadded::decode_vec(t).ok())
-        .map(coz::Thumbprint::from_bytes)
+    cyphr::parsed_coz::CozHeader::parse(&coz.pay)
+        .ok()
+        .map(|header| header.tmb)
 }
 
 /// Refuse before the request leaves when the carrier cannot supply the

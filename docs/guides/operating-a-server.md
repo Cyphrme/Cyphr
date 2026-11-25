@@ -709,8 +709,8 @@ returned.
 
 ## Witness mode
 
-A witness is a read-only replica that pulls state from an upstream
-authority. It refuses every write itself:
+A witness is a read-only replica that pulls state from its
+peers. It refuses every write itself:
 
 ```sh
 curl -s -X POST http://127.0.0.1:3001/push -H 'content-type: application/json' -d @push.json
@@ -802,10 +802,10 @@ witnesses, watch for that warning explicitly; nothing on the wire will tell
 you.
 
 **One thing the tip check does not close: replay of a genuine response.** It authenticates the pairing of local state and signed report,
-not the report's freshness. A response the authority genuinely signed at a
+not the report's freshness. A response the peer genuinely signed at a
 moment when its tip matched the witness's state matches that state forever,
 so an on-path party can keep serving that captured response while the
-authority advances, and the witness will keep concluding it is up to date.
+peer advances, and the witness will keep concluding it is up to date.
 Nothing is forged, so no comparison catches it. Closing it needs a freshness
 property the channel does not currently provide.
 
@@ -826,7 +826,7 @@ bootstraps its own principal, signs the tips it serves —
 the payload above, because witness mode decides the tier before it looks
 at any key. Clients get signatures with no published key to check them
 against. Run witnesses keyless and let clients that need a verifiable
-receipt ask the authority.
+receipt ask a keyed peer.
 
 ## The key death-set
 
@@ -1068,7 +1068,7 @@ accept a different commit at the same position and sign that too, and the
 two signed statements would convict an honest server of equivocation. The
 same flush covers a retained rival commit (a fork), a naked revoke and an
 action-only push, because the server answers each of them as recorded.
-The rule applies in every mode, keyed or not, witness or authority.
+The rule applies in every mode, keyed or not, witness or service.
 
 The cost is one disk flush per accepted commit, about 8 ms on a push that
 takes about 40 ms. **Group commit is not implemented:** there is no
@@ -1190,7 +1190,7 @@ forks, embedded principals, promises the system does not keep) are in
 [Known limits](known-limits.md). What follows is specific to running the
 server.
 
-- **No replay protection on witness sync.** The authenticated sync channel (see "Authenticating the upstream" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the authority advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
+- **No replay protection on witness sync.** The authenticated sync channel (see "Checking a peer's tip reports" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the peer advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
 - **No online key rotation.** `rotate-key` (see "Rotating the signing key") works on a stopped server; there is no endpoint or signal that rotates a running one.
 - **No access log by default** (see above to turn one on); counters are `GET /metrics`.
 - **No group commit.** Every accepted commit pays its own disk flush (see "Durability"), so a busy server's push rate is bounded by the flush latency of its disk.

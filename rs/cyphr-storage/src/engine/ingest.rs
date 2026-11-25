@@ -185,18 +185,19 @@ pub(super) fn canonical_coz(blob: &[u8], i: usize) -> Result<Vec<u8>, EngineErro
 /// travelled with it.
 pub(super) fn canonical_bundle(bundle: &WireBundle) -> Result<WireBundle, EngineError> {
     let mut canonical = bundle.try_map(|i, blob| canonical_coz(blob, i))?;
+    // The keys the canonical cozies introduce: a bundle that does not decode
+    // names none, and the refusal follows from the core's own decode.
     let named: std::collections::HashSet<String> = canonical
-        .txs
-        .iter()
-        .flatten()
-        .filter_map(|blob| {
-            let value: serde_json::Value = serde_json::from_slice(blob).ok()?;
-            let typ = value.pointer("/pay/typ")?.as_str()?;
-            crate::import::is_key_introducing_typ(typ)
-                .then(|| value.pointer("/pay/id")?.as_str().map(str::to_owned))
+        .decode()
+        .map(|decoded| {
+            decoded
+                .txs()
+                .iter()
                 .flatten()
+                .filter_map(|coz| decoded.introduced_key(coz).map(|k| k.tmb().to_b64()))
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
     let mut keys: Vec<KeyEntry> = Vec::new();
     for entry in &bundle.keys {
         if !named.contains(&entry.tmb) || keys.iter().any(|k| k.tmb == entry.tmb) {

@@ -32,7 +32,6 @@
 
 use std::collections::BTreeMap;
 
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::eml::MemoryStorage;
 use cyphr::principal::{Clock, system_clock};
 use cyphr::replay::{Bundle, BundleId, WireBundle, WireError, replay_held};
@@ -570,10 +569,9 @@ fn matches_pg(pg: &str, derived: &str) -> bool {
 }
 
 fn claimed_tmb(coz: &coz::CozJson) -> Option<coz::Thumbprint> {
-    coz.pay["tmb"]
-        .as_str()
-        .and_then(|t| Base64UrlUnpadded::decode_vec(t).ok())
-        .map(coz::Thumbprint::from_bytes)
+    cyphr::parsed_coz::CozHeader::parse(&coz.pay)
+        .ok()
+        .map(|header| header.tmb)
 }
 
 /// Why a fetched entry did not replay: its wire form is malformed, or the

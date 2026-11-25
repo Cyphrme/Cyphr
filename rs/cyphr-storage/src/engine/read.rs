@@ -749,48 +749,55 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// [`load_principal`](Self::load_principal) for an id already known to
     /// be the stored spelling.
-    pub(super) async fn replay_stored(
-        &self,
-        principal_id: &str,
+    pub(super) fn replay_stored<'a>(
+        &'a self,
+        principal_id: &'a str,
         genesis: crate::Genesis,
-    ) -> Result<cyphr::Principal<S>, EngineError> {
-        let generation = self
-            .logs
-            .generation(principal_id)
-            .map_err(EngineError::Storage)?;
-        let replayed = self
-            .replay_generation(principal_id, genesis.clone(), generation)
-            .await;
-        if !log_is_stale(&replayed) {
-            return replayed;
-        }
-        // The log is not a cache of the canonical chain: a resolved fork
-        // re-pointed the chain under it, or it was written before the
-        // two-phase commit. It is a cache of the blob store (I1), so it is
-        // regenerated into a fresh generation from the blobs, one
-        // regeneration at a time (the write lock may already be held by
-        // this caller, so this one is separate).
-        let lock = self.principal_lock(&format!("eml-generation\0{principal_id}"));
-        let _regenerating = lock.lock().await;
-        let current = self
-            .logs
-            .generation(principal_id)
-            .map_err(EngineError::Storage)?;
-        if current != generation {
-            return self.replay_generation(principal_id, genesis, current).await;
-        }
-        let next = generation + 1;
-        let storage = self
-            .logs
-            .open(principal_id, next)
-            .map_err(EngineError::Storage)?;
-        let regenerated = self
-            .replay_onto(principal_id, genesis, storage, None)
-            .await?;
-        self.logs
-            .retire_below(principal_id, next)
-            .map_err(EngineError::Storage)?;
-        Ok(regenerated)
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<cyphr::Principal<S>, EngineError>> + Send + 'a>,
+    > {
+        // Type-erased: a replay reaches back to the write path that asks for
+        // it, and the compiler's auto-trait check would cycle through the
+        // two otherwise.
+        Box::pin(async move {
+            let generation = self
+                .logs
+                .generation(principal_id)
+                .map_err(EngineError::Storage)?;
+            let replayed = self
+                .replay_generation(principal_id, genesis.clone(), generation)
+                .await;
+            if !log_is_stale(&replayed) {
+                return replayed;
+            }
+            // The log is not a cache of the canonical chain: a resolved fork
+            // re-pointed the chain under it, or it was written before the
+            // two-phase commit. It is a cache of the blob store (I1), so it is
+            // regenerated into a fresh generation from the blobs, one
+            // regeneration at a time (the write lock may already be held by
+            // this caller, so this one is separate).
+            let lock = self.principal_lock(&format!("eml-generation\0{principal_id}"));
+            let _regenerating = lock.lock().await;
+            let current = self
+                .logs
+                .generation(principal_id)
+                .map_err(EngineError::Storage)?;
+            if current != generation {
+                return self.replay_generation(principal_id, genesis, current).await;
+            }
+            let next = generation + 1;
+            let storage = self
+                .logs
+                .open(principal_id, next)
+                .map_err(EngineError::Storage)?;
+            let regenerated = self
+                .replay_onto(principal_id, genesis, storage, None)
+                .await?;
+            self.logs
+                .retire_below(principal_id, next)
+                .map_err(EngineError::Storage)?;
+            Ok(regenerated)
+        })
     }
 
     /// Replay `principal_id`'s canonical chain onto generation

@@ -258,9 +258,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// failures), so the next call retries rather than wedging this
     /// instance in a permanently-failed state.
     pub(super) async fn ensure_healed(&self) -> Result<(), EngineError> {
-        self.healed
-            .once(|| async { self.rebuild_index_from_manifests().await.map(|_| ()) })
-            .await
+        // Type-erased: every read and write passes through here, and the
+        // rebuild below reaches back to them, so the compiler's auto-trait
+        // check would otherwise cycle through this future.
+        let heal: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), EngineError>> + Send + '_>,
+        > = Box::pin(async { self.rebuild_index_from_manifests().await.map(|_| ()) });
+        self.healed.once(|| heal).await
     }
 
     /// Scan the blob store for [`CommitManifest`] blobs and (re-)index each
@@ -396,10 +400,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     let key = record
                         .as_ref()
                         .ok()
-                        .and_then(|r| r.evidence["pay"]["tmb"].as_str())
-                        .unwrap_or("unreadable");
+                        .and_then(|r| cyphr::parsed_coz::CozHeader::parse(&r.evidence["pay"]).ok())
+                        .map_or_else(|| "unreadable".to_owned(), |h| h.tmb.to_b64());
                     tracing::warn!(
-                        key,
+                        key = %key,
                         reason = %why,
                         "revoke record quarantined on rebuild; its key is not dead in the engine"
                     );

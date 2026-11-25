@@ -121,7 +121,7 @@ async fn resolved_fork() -> Resolved {
     )
     .await;
     push(c2).await;
-    let (_, first) = get_json(app.clone(), &format!("/tip?pr={enc}")).await;
+    let (_, first) = get_json(app.clone(), &format!("/tip?pg={enc}")).await;
 
     // `key_a`, retired at c2, signs a line over c1 and a proof of it.
     let now = T + 10_000;
@@ -148,7 +148,7 @@ async fn resolved_fork() -> Resolved {
     .to_string();
     let (st, resp) = post_json(app.clone(), "/resync", body).await;
     assert!(st.is_success(), "the resolution is accepted: {st} {resp}");
-    let (_, second) = get_json(app.clone(), &format!("/tip?pr={enc}")).await;
+    let (_, second) = get_json(app.clone(), &format!("/tip?pg={enc}")).await;
     let forks = state.engine.assess(&id).await.expect("assess").forks;
     Resolved {
         first,

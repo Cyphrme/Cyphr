@@ -619,10 +619,10 @@ pub(crate) fn pg_names(principal: &Principal<MemoryStorage>, pg: &str) -> bool {
 /// genesis commit opens with its genesis key's own `key/create`, SPEC 5.1).
 fn opens_with(bundle: &WireBundle, genesis_key: &str) -> bool {
     bundle
-        .cozies()
-        .next()
-        .and_then(|blob| serde_json::from_slice::<Value>(blob).ok())
-        .is_some_and(|coz| coz.pointer("/pay/tmb").and_then(Value::as_str) == Some(genesis_key))
+        .decode()
+        .ok()
+        .and_then(|decoded| decoded.cozies().next().map(|c| c.header().tmb.to_b64()))
+        .is_some_and(|signer| signer == genesis_key)
 }
 
 /// Replay one entry's bundle onto `principal` through the core's one
