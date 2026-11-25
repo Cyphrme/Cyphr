@@ -721,6 +721,23 @@ fn settings(inputs: &Inputs<'_>) -> crate::Result<(Vec<String>, Option<String>, 
     ))
 }
 
+/// A verdict from one peer is that peer's word alone: it cannot show a fork
+/// it does not hold. One peer is allowed, with this warning, stated once per
+/// run however many rounds `watch` makes.
+fn warn_if_single_peer(urls: &[String]) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let distinct: std::collections::BTreeSet<&str> =
+        urls.iter().map(|u| u.trim_end_matches('/')).collect();
+    if distinct.len() == 1 {
+        WARNED.call_once(|| {
+            eprintln!(
+                "warning: only one peer; a verdict from a single peer cannot show a fork that \
+                 peer does not hold. Name more peers with --peer, or `peers` in the choices file"
+            );
+        });
+    }
+}
+
 /// One verify round over HTTP peers: the value `verify`, `watch` and
 /// `audit` print.
 fn verify_once(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<Value> {
@@ -728,6 +745,7 @@ fn verify_once(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<Value> {
     if urls.is_empty() {
         return Err(Error::NoPeers);
     }
+    warn_if_single_peer(&urls);
     let mut options = HttpOptions::new(Duration::from_secs(cli.peer_timeout_secs));
     options.allow_cleartext = cli.allow_cleartext;
     let mut connectors = Vec::new();

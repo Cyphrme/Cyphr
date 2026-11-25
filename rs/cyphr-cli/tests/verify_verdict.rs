@@ -75,6 +75,40 @@ fn verdict_names_peers_ages_and_never_regresses_to_a_lagging_peer() {
     );
 }
 
+/// Claim: one peer is allowed, with a warning on stderr; two distinct peers
+/// draw none. Defect that turns it red: a single-peer verdict that says
+/// nothing of how little it saw, or a warning on a multi-peer run.
+/// End-to-end: yes.
+#[test]
+fn a_single_peer_is_allowed_with_a_warning() {
+    let (one, two) = (Server::start(), Server::start());
+    let a = User::new();
+    let id = a.new_identity();
+    accepted(&a.push(&id, &one.url), "push to the first peer");
+    accepted(&a.push(&id, &two.url), "push to the second peer");
+
+    let verify = |peers: &[&str]| {
+        let mut args = vec!["verify".to_owned(), format!("--identity={id}")];
+        args.extend(peers.iter().map(|p| format!("--peer={p}")));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        a.run(&args)
+    };
+    let single = verify(&[&one.url]);
+    assert!(single.ok, "verify: {}", single.stderr);
+    assert!(
+        single.stderr.contains("only one peer"),
+        "a single peer must be warned of: {}",
+        single.stderr
+    );
+    let both = verify(&[&one.url, &two.url]);
+    assert!(both.ok, "verify: {}", both.stderr);
+    assert!(
+        !both.stderr.contains("only one peer"),
+        "two peers draw no warning: {}",
+        both.stderr
+    );
+}
+
 /// Claim: `watch` is `verify` on a timer: each round prints the verdict
 /// `verify` prints for the same inputs. Defect that turns it red: a watch
 /// that computes its own verdict (different tip or standing from verify).
