@@ -65,13 +65,15 @@ impl Exchange {
         *self.started.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Start the clock unless an exchange is already running.
+    /// Start the clock unless an exchange is already running. A new
+    /// exchange starts with no response handed over: what the last one left
+    /// in `finished` must not end this one at the next flush.
     fn start_if_idle(&self, at: Instant) -> Instant {
-        *self
-            .started
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get_or_insert(at)
+        let mut started = self.started.lock().unwrap_or_else(|p| p.into_inner());
+        if started.is_none() {
+            self.finished.store(false, Ordering::SeqCst);
+        }
+        *started.get_or_insert(at)
     }
 
     fn set_started(&self, at: Option<Instant>) {
@@ -412,7 +414,8 @@ mod tests {
     /// (hyper parses a pipelined request from bytes it already holds), is
     /// bounded all the same: a write the peer never drains fails `TimedOut`
     /// at the limit plus the grace. Turns red if the hard deadline is armed
-    /// by a read alone, for then this write waits for ever.
+    /// by a read alone, for then this write waits for ever, or if a leftover
+    /// `finished` flag lets a flush end the new exchange early.
     /// End-to-end scenario: no; it drives the stream on a real socket pair,
     /// the one place a request can start without a read.
     #[tokio::test]
@@ -429,7 +432,13 @@ mod tests {
             Duration::from_secs(1),
             exchange.clone(),
         );
+        // The last exchange's response ended and nothing flushed it: the
+        // flag it left must not end the one the service starts now.
+        exchange.finished.store(true, Ordering::SeqCst);
         exchange.start_if_idle(Instant::now());
+        // A flush part way through the response, as a flush can come.
+        stream.write_all(b"head").await.expect("a first write");
+        stream.flush().await.expect("a flush");
         let started = StdInstant::now();
         let written =
             tokio::time::timeout(Duration::from_secs(10), stream.write_all(&vec![0u8; BIG]))
