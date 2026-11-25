@@ -168,6 +168,7 @@ count_quota = 1000000
 header_read_timeout_secs = 10
 request_timeout_secs = 60
 idle_timeout_secs = 120
+# max_connections = 4096  # unset by default: cores available times 512
 per_ip = { per_second = 100, burst = 200 }
 read = { per_second = 100, burst = 200 }
 push = { per_second = 50, burst = 100 }
@@ -916,6 +917,13 @@ ever.
 
 Zero is refused at start. They apply to the HTTP listener; the Noise
 transport has its own idle timeout.
+
+`[limits] max_connections` caps the connections served at once. Unset, it
+is the number of cores available times 512 (as nginx's
+`worker_processes auto` times its default 512 `worker_connections`). At the
+cap the server stops accepting: a new client waits in the kernel's accept
+queue until a connection ends, and is neither refused nor dropped. Zero is
+refused at start.
 
 ## The storage ceiling
 

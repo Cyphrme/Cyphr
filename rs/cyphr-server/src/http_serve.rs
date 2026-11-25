@@ -8,6 +8,9 @@
 //!   answered `408`, and a client that drips its request or its read of the
 //!   response is cut off [`DELIVERY_GRACE`] later, which is what the `408`
 //!   needs to get out.
+//! - **Connections.** At most [`Timeouts::max_connections`] are served at
+//!   once; at the cap the loop stops accepting, so a new client waits in the
+//!   kernel's accept queue instead of being accepted and dropped.
 //! - **Idle.** A connection with no byte read or written for
 //!   [`Timeouts::idle`] is closed: an idle keep-alive, or a peer that has
 //!   stopped.
@@ -32,6 +35,7 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tokio::time::{Instant, Sleep};
 use tower::ServiceExt;
 
@@ -45,6 +49,7 @@ pub(crate) struct Timeouts {
     pub(crate) header_read: Duration,
     pub(crate) request: Duration,
     pub(crate) idle: Duration,
+    pub(crate) max_connections: usize,
 }
 
 /// Where one connection's current exchange stands, shared between its
@@ -245,8 +250,18 @@ pub(crate) async fn serve(
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
     let graceful = GracefulShutdown::new();
+    let slots = Arc::new(Semaphore::new(timeouts.max_connections));
     tokio::pin!(shutdown);
     loop {
+        // A slot is taken before accepting: at the cap the loop waits here,
+        // and a new client waits in the kernel's accept queue.
+        let slot = tokio::select! {
+            slot = slots.clone().acquire_owned() => match slot {
+                Ok(slot) => slot,
+                Err(_) => break,
+            },
+            () = &mut shutdown => break,
+        };
         let (stream, peer): (TcpStream, SocketAddr) = tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok(accepted) => accepted,
@@ -298,6 +313,7 @@ pub(crate) async fn serve(
             if let Err(err) = connection.await {
                 tracing::debug!(%err, %peer, "connection ended with an error");
             }
+            drop(slot);
         });
     }
     graceful.shutdown().await;
@@ -315,11 +331,12 @@ mod tests {
 
     const BIG: usize = 96 * 1024 * 1024;
 
-    fn limits(request: u64) -> Timeouts {
+    fn limits(request: u64, max_connections: usize) -> Timeouts {
         Timeouts {
             header_read: Duration::from_secs(10),
             request: Duration::from_secs(request),
             idle: Duration::from_secs(120),
+            max_connections,
         }
     }
 
@@ -342,7 +359,7 @@ mod tests {
     /// End-to-end scenario: yes (a real listener and a real socket).
     #[tokio::test]
     async fn a_client_that_drips_its_read_is_cut_off_at_the_deadline() {
-        let addr = start(limits(1)).await;
+        let addr = start(limits(1, 16)).await;
         let socket = tokio::net::TcpSocket::new_v4().expect("socket");
         socket.set_recv_buffer_size(4096).expect("rcvbuf");
         let mut client = socket.connect(addr).await.expect("connect");
@@ -371,5 +388,42 @@ mod tests {
             "cut off late: {:?}",
             started.elapsed()
         );
+    }
+
+    /// Claim: at the connection cap the listener stops accepting, so a
+    /// further client waits in the kernel's queue (its request is unanswered,
+    /// and the connection is neither refused nor closed) and is served once a
+    /// slot frees. Turns red if it accepts and drops, or serves past the cap.
+    /// End-to-end scenario: yes (a real listener and real sockets).
+    #[tokio::test]
+    async fn at_the_cap_new_connections_wait_to_be_accepted() {
+        let addr = start(limits(60, 2)).await;
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let mut conn = TcpStream::connect(addr).await.expect("connect");
+            conn.write_all(b"GET /ok HTTP/1.1\r\nHost: x\r\n\r\n")
+                .await
+                .expect("request");
+            let mut buf = [0u8; 256];
+            let n = conn.read(&mut buf).await.expect("answer");
+            assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+            held.push(conn);
+        }
+
+        let mut waiting = TcpStream::connect(addr).await.expect("the kernel queues it");
+        waiting
+            .write_all(b"GET /ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("request");
+        let mut buf = [0u8; 256];
+        let early = tokio::time::timeout(Duration::from_millis(1500), waiting.read(&mut buf)).await;
+        assert!(early.is_err(), "answered at the cap: {early:?}");
+
+        drop(held.pop());
+        let n = tokio::time::timeout(Duration::from_secs(5), waiting.read(&mut buf))
+            .await
+            .expect("served once a slot frees")
+            .expect("answer");
+        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
     }
 }

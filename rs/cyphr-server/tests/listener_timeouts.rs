@@ -140,3 +140,36 @@ fn a_stalled_request_body_gets_408() {
     assert!(answer.starts_with("HTTP/1.1 408"), "{answer}");
     assert!(started.elapsed() < Duration::from_secs(6));
 }
+
+/// Claim: `[limits] max_connections` reaches the listener: with one slot
+/// and one idle connection holding it, a second client's request waits (no
+/// answer, no reset), and is served once the first connection closes.
+/// Turns red if the knob is ignored or a connection past the cap is dropped.
+/// End-to-end scenario: yes (the real binary over sockets).
+#[test]
+fn a_connection_past_the_cap_waits_for_a_slot() {
+    let server = start("max_connections = 1");
+    let first = TcpStream::connect(&server.addr).expect("connect");
+
+    let mut second = TcpStream::connect(&server.addr).expect("the kernel queues it");
+    second
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .expect("request");
+    second
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .expect("timeout");
+    let mut buf = [0u8; 512];
+    let waiting = second.read(&mut buf);
+    assert!(
+        matches!(&waiting, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+            || e.kind() == std::io::ErrorKind::TimedOut),
+        "answered or closed at the cap: {waiting:?}"
+    );
+
+    drop(first);
+    second
+        .set_read_timeout(Some(Duration::from_secs(8)))
+        .expect("timeout");
+    let n = second.read(&mut buf).expect("served once the slot frees");
+    assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+}
