@@ -842,11 +842,17 @@ async fn snapshot(e: &Engine, probes: &[String]) -> String {
     let mut lines = Vec::new();
     for p in principals(e).await {
         let tip = e.indexer().get_tip(&p.0).await.unwrap();
-        let chain = e
+        let mut chain = e
             .indexer()
             .get_commit_chain(&p.0, None, None)
             .await
             .unwrap();
+        // The manifest a commit names carries the time it was first seen,
+        // so two ingests of one history name different manifests; every
+        // other field of the commit is what a hostile blob could move.
+        for c in &mut chain {
+            c.manifest = None;
+        }
         lines.push(format!("{p:?} {tip:?} {chain:?}"));
     }
     for d in probes {
