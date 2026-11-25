@@ -65,15 +65,23 @@ impl Exchange {
         *self.started.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Start the clock unless an exchange is already running. A new
-    /// exchange starts with no response handed over: what the last one left
-    /// in `finished` must not end this one at the next flush.
+    /// Start the clock unless an exchange is already running.
     fn start_if_idle(&self, at: Instant) -> Instant {
-        let mut started = self.started.lock().unwrap_or_else(|p| p.into_inner());
-        if started.is_none() {
-            self.finished.store(false, Ordering::SeqCst);
-        }
-        *started.get_or_insert(at)
+        *self
+            .started
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_or_insert(at)
+    }
+
+    /// The service begins a request. hyper does not flush between pipelined
+    /// responses, so the exchange of the one before may still be running
+    /// with its response marked finished; that mark must not end this
+    /// request's response at the next flush. The running exchange then lasts
+    /// until this response's own end.
+    fn begin_request(&self, at: Instant) -> Instant {
+        self.finished.store(false, Ordering::SeqCst);
+        self.start_if_idle(at)
     }
 
     fn set_started(&self, at: Option<Instant>) {
@@ -304,7 +312,7 @@ pub(crate) async fn serve(
                 // A request hyper parsed from buffered bytes arrives with no
                 // read to start the clock: starting it here covers every
                 // request of a pipelined run.
-                let deadline = exchange.start_if_idle(Instant::now()) + request_limit;
+                let deadline = exchange.begin_request(Instant::now()) + request_limit;
                 let response =
                     match tokio::time::timeout_at(deadline, service.oneshot(request)).await {
                         Ok(Ok(response)) => response.map(Body::new),
@@ -415,7 +423,7 @@ mod tests {
     /// bounded all the same: a write the peer never drains fails `TimedOut`
     /// at the limit plus the grace. Turns red if the hard deadline is armed
     /// by a read alone, for then this write waits for ever, or if a leftover
-    /// `finished` flag lets a flush end the new exchange early.
+    /// `finished` flag lets a flush end the next request's exchange early.
     /// End-to-end scenario: no; it drives the stream on a real socket pair,
     /// the one place a request can start without a read.
     #[tokio::test]
@@ -432,10 +440,12 @@ mod tests {
             Duration::from_secs(1),
             exchange.clone(),
         );
-        // The last exchange's response ended and nothing flushed it: the
-        // flag it left must not end the one the service starts now.
-        exchange.finished.store(true, Ordering::SeqCst);
+        // Exchange 1 is running and its response has ended unflushed (hyper
+        // does not flush between pipelined responses); the service now
+        // begins request 2. The flag exchange 1 left must not end it.
         exchange.start_if_idle(Instant::now());
+        exchange.finished.store(true, Ordering::SeqCst);
+        exchange.begin_request(Instant::now());
         // A flush part way through the response, as a flush can come.
         stream.write_all(b"head").await.expect("a first write");
         stream.flush().await.expect("a flush");
