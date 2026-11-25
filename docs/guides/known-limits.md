@@ -36,9 +36,11 @@ A revoke stops a key from now on. It does not reach back.
   before the revoke arrived stays counted.
 - **Backdating is not prevented.** The holder of a compromised key picks
   the `now` of what it signs. A commit's `now` may not be earlier than the
-  latest `now` the principal already holds, and may not be more than 360
-  seconds ahead of the verifier's clock, but inside that range a thief can
-  date a commit below the cutoff and have it accepted. The remedy the
+  latest `now` on the line it extends (`TimestampPast`), and may not be
+  more than 360 seconds ahead of the verifier's clock, but inside that
+  range a thief can date a commit below the cutoff and have it accepted.
+  A commit on a rival line is held to the floor of its own line, not to
+  later commits on another line. The remedy the
   specification gives is recovery, not prevention: the owner removes the
   key and mutates the principal forward (SPEC 6.4, 14.12). A server also
   records when it first saw each commit, so a backdated commit shows a gap
@@ -87,15 +89,17 @@ clocks correct.
   owner no longer holds, and K is already deleted, so no commit
   records an exit at Levels 1 to 4. The exit is the recovery strategy (SPEC 14), outside
   the chain (forge #203).
-- **A thief can win a fork race only until the owner extends.** While
-  only the thief's branch is extended, it is the branch every holder
-  follows, and the thief can extend it with a deletion of the owner's
-  key. Once the owner extends the other branch too, both are extended and
-  the principal is in Error (`assessment`, `rs/cyphr/src/fork.rs:120`).
-  That ends the thief's win and also leaves the principal locked until a
-  resolution exists, which is the both-extended limit below. The
-  specification calls the race itself the fork-resolution race (SPEC
-  15.8: the abandoned branch is permanently invalid).
+- **A thief's lead survives the owner extending.** While only the
+  thief's branch is extended, it is the branch every holder follows, and
+  the thief can extend it with a deletion of the owner's key. Once the
+  owner extends the other branch too, both are extended and the principal
+  is in Error (`assessment`, `rs/cyphr/src/fork.rs`), but the thief is not
+  out: a proof of possession signed by a key active at the thief's tip
+  settles the fork for the thief's branch, and the principal stays there
+  until a proof from the owner's side puts it in Error for good (see "A
+  stolen or old key can take a principal over with a proof" below). The
+  specification calls this the fork-resolution race (SPEC 15.8: the
+  abandoned branch is permanently invalid).
 - **A fork resolves by a commit or by a proof of possession.** A commit
   resolves a fork only by extending exactly one of its branches. A
   `resync/create` proof of possession (SPEC 15.8 item 2) is a coz signed
@@ -104,12 +108,12 @@ clocks correct.
   follows the one child whose subtree holds an asserted tip, whatever is
   extended elsewhere. Proofs into two children leave the principal in
   Error for good, and only recovery ends it. A proof at or below the fork
-  point changes nothing (`assessment`, `rs/cyphr/src/fork.rs:135`;
+  point changes nothing (`assessment`, `rs/cyphr/src/fork.rs`;
   `rs/cyphr/src/resync.rs`).
 - **A fork with both branches extended locks until resolved.** Height
   does not decide it: the taller branch does not win, and a new commit on
   either branch leaves the principal in Error, because the walk still
-  finds two extended branches (`rs/cyphr/src/fork.rs:120`). Holders of the
+  finds two extended branches (`assessment`, `rs/cyphr/src/fork.rs`). Holders of the
   same commits reach the same verdict. A proof of possession settles it.
 - **A fork settled by a commit can re-open.** The verdict is a function
   of the commits held, so a fork the principal settled by extending one
@@ -117,9 +121,9 @@ clocks correct.
   parting point extends the abandoned branch. A stale offline device that
   wakes up and signs on the old branch does this without any attacker.
   Pinned by `one_extended_selects_and_the_other_extended_reopens`
-  (`rs/cyphr/tests/fork_rule.rs:246`) and
+  (`rs/cyphr/tests/fork_rule.rs`) and
   `one_extension_resolves_and_the_abandoned_branch_reopens_it`
-  (`rs/cyphr-storage/tests/fork_rule.rs:309`). A fork settled by a proof
+  (`rs/cyphr-storage/tests/fork_rule.rs`). A fork settled by a proof
   of possession does not re-open this way.
 - **A stolen or old key can take a principal over with a proof.** A key
   active at a branch's tip can sign a proof for its own branch, and every
@@ -135,7 +139,7 @@ clocks correct.
   with the commits from a held commit up to its tip. If the proof is
   refused, the commits of that line already kept stay as branch commits
   within the retention caps (`submit_resync`,
-  `rs/cyphr-storage/src/engine/mod.rs:5531`).
+  `rs/cyphr-storage/src/engine/resync.rs`).
 - **Gossip can lag on a proof.** A server that holds the branch a peer's
   proof selects, and sees the same heads, does not fetch that proof in a
   quiet round; it arrives from the sender or a later full round
@@ -143,28 +147,29 @@ clocks correct.
 - **A principal in Error costs a full gossip round every tick.** A proof
   moves no head, so a server never treats a principal it reads in Error,
   or that a peer reads in Error, as idle (`idle_keys`,
-  `rs/cyphr-server/src/gossip.rs:168`).
+  `rs/cyphr-server/src/gossip.rs`).
 - **A junk proof can block sign-in.** A relying party refuses sign-in
   while any served proof names a held branch commit it cannot verify, so
   a peer serving such proofs blocks sign-in for as long as it serves them
-  (`refusal_over`, `rs/cyphr-client/src/relying_party.rs:636`).
+  (`refusal_over`, `rs/cyphr-client/src/relying_party.rs`).
 - **Any once-active key can backdate a commit to re-open or lock a
   principal.** A commit signed by a revoked key is refused only if
   its own `now` is at or after the server's receipt time of the revoke
-  (`dead_key_in`, `rs/cyphr-storage/src/engine/mod.rs:6443`, called at
-  `:3996`), so a holder of a key that was ever active can date a commit
+  (`dead_key_in`, `rs/cyphr-storage/src/engine/death.rs`), so a holder of a key that was ever active can date a commit
   before that cutoff, extend an abandoned branch, and put the principal back
   in Error. This is a liveness cost, not a forged history, and it is a
   known limit until the spec author rules on timestamp monotonicity.
-- **The CLI sends a fork only as an answering pair.** `cyphr push`
-  offers commits that part from a peer's tip only when at least two local
-  commits lie past the parting point (`rs/cyphr-cli/src/commands/network.rs:107-130`).
-  An owner with one commit past it must sign a second before the CLI will
-  send the answer; a lone commit over a peer's tip is refused as stale,
-  because it would move the peer to Error without settling anything.
+- **The CLI sends a fork only when told to.** When a peer's tip is not in
+  the local history, `cyphr push` refuses and prints where the two
+  histories part. `cyphr push --assert-local` sends the local commits
+  after the parting point as a fork, whatever their number; a lone commit
+  over a peer's tip can move the peer to Error without settling anything
+  (`push` in `rs/cyphr-cli/src/commands/network.rs`). If the local
+  history is only behind the peer's tip, `push` refuses as stale and asks
+  for a `fetch` first.
 - **An Active verdict means no fork was seen, not that none exists.** The
   verdict covers the peers that answered. A peer that serves one head is
-  not asked for fork evidence (`sync.rs` asks only when a peer reports
+  not asked for fork evidence (`rs/cyphr-client/src/sync.rs` asks only when a peer reports
   more than one head), and branch heads are hints, never proof. A peer
   can also bury genuine evidence under junk: a verifier reads at most 32
   evidence items per peer per pull, before checking them.
@@ -175,13 +180,12 @@ clocks correct.
   the authority's cap refused them (`BranchLimit` or `Errored`), and does
   not check that they chain to each other, because a commit's `pre` is
   bound only inside its own arrow (`head_is_bound`,
-  `rs/cyphr-server/src/sync.rs:639`, called at `:498`). The witness's own standing and
-  fork point do not depend on those entries.
+  `rs/cyphr-server/src/gossip.rs`). The witness's own standing and fork
+  point do not depend on those entries.
 - **Retained rivals are capped.** An engine keeps at most 16 rival
   lines per principal and 2 lines per signing key, and a line holds at
   most 2 commits (`BRANCH_LIMIT`, `BRANCH_PER_KEY`, `BRANCH_DEPTH`,
-  `rs/cyphr-storage/src/engine/mod.rs:492-505`; the check is `has_slot`,
-  `:703`). An offer past a cap is refused and not retained, with a `409`
+  `rs/cyphr-storage/src/engine/branches.rs`; the check is `has_slot`). An offer past a cap is refused and not retained, with a `409`
   of kind `branch_limit` while the principal is Active and a `423` of kind
   `errored` while it is in Error. A refused offer, alone or as a root with
   its extension, is retained anyway when it changes the principal's
@@ -190,7 +194,7 @@ clocks correct.
   32 + 2h commits, h the principal's chain length. That bound is argued
   from rule X and tested on small generated histories
   (`retained_commits_stay_within_the_bound`,
-  `rs/cyphr-storage/tests/rule_x.rs:426`), not proved.
+  `rs/cyphr-storage/tests/rule_x.rs`), not proved.
   A storage fault between the two writes of an offered pair can leave the
   root kept without its extension; offering the pair again heals it. A relying party that
   cannot record a fork refuses sign-in until it is rebuilt from a fresh
