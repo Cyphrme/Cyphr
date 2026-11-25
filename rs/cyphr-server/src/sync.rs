@@ -778,7 +778,7 @@ mod tests {
             last_updated: 0,
         };
         let report = TipReport {
-            pr: coz::Thumbprint::from_bytes(vec![0xffu8; 32]),
+            pg: coz::Thumbprint::from_bytes(vec![0xffu8; 32]),
             sequence: 0,
             commit_id,
             roots: TipReportRoots {

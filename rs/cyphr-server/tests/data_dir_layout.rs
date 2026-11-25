@@ -348,7 +348,7 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     // -- before: snapshot /tip, /e/{commit_id}, and a login attempt --
 
     let (tip_status_before, tip_before) =
-        common::get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        common::get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status_before, StatusCode::OK, "{tip_before:?}");
     let tip_payload_before = common::envelope_payload(&tip_before).clone();
     let commit_id = tip_payload_before["commit_id"]
@@ -390,7 +390,7 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
         .expect("token issued before deletion must verify");
     // The token's subject is the principal's bare canonical digest.
     assert_eq!(
-        claims_before.pr,
+        claims_before.pg,
         principal_id
             .split_once(':')
             .map_or(principal_id, |(_, digest)| digest)
@@ -421,7 +421,7 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     // -- after: re-issue the same three requests and compare --
 
     let (tip_status_after, tip_after) =
-        common::get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        common::get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status_after, StatusCode::OK, "{tip_after:?}");
     let mut tip_payload_after = common::envelope_payload(&tip_after).clone();
     let mut tip_payload_before_cmp = tip_payload_before.clone();
@@ -462,7 +462,7 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
         .verify_token(&token_after, now_secs())
         .expect("token issued after the index rebuild must verify");
     assert_eq!(
-        claims_after.pr, claims_before.pr,
+        claims_after.pg, claims_before.pg,
         "login must authenticate the same principal before and after the index rebuild"
     );
 }
@@ -503,10 +503,10 @@ fn login_body(
     pay.alg = Some(signer.alg.clone());
     pay.now = Some(now);
     pay.tmb = Some(tmb);
-    pay.typ = Some(format!("{audience}/cyphr/auth/login"));
+    pay.typ = Some(format!("{audience}/user/login/request/create"));
     if let Some(pr) = claimed_pr {
         pay.extra
-            .insert("pr".to_string(), serde_json::Value::String(pr.into()));
+            .insert("pg".to_string(), serde_json::Value::String(pr.into()));
     }
     if let Some(c) = challenge {
         pay.extra

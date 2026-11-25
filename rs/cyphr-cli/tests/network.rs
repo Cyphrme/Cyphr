@@ -248,7 +248,7 @@ fn multi_key_genesis_is_published_with_every_key_created() {
         .expect("tmb")
         .to_owned();
     let init = a.setup(&["init", &format!("--keys={k0},{k1}"), "--genesis-commit"]);
-    let id = init["pr"].as_str().expect("identity").to_owned();
+    let id = init["pg"].as_str().expect("identity").to_owned();
     accepted(&a.push(&id, &server.url), "multi-key genesis push");
 
     let reader = User::new();
@@ -292,7 +292,7 @@ fn paired_device_of_multi_key_principal_trusts_the_remote() {
         .expect("tmb")
         .to_owned();
     let init = a.setup(&["init", &format!("--keys={k0},{k1}"), "--genesis-commit"]);
-    let id = init["pr"].as_str().expect("identity").to_owned();
+    let id = init["pg"].as_str().expect("identity").to_owned();
     accepted(&a.push(&id, &server.url), "publish");
 
     // The phone enrolls its own key; the identity is not a phone key.
@@ -1080,4 +1080,74 @@ fn typed_error_keystore_unknown_version_stays_typed() {
         ),
         "keystore v=99 must be Error::Keystore(UnsupportedVersion): {err:?}"
     );
+}
+
+/// Claim: `cyphr login --peer` signs in to a real server and prints the
+/// bearer token it issued, for the principal and key that signed, in the
+/// timestamp flow and (answering a challenge the server signed) in the
+/// challenge flow; the same signed challenge signs no second login. A login
+/// for another audience is refused.
+/// End-to-end: yes (one real keyed server).
+/// Turns red on: a login the server refuses though the CLI signed it as the
+/// contract says, a token naming another principal or key, a challenge that
+/// signs two logins, or a login accepted for an audience the server is not.
+#[test]
+fn login_signs_in_to_a_server_by_timestamp_and_by_challenge() {
+    let server = Server::start_keyed("svc.example");
+    let a = User::new();
+    let id = a.new_identity();
+    accepted(&a.push(&id, &server.url), "publish the principal");
+    let login = |extra: &[&str]| {
+        let mut args = vec![
+            "login".to_owned(),
+            format!("--identity={id}"),
+            format!("--signer={id}"),
+            format!("--peer={}", server.url),
+        ];
+        args.extend(extra.iter().map(|s| (*s).to_owned()));
+        a.run(&args.iter().map(String::as_str).collect::<Vec<_>>())
+    };
+
+    let by_time = login(&["--audience=svc.example"]);
+    assert!(by_time.ok, "timestamp login: {}", by_time.stderr);
+    let answer = by_time.json();
+    let token: Value = serde_json::from_str(answer["token"].as_str().expect("token")).expect("coz");
+    assert_eq!(
+        token["pay"]["pg"],
+        id.as_str(),
+        "the token names the principal"
+    );
+    assert_eq!(token["pay"]["ltmb"], id.as_str(), "and the key that signed");
+    assert_eq!(
+        answer["audience"], "svc.example",
+        "the output names its audience"
+    );
+
+    let challenge = a.dir.path().join("challenge.json");
+    let served = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let http = cyphr_client::HttpConnector::connect(
+                &server.url,
+                &cyphr_client::HttpOptions::new(std::time::Duration::from_secs(10)),
+            )
+            .expect("connect");
+            cyphr_client::Connector::exchange(
+                &http,
+                &cyphr_client::Request::post("/auth/challenge", Vec::new()),
+            )
+            .await
+        })
+        .expect("a challenge is served");
+    std::fs::write(&challenge, served).expect("save challenge");
+    let file = challenge.to_string_lossy().into_owned();
+    let by_challenge = login(&["--audience=svc.example", "--challenge", &file]);
+    assert!(by_challenge.ok, "challenge login: {}", by_challenge.stderr);
+    let again = login(&["--audience=svc.example", "--challenge", &file]);
+    assert!(!again.ok, "a challenge signs one login");
+
+    let wrong = login(&["--audience=other.example"]);
+    assert!(!wrong.ok, "a login for another audience is refused");
 }

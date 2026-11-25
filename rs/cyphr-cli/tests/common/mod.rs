@@ -60,6 +60,15 @@ impl Server {
     /// A server that pulls from `peers` every second (the server's own
     /// gossip timer), so a branch a peer holds reaches it without a push.
     pub fn start_gossiping(peers: &[&str]) -> Self {
+        Self::start_with(peers, None)
+    }
+
+    /// A server that signs bearer tokens and answers logins for `audience`.
+    pub fn start_keyed(audience: &str) -> Self {
+        Self::start_with(&[], Some(audience))
+    }
+
+    fn start_with(peers: &[&str], audience: Option<&str>) -> Self {
         let dir = TempDir::new().expect("server tempdir");
         let config = dir.path().join("absent.toml");
         if !peers.is_empty() {
@@ -74,11 +83,32 @@ impl Server {
             )
             .expect("gossip config");
         }
-        let mut child = Command::new(server_bin())
+        let mut serve = Command::new(server_bin());
+        serve
             .arg("--config")
             .arg(&config)
             .args(["serve", "--listen", "127.0.0.1:0", "--data-dir"])
-            .arg(dir.path().join("data"))
+            .arg(dir.path().join("data"));
+        if let Some(audience) = audience {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            let kp = coz::Alg::Ed25519.generate_keypair();
+            let key = dir.path().join("signing-key.json");
+            std::fs::write(
+                &key,
+                serde_json::json!({
+                    "alg": kp.alg.name(),
+                    "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+                    "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
+                })
+                .to_string(),
+            )
+            .expect("signing key");
+            serve
+                .arg("--signing-key-path")
+                .arg(&key)
+                .args(["--audience", audience]);
+        }
+        let mut child = serve
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

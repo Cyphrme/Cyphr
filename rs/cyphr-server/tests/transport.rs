@@ -667,7 +667,7 @@ struct Claim<'a> {
     signer: &'a coz::KeyPair,
     /// The thumbprint and principal the pay claims.
     tmb: &'a coz::Thumbprint,
-    pr: &'a str,
+    pg: &'a str,
     /// The `key` sidecar: algorithm, public key, claimed thumbprint.
     sidecar: Option<(&'a str, &'a [u8], &'a coz::Thumbprint)>,
 }
@@ -678,7 +678,7 @@ async fn initiate_with(addr: SocketAddr, claim: Claim<'_>) -> Result<(), Transpo
     let h = channel.handshake_hash().to_vec();
     channel.recv_one().await?;
     let alg = claim.signer.alg.name();
-    let pay = statement_pay(alg, claim.tmb, claim.pr, Role::Initiator, &h, 1_700_000_000)?;
+    let pay = statement_pay(alg, claim.tmb, claim.pg, Role::Initiator, &h, 1_700_000_000)?;
     let (sig, _) =
         coz::sign_json(&pay, alg, &claim.signer.prv_bytes, &claim.signer.pub_bytes).expect("sign");
     channel
@@ -731,7 +731,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let honest = Claim {
         signer: &kp,
         tmb: &tmb,
-        pr: &tmb.to_b64(),
+        pg: &tmb.to_b64(),
         sidecar: Some((kp.alg.name(), &kp.pub_bytes, &tmb)),
     };
     initiate_with(addr, honest)
@@ -744,7 +744,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let lying = Claim {
         signer: &kp,
         tmb: &false_tmb,
-        pr: &false_tmb.to_b64(),
+        pg: &false_tmb.to_b64(),
         sidecar: Some((kp.alg.name(), &kp.pub_bytes, &false_tmb)),
     };
     refused(
@@ -758,7 +758,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let mislabelled = Claim {
         signer: &kp,
         tmb: &tmb,
-        pr: &tmb.to_b64(),
+        pg: &tmb.to_b64(),
         sidecar: Some((kp.alg.name(), &kp.pub_bytes, &false_tmb)),
     };
     refused(
@@ -772,7 +772,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let swapped = Claim {
         signer: &kp,
         tmb: &tmb,
-        pr: &tmb.to_b64(),
+        pg: &tmb.to_b64(),
         sidecar: Some((other.alg.name(), &other.pub_bytes, &other_tmb)),
     };
     refused(
@@ -785,7 +785,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let borrowed = Claim {
         signer: &kp,
         tmb: &tmb,
-        pr: &other_tmb.to_b64(),
+        pg: &other_tmb.to_b64(),
         sidecar: Some((kp.alg.name(), &kp.pub_bytes, &tmb)),
     };
     refused(
@@ -797,7 +797,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let bare = Claim {
         signer: &kp,
         tmb: &tmb,
-        pr: &tmb.to_b64(),
+        pg: &tmb.to_b64(),
         sidecar: None,
     };
     refused(initiate_with(addr, bare).await, "no chain and no sidecar");

@@ -27,21 +27,11 @@ use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::principal::Clock;
 use rand::RngCore;
-use serde_json::Value;
 
 use crate::connector::{ChannelBinding, Connector};
 use crate::evidence::names_pg;
+use crate::login::{self, Issuer, LoginRequest, SignError, SpentChallenges, VerifyError};
 use crate::sync::{Anchor, PeerStanding, PullPeer, PullReport, Record, RecordTip, pull};
-
-/// Suffix of a login `typ`; the text before it is the audience, the
-/// service the principal believes it is signing in to.
-pub const LOGIN_TYP_SUFFIX: &str = "/cyphr/auth/login";
-
-/// How long an issued challenge stays redeemable.
-const CHALLENGE_TTL_SECS: i64 = 120;
-
-/// Challenge length: 256 bits (SPEC 17.2).
-const CHALLENGE_BYTES: usize = 32;
 
 /// How many commits off the record's chain a relying party keeps (rivals
 /// and the commits past them). It is the storage engine's `BRANCH_LIMIT`
@@ -68,11 +58,15 @@ pub const BRANCH_COMMIT_LIMIT: usize = 16;
 pub const BRANCH_COMMITS_PER_KEY: usize = 2;
 
 /// A relying party's own settings.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RpConfig {
     /// The service's name, the authority segment of the login `typ`. A
     /// login signed for another audience is refused.
     pub audience: String,
+    /// The key this service signs its challenges with. The integrating
+    /// site supplies it, as a server's operator supplies the server's
+    /// signing key: the library neither generates, stores nor manages it.
+    pub issuer: std::sync::Arc<dyn Issuer>,
     /// The longest the pull age may grow before the relying party refuses
     /// to sign anyone in and ends its sessions. Always stated: a relying
     /// party with no bound would trust a view of any age.
@@ -238,8 +232,8 @@ pub struct RelyingParty {
     /// overflow means the principal is under attack or the limits are too
     /// low for its legitimate forks.
     overflowed: bool,
-    /// Issued challenges, by value, with their issue time.
-    challenges: BTreeMap<String, i64>,
+    /// Challenges already redeemed, so each signs one login.
+    spent: SpentChallenges,
     sessions: BTreeMap<String, (Thumbprint, SessionBinding)>,
 }
 
@@ -259,7 +253,7 @@ impl RelyingParty {
             lines: Vec::new(),
             unverified: std::collections::BTreeSet::new(),
             overflowed: false,
-            challenges: BTreeMap::new(),
+            spent: SpentChallenges::new(),
             sessions: BTreeMap::new(),
         }
     }
@@ -433,20 +427,23 @@ impl RelyingParty {
             .collect()
     }
 
-    /// Issue a login challenge: a fresh single-use 256-bit nonce.
-    pub fn challenge(&mut self) -> String {
-        let now = (self.clock)();
-        self.challenges
-            .retain(|_, at| now - *at <= CHALLENGE_TTL_SECS);
-        let mut nonce = [0u8; CHALLENGE_BYTES];
-        rand::thread_rng().fill_bytes(&mut nonce);
-        let challenge = Base64UrlUnpadded::encode_string(&nonce);
-        self.challenges.insert(challenge.clone(), now);
-        challenge
+    /// Issue a login challenge: a Coz this relying party signs over a fresh
+    /// 256-bit nonce, valid for [`login::CHALLENGE_TTL_SECS`] and redeemable
+    /// once. The signer returns it inside the login it signs.
+    ///
+    /// # Errors
+    ///
+    /// [`SignError`] if the configured key cannot sign.
+    pub fn challenge(&self) -> Result<coz::CozJson, SignError> {
+        login::issue_challenge(
+            self.config.issuer.as_ref(),
+            &self.config.audience,
+            (self.clock)(),
+        )
     }
 
-    /// Sign the principal in on `login`, a Coz signed over
-    /// `{alg, now, tmb, typ: "<audience>/cyphr/auth/login", pr, challenge}`.
+    /// Sign the principal in on `login`, a request ([`login::sign_request`])
+    /// answering a challenge this relying party issued.
     ///
     /// The decision reads only the replayed key set and this relying
     /// party's own challenge, and only while the view is current.
@@ -454,10 +451,10 @@ impl RelyingParty {
     /// # Errors
     ///
     /// The [`Refusal`] naming the first condition not met. A challenge is
-    /// spent only by a login whose audience and principal were right, so a
-    /// misdirected login does not burn a live challenge, and a login that
-    /// reaches the signature check spends it whether or not it passes.
-    pub fn sign_in(&mut self, login: &coz::CozJson) -> Result<Session, Refusal> {
+    /// spent last, by a login whose signature already verified
+    /// ([`login::redeem_challenge`]): a misdirected or forged login burns
+    /// nothing.
+    pub fn sign_in(&mut self, login: &LoginRequest) -> Result<Session, Refusal> {
         self.sign_in_bound(login, SessionBinding::Key)
     }
 
@@ -474,7 +471,7 @@ impl RelyingParty {
     /// [`sign_in`](Self::sign_in).
     pub fn sign_in_on<C: Connector>(
         &mut self,
-        login: &coz::CozJson,
+        login: &LoginRequest,
         carrier: &C,
     ) -> Result<Session, Refusal> {
         let channel = carrier.channel_binding().ok_or(Refusal::ChannelMismatch)?;
@@ -483,63 +480,52 @@ impl RelyingParty {
 
     fn sign_in_bound(
         &mut self,
-        login: &coz::CozJson,
+        login: &LoginRequest,
         binding: SessionBinding,
     ) -> Result<Session, Refusal> {
         let now = (self.clock)();
-        let pay_bytes =
-            serde_json::to_vec(&login.pay).map_err(|_| Refusal::Malformed("pay is not JSON"))?;
-        let field = |name: &'static str| {
-            login
-                .pay
-                .get(name)
-                .and_then(Value::as_str)
-                .ok_or(Refusal::Malformed(name))
-        };
-        let typ = field("typ")?;
-        let audience = typ
-            .strip_suffix(LOGIN_TYP_SUFFIX)
-            .ok_or(Refusal::Malformed("typ is not a login"))?;
-        if audience != self.config.audience {
+        let parsed = login::parse_request(login).map_err(|e| match e {
+            VerifyError::MissingField(name) => Refusal::Malformed(name),
+            VerifyError::NotALogin | VerifyError::AudienceMissing => {
+                Refusal::Malformed("typ is not a login")
+            },
+            VerifyError::ChannelMalformed => Refusal::Malformed("h is not base64url"),
+            VerifyError::ChallengeInvalid => Refusal::ChallengeInvalid,
+            VerifyError::InvalidSignature => Refusal::InvalidSignature,
+        })?;
+        if parsed.audience != self.config.audience {
             return Err(Refusal::AudienceMismatch);
         }
-        if !names_pg(self.bare_principal(), field("pr")?) {
-            return Err(Refusal::Malformed("pr does not name the pinned principal"));
+        if !names_pg(self.bare_principal(), &parsed.pg) {
+            return Err(Refusal::Malformed("pg does not name the pinned principal"));
         }
         // The login names the channel it is for: the claim a native client
         // signs, absent from a browser edge's. Checked before the challenge
         // is spent, so a login carried to the wrong channel burns nothing.
-        let signed_channel = login.pay.get("h").and_then(Value::as_str);
         let expected = match &binding {
-            SessionBinding::Channel(channel) => {
-                Some(Base64UrlUnpadded::encode_string(channel.as_bytes()))
-            },
+            SessionBinding::Channel(channel) => Some(channel.as_bytes().to_vec()),
             SessionBinding::Key => None,
         };
-        if signed_channel != expected.as_deref() {
+        if parsed.channel != expected {
             return Err(Refusal::ChannelMismatch);
         }
-        let challenge = field("challenge")?;
-        let alg = field("alg")?;
-        let tmb = Base64UrlUnpadded::decode_vec(field("tmb")?)
-            .map(Thumbprint::from_bytes)
-            .map_err(|_| Refusal::Malformed("tmb is not base64url"))?;
-
-        self.require_current(now)?;
-        self.challenges
-            .remove(challenge)
-            .filter(|at| now - *at <= CHALLENGE_TTL_SECS)
-            .ok_or(Refusal::ChallengeInvalid)?;
-
-        let trust = self.trust(&tmb, now)?;
-        let key = self.record.key(&tmb).ok_or(Refusal::InvalidSignature)?;
-        if alg != key.alg()
-            || coz::verify_json(&pay_bytes, &login.sig, key.alg(), key.pub_key()) != Some(true)
-        {
-            return Err(Refusal::InvalidSignature);
+        if parsed.nonce.is_none() {
+            return Err(Refusal::Malformed(login::field::CHALLENGE));
         }
 
-        let mut raw = [0u8; CHALLENGE_BYTES];
+        self.require_current(now)?;
+        let tmb = parsed.tmb.clone();
+        let trust = self.trust(&tmb, now)?;
+        let key = self.record.key(&tmb).ok_or(Refusal::InvalidSignature)?;
+        // The contract's one order: the signature first, then the spend, so
+        // a junk signature cannot burn a live challenge.
+        let verified = parsed
+            .verify(key.alg(), key.pub_key())
+            .map_err(|_| Refusal::InvalidSignature)?;
+        login::redeem_challenge(self.config.issuer.as_ref(), &verified, &mut self.spent, now)
+            .map_err(|_| Refusal::ChallengeInvalid)?;
+
+        let mut raw = [0u8; login::CHALLENGE_BYTES];
         rand::thread_rng().fill_bytes(&mut raw);
         let token = Base64UrlUnpadded::encode_string(&raw);
         let principal = trust.principal.clone();
@@ -693,6 +679,11 @@ mod tests {
             Anchor::GenesisCommit("SHA-256:genesis".to_owned()),
             RpConfig {
                 audience: "rp.example".to_owned(),
+                issuer: std::sync::Arc::new(crate::login::SoftwareIssuer::new(
+                    "Ed25519",
+                    &[0x22; 32],
+                    &[0u8; 32],
+                )),
                 pull_age_bound: Duration::from_secs(30),
                 refresh_interval: Duration::from_secs(10),
             },

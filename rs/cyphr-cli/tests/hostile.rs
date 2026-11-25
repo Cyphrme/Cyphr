@@ -100,7 +100,7 @@ impl Server {
         let mut s = TcpStream::connect(&self.addr).expect("connect");
         write!(
             s,
-            "GET /patch?pr={id} HTTP/1.1\r\nhost: x\r\nconnection: close\r\naccept: \
+            "GET /patch?pg={id} HTTP/1.1\r\nhost: x\r\nconnection: close\r\naccept: \
              application/json\r\n\r\n"
         )
         .expect("send");

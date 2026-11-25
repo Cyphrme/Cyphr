@@ -89,7 +89,7 @@ impl Kp {
 fn statement(
     signer: &Kp,
     claimed_tmb: &coz::Thumbprint,
-    pr: &str,
+    pg: &str,
     role: &str,
     h: &[u8],
 ) -> Vec<u8> {
@@ -98,7 +98,7 @@ fn statement(
         "alg": signer.kp.alg.name(),
         "h": Base64UrlUnpadded::encode_string(h),
         "now": NOW,
-        "pr": pr,
+        "pg": pg,
         "role": role,
         "tmb": claimed_tmb.to_b64(),
         "typ": BIND_TYP,
@@ -407,7 +407,7 @@ async fn sigma_control_honest_responder_receives_the_initiator_statement() {
     assert_eq!(coz.pay["typ"], BIND_TYP);
     assert_eq!(coz.pay["role"], "initiator");
     assert_eq!(coz.pay["h"], Base64UrlUnpadded::encode_string(&seen.h));
-    assert_eq!(coz.pay["pr"], client.pg());
+    assert_eq!(coz.pay["pg"], client.pg());
     assert_eq!(coz.pay["tmb"], client.tmb.to_b64());
     let pay = serde_json::to_vec(&coz.pay).expect("pay");
     assert_eq!(

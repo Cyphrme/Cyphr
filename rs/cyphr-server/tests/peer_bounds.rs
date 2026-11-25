@@ -171,10 +171,10 @@ async fn malformed_pr_triggers_no_outbound_sync() {
     for route in ["/tip", "/patch"] {
         for pr in garbage {
             let before = hits.load(Ordering::SeqCst);
-            let (status, _) = get_json(app.clone(), &format!("{route}?pr={pr}")).await;
+            let (status, _) = get_json(app.clone(), &format!("{route}?pg={pr}")).await;
             assert!(!status.is_server_error(), "{route} pr={pr:.20}: {status}");
             if hits.load(Ordering::SeqCst) != before {
-                leaked.push(format!("{route}?pr={pr:.20}"));
+                leaked.push(format!("{route}?pg={pr:.20}"));
             }
         }
     }
@@ -193,7 +193,7 @@ async fn well_formed_unknown_pr_still_syncs_once_per_request() {
     let (app, _dir) = witness_against(&url).await;
     for _ in 0..2 {
         let before = hits.load(Ordering::SeqCst);
-        let (status, _) = get_json(app.clone(), &format!("/tip?pr={WELL_FORMED_UNKNOWN}")).await;
+        let (status, _) = get_json(app.clone(), &format!("/tip?pg={WELL_FORMED_UNKNOWN}")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(hits.load(Ordering::SeqCst), before + 1);
     }
@@ -226,7 +226,7 @@ async fn repeated_tip_get_does_not_replay_history() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{b:?}");
 
-    let uri = format!("/tip?pr={pid}");
+    let uri = format!("/tip?pg={pid}");
     let before = state.engine.commits_replayed();
     for _ in 0..10 {
         let (s, _) = get_json(app.clone(), &uri).await;
@@ -255,7 +255,7 @@ async fn tip_after_new_commit_is_never_stale() {
     let app = build_router(state.clone());
     let pool = load_pool();
     let pid = golden_principal_id(&pool).await;
-    let uri = format!("/tip?pr={pid}");
+    let uri = format!("/tip?pg={pid}");
     let (s, b) = post_json(
         app.clone(),
         "/push",

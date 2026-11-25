@@ -300,7 +300,7 @@ async fn fork_items(h: &Harness, peer: &str, p: &Principal) -> usize {
     let body: serde_json::Value = h
         .http
         .get(format!("http://{}/evidence", h.peer(peer).addr()))
-        .query(&[("pr", p.0.as_str())])
+        .query(&[("pg", p.0.as_str())])
         .send()
         .await
         .expect("evidence request")
@@ -455,7 +455,7 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     // /proof?pr&size&claim=member:<i>` is `{certificate, bundle}`; nothing
     // echoed, no default to the tip.
     let peer = h.peer("p1").addr();
-    let resp = get(&h, peer, "/tip", &[("pr", pr.0.as_str())]).await;
+    let resp = get(&h, peer, "/tip", &[("pg", pr.0.as_str())]).await;
     assert_eq!(resp.status(), 200, "/tip");
     let body: serde_json::Value = resp.json().await.expect("json");
     let head: Root = serde_json::from_value(body["payload"]["root"].clone())
@@ -485,7 +485,7 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
             &h,
             peer,
             "/proof",
-            &[("pr", pr.0.as_str()), ("size", &n), ("claim", &claim)],
+            &[("pg", pr.0.as_str()), ("size", &n), ("claim", &claim)],
         )
         .await;
         assert_eq!(resp.status(), 200, "index {index} of {}", head.size);

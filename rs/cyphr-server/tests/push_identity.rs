@@ -31,7 +31,7 @@ async fn derived_id(pool: &test_fixtures::Pool) -> String {
 }
 
 async fn tip_status(app: axum::Router, id: &str) -> StatusCode {
-    get_json(app, &format!("/tip?pr={id}")).await.0
+    get_json(app, &format!("/tip?pg={id}")).await.0
 }
 
 // ============================================================================

@@ -51,7 +51,7 @@ fn patch_body(auth: &Authority, pr: &str) -> Vec<u8> {
     let pay = serde_json::json!({
         "alg": auth.key.alg,
         "typ": "cyphr-server/receipt/tip",
-        "pr": pr,
+        "pg": pr,
         "sequence": 1,
         "commit_id": digest(9),
         "roots": { "pr": digest(1), "sr": digest(2), "ar": digest(3), "cr": digest(4) },

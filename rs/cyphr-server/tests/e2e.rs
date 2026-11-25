@@ -39,7 +39,7 @@ async fn tip_after_bootstrap() {
 
     let app = build_router(state.clone());
 
-    let (status, envelope) = get_json(app, &format!("/tip?pr={principal_id}")).await;
+    let (status, envelope) = get_json(app, &format!("/tip?pg={principal_id}")).await;
     assert_eq!(status, StatusCode::OK);
     let tip = envelope_payload(&envelope);
 
@@ -80,7 +80,7 @@ async fn patch_after_bootstrap() {
 
     let app = build_router(state);
 
-    let (status, envelope) = get_json(app, &format!("/patch?pr={principal_id}")).await;
+    let (status, envelope) = get_json(app, &format!("/patch?pg={principal_id}")).await;
     assert_eq!(status, StatusCode::OK);
     let patch = envelope_payload(&envelope);
 
@@ -126,7 +126,7 @@ async fn patch_with_range() {
     // resume from) and `to=0` bounds the response to it. The pre-N4 fixture
     // used `from=0` under sequence-anchor semantics; `0` is no longer a
     // valid digest anchor (Zami #140: sequence is metadata, not a digest).
-    let (status, envelope) = get_json(app, &format!("/patch?pr={principal_id}&to=0")).await;
+    let (status, envelope) = get_json(app, &format!("/patch?pg={principal_id}&to=0")).await;
     assert_eq!(status, StatusCode::OK);
     let patch = envelope_payload(&envelope);
 
@@ -149,7 +149,7 @@ async fn tip_unknown_principal() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
 
-    let (status, _) = get_json(app, "/tip?pr=nonexistent").await;
+    let (status, _) = get_json(app, "/tip?pg=nonexistent").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -629,7 +629,7 @@ async fn push_new_principal_happy_path() {
     );
 
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK);
     let tip = envelope_payload(&tip_envelope);
     // `/tip` names the principal by its bare canonical digest.
@@ -639,7 +639,7 @@ async fn push_new_principal_happy_path() {
     );
     assert_eq!(tip["commit_count"].as_u64().unwrap(), 1);
 
-    let (patch_status, patch_envelope) = get_json(app, &format!("/patch?pr={principal_id}")).await;
+    let (patch_status, patch_envelope) = get_json(app, &format!("/patch?pg={principal_id}")).await;
     assert_eq!(patch_status, StatusCode::OK);
     let patch = envelope_payload(&patch_envelope);
     let entries = patch["entries"].as_array().unwrap();

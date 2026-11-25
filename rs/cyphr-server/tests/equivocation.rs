@@ -234,7 +234,7 @@ async fn same_key_pair_proves_equivocation() {
     assert_eq!(push_status, StatusCode::CREATED);
 
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     assert_eq!(
         tip_envelope["statement"]["kind"],
@@ -244,7 +244,7 @@ async fn same_key_pair_proves_equivocation() {
     let real: coz::CozJson = serde_json::from_value(tip_envelope["statement"]["coz"].clone())
         .expect("real tip cozy deserializes");
 
-    let real_pr = real.pay["pr"].as_str().expect("real pr").to_string();
+    let real_pr = real.pay["pg"].as_str().expect("real pr").to_string();
     let real_sequence = real.pay["sequence"].as_u64().expect("real sequence");
     let real_commit_count = real.pay["commit_count"]
         .as_u64()
@@ -295,12 +295,12 @@ async fn cross_key_pair_proves_equivocation() {
     assert_eq!(push_status, StatusCode::CREATED);
 
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     let real: coz::CozJson = serde_json::from_value(tip_envelope["statement"]["coz"].clone())
         .expect("real tip cozy deserializes");
 
-    let real_pr = real.pay["pr"].as_str().expect("real pr").to_string();
+    let real_pr = real.pay["pg"].as_str().expect("real pr").to_string();
     let real_sequence = real.pay["sequence"].as_u64().expect("real sequence");
     let real_commit_count = real.pay["commit_count"]
         .as_u64()
@@ -498,7 +498,7 @@ fn restamp_pr(
     identity: &ServerIdentity,
     p: serde_json::Value,
 ) -> coz::CozJson {
-    tip.pay["pr"] = p;
+    tip.pay["pg"] = p;
     let pay_bytes = serde_json::to_vec(&tip.pay).expect("serialize restamped pay");
     let (sig, _cad) = identity.sign(&pay_bytes).expect("re-sign restamped pay");
     tip.sig = sig;
@@ -577,7 +577,7 @@ proptest! {
             EquivocationVerdict::Malformed,
             "a report with malformed {} = {:?} MUST diagnose Malformed, not silently Proven or \
              silently folded in with an honest non-conflict verdict",
-            if malformed_on_pr { "pr" } else { "sequence" },
+            if malformed_on_pr { "pg" } else { "sequence" },
             malformed_value
         );
     }

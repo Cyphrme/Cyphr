@@ -160,7 +160,7 @@ fuzz_target!(|data: &[u8]| {
             .expect("an authenticated patch carries its report");
         let bare = asked.split_once(':').map_or(asked.as_str(), |(_, d)| d);
         assert_eq!(
-            report.pr.to_string(),
+            report.pg.to_string(),
             bare,
             "accepted a report for a principal that was not asked for"
         );

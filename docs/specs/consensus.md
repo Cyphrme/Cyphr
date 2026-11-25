@@ -82,7 +82,7 @@ inferable from SPEC.md at `be0663f`," not "implemented in `rs/` or
   a held predecessor is kept as a rival and the principal can enter
   Error; the `423` and `409` contract is in
   `docs/reference/http-api.md` ("`POST /push`").
-- **Resync fetch:** `GET /patch?pr=…&from=…` serves the delta from a
+- **Resync fetch:** `GET /patch?pg=…&from=…` serves the delta from a
   content-digest anchor (§13 Resync, step 2). A server in witness mode
   pulls that delta from one configured upstream and verifies each
   commit before persisting it (`rs/cyphr-server/src/sync.rs`).

@@ -346,7 +346,7 @@ fn test_explicit_multi_key_genesis_reload() {
 
     let keys_arg = format!("--keys={key1_tmb},{key2_tmb}");
     let init = cli.run_json(&["init", &keys_arg]);
-    let pr = init["pr"].as_str().unwrap().to_string();
+    let pr = init["pg"].as_str().unwrap().to_string();
 
     // Reload without ever having pushed anywhere -- same store, same
     // keystore, brand new process invocation.
@@ -388,7 +388,7 @@ fn test_explicit_multi_key_genesis_accepts_commits() {
 
     let keys_arg = format!("--keys={key1_tmb},{key2_tmb}");
     let init = cli.run_json(&["init", &keys_arg]);
-    let pr = init["pr"].as_str().unwrap().to_string();
+    let pr = init["pg"].as_str().unwrap().to_string();
     let identity_arg = format!("--identity={pr}");
     let signer_arg = format!("--signer={key1_tmb}");
 

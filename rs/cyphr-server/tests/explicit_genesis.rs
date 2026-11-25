@@ -179,7 +179,7 @@ async fn multi_key_explicit_genesis_is_pushed_and_replayed_from_blobs() {
         .unwrap()
         .expect("tip after rebuild");
     assert_eq!(after.commit_count, tip.commit_count);
-    let (status, _) = get_json(app, &format!("/tip?pr={pg}")).await;
+    let (status, _) = get_json(app, &format!("/tip?pg={pg}")).await;
     assert_eq!(status, StatusCode::OK, "served after rebuild");
 }
 

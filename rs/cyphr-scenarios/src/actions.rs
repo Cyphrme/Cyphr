@@ -302,7 +302,7 @@ pub struct Session {
     pub token: Token,
     /// The login the client signed, kept so a scenario can carry it to
     /// another channel.
-    pub login: coz::CozJson,
+    pub login: cyphr_client::login::LoginRequest,
     pub key: KeyRef,
     /// The canonical token subject: the principal, however the caller
     /// spelled it when signing in.
@@ -520,7 +520,7 @@ impl Harness {
                 // unpadded SHA-256 PG, which is never one a peer holds.
                 let bogus = format!("{i:0>43}");
                 let url = if i % 2 == 0 {
-                    format!("{base}/evidence?pr={bogus}")
+                    format!("{base}/evidence?pg={bogus}")
                 } else {
                     format!("{base}/revoked?tmbs={bogus}")
                 };
@@ -570,6 +570,15 @@ impl Harness {
             h: self,
             config: cyphr_client::RpConfig {
                 audience: RP_AUDIENCE.to_owned(),
+                // The relying party's own key, which a site would supply.
+                issuer: {
+                    let site = coz::Alg::Ed25519.generate_keypair();
+                    std::sync::Arc::new(cyphr_client::login::SoftwareIssuer::new(
+                        site.alg.name(),
+                        &site.prv_bytes,
+                        &site.pub_bytes,
+                    ))
+                },
                 pull_age_bound: Duration::from_secs(30),
                 refresh_interval: Duration::from_secs(5),
             },
@@ -678,7 +687,7 @@ impl Client<'_> {
         let v = self
             .cyphr(&["init", "--algo", "Ed25519", "--genesis-commit"])
             .await?;
-        let p = Principal(field(&v, "pr")?);
+        let p = Principal(field(&v, "pg")?);
         let key = v["keys"][0]
             .as_str()
             .ok_or_else(|| ActionError::Failed(format!("init named no key: {v}")))?
@@ -704,7 +713,7 @@ impl Client<'_> {
         }
         let keys = tmbs.join(",");
         let v = self.cyphr(&["init", "--keys", &keys]).await?;
-        let p = Principal(field(&v, "pr")?);
+        let p = Principal(field(&v, "pg")?);
         let genesis = cli::public_half(cli::key_entry(&self.dev.keystore, &tmbs[0])?);
         self.h.record_genesis(&p, genesis);
         self.state().signer.insert(p.0.clone(), tmbs[0].clone());
@@ -1184,7 +1193,7 @@ impl Client<'_> {
             .h
             .http
             .get(url)
-            .query(&[("pr", pg.as_str())])
+            .query(&[("pg", pg.as_str())])
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
@@ -1214,7 +1223,7 @@ impl Client<'_> {
     ) -> ActionResult<serde_json::Value> {
         let mut req = self.h.http.get(format!("{}{path}", self.url(peer).await));
         if let Some(pr) = pr {
-            req = req.query(&[("pr", pr)]);
+            req = req.query(&[("pg", pr)]);
         }
         let resp = req
             .send()
@@ -1401,7 +1410,6 @@ impl Client<'_> {
         key: &KeyRef,
     ) -> ActionResult<Session> {
         let (p, key) = (p.clone(), key.0.clone());
-        let entry = cli::key_entry(&self.dev.keystore, &key)?;
         let mut guard = rp.enrolled.lock().await;
         if guard.is_none() {
             let genesis = key_of_entry(&self.h.genesis_of(&p)?)?;
@@ -1424,15 +1432,39 @@ impl Client<'_> {
             .ok_or_else(|| ActionError::Failed("the session exposed no binding".into()))?
             .as_bytes()
             .to_vec();
-        let challenge = enrolled.party.challenge();
-        let login = sign_login(
-            &entry,
-            &key,
-            p.bare(),
-            &rp.config.audience,
-            &challenge,
-            Some(&h),
-        )?;
+        let challenge = enrolled
+            .party
+            .challenge()
+            .map_err(|e| ActionError::Failed(e.to_string()))?;
+        // The device signs with the real binary: the relying party's
+        // challenge is a file the person saves, and the channel is named by
+        // its hash.
+        let file = self
+            .dev
+            .save(
+                "challenge.json",
+                &serde_json::to_vec(&challenge).map_err(|e| ActionError::Failed(e.to_string()))?,
+            )
+            .map_err(|e| ActionError::Failed(e.to_string()))?;
+        let signed = self
+            .cyphr(&[
+                "login",
+                "--sign-only",
+                "--identity",
+                &p.0,
+                "--signer",
+                &key,
+                "--audience",
+                &rp.config.audience,
+                "--challenge",
+                &file.to_string_lossy(),
+                "--channel-hash",
+                &<coz::base64ct::Base64UrlUnpadded as coz::base64ct::Encoding>::encode_string(&h),
+            ])
+            .await?;
+        let login: cyphr_client::login::LoginRequest =
+            serde_json::from_value(signed["login"].clone())
+                .map_err(|e| ActionError::Failed(format!("login answer: {e}: {signed}")))?;
         let session = enrolled
             .party
             .sign_in_on(&login, &conn)
@@ -1563,46 +1595,6 @@ fn key_of_entry(entry: &serde_json::Value) -> ActionResult<cyphr::Key> {
     let tmb = coz::compute_thumbprint_for_alg(alg, &public).ok_or_else(|| bad("a usable key"))?;
     cyphr::Key::new(alg.to_owned(), tmb, public)
         .map_err(|e| ActionError::Failed(format!("keystore key: {e:?}")))
-}
-
-/// The login Coz (SPEC 17.2 Option A) `entry`'s key signs for `challenge`.
-fn sign_login(
-    entry: &serde_json::Value,
-    tmb: &str,
-    pr: &str,
-    audience: &str,
-    challenge: &str,
-    h: Option<&[u8]>,
-) -> ActionResult<coz::CozJson> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    let bytes = |name: &str| {
-        entry[name]
-            .as_str()
-            .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
-            .ok_or_else(|| ActionError::Failed(format!("keystore entry has no {name}")))
-    };
-    let alg = entry["alg"]
-        .as_str()
-        .ok_or_else(|| ActionError::Failed("keystore entry has no alg".into()))?;
-    let mut pay = serde_json::json!({
-        "alg": alg,
-        "now": cyphr::principal::system_clock(),
-        "tmb": tmb,
-        "typ": format!("{audience}{}", cyphr_client::LOGIN_TYP_SUFFIX),
-        "pr": pr,
-        "challenge": challenge,
-    });
-    if let Some(h) = h {
-        pay["h"] = Base64UrlUnpadded::encode_string(h).into();
-    }
-    let pay_bytes = serde_json::to_vec(&pay).map_err(|e| ActionError::Failed(e.to_string()))?;
-    let (sig, _) = coz::sign_json(&pay_bytes, alg, &bytes("prv_key")?, &bytes("pub_key")?)
-        .ok_or_else(|| ActionError::Failed("signing the login failed".into()))?;
-    serde_json::from_value(serde_json::json!({
-        "pay": pay,
-        "sig": Base64UrlUnpadded::encode_string(&sig),
-    }))
-    .map_err(|e| ActionError::Failed(e.to_string()))
 }
 
 fn refusal_of(r: &cyphr_client::Refusal) -> Refusal {

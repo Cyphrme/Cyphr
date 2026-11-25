@@ -417,7 +417,7 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
 // ========================================================================
 
 /// `GET /tip` succeeds with zero `Authorization` header -- SPEC's own
-/// design for witness registration (`GET /tip?pr=...`), not an oversight.
+/// design for witness registration (`GET /tip?pg=...`), not an oversight.
 #[tokio::test]
 async fn tip_succeeds_with_no_bearer_token() {
     let fixture = load_golden("mutations", "key_add_changes_state");
@@ -428,7 +428,7 @@ async fn tip_succeeds_with_no_bearer_token() {
     let app = build_router(state);
 
     let req = Request::builder()
-        .uri(format!("/tip?pr={principal_id}"))
+        .uri(format!("/tip?pg={principal_id}"))
         .body(Body::empty())
         .unwrap();
     assert!(
@@ -453,7 +453,7 @@ async fn patch_succeeds_with_no_bearer_token() {
     let app = build_router(state);
 
     let req = Request::builder()
-        .uri(format!("/patch?pr={principal_id}"))
+        .uri(format!("/patch?pg={principal_id}"))
         .body(Body::empty())
         .unwrap();
     assert!(
@@ -538,9 +538,9 @@ fn login_body(pool: &test_fixtures::Pool, signer_name: &str, pr: &str) -> String
     pay.alg = Some(signer.alg.clone());
     pay.now = Some(real_now());
     pay.tmb = Some(signer.compute_tmb().expect("signer tmb"));
-    pay.typ = Some(format!("{AUDIENCE}/cyphr/auth/login"));
+    pay.typ = Some(format!("{AUDIENCE}/user/login/request/create"));
     pay.extra
-        .insert("pr".to_string(), serde_json::Value::String(pr.into()));
+        .insert("pg".to_string(), serde_json::Value::String(pr.into()));
 
     let pay_bytes = serde_json::to_vec(&pay).unwrap();
     let (sig, _cad) = coz::sign_json(&pay_bytes, &signer.alg, &prv, &pub_key).expect("sign login");
@@ -761,7 +761,7 @@ async fn bearer_refuses_server_signed_non_token() {
     pay.tmb = Some(pool.get("golden").unwrap().compute_tmb().unwrap());
     pay.typ = Some("cyphr-server/auth/not-a-token".to_string());
     pay.extra
-        .insert("pr".to_string(), serde_json::Value::String(pid.clone()));
+        .insert("pg".to_string(), serde_json::Value::String(pid.clone()));
     pay.extra
         .insert("exp".to_string(), serde_json::Value::from(real_now() + 300));
     pay.extra
@@ -814,7 +814,7 @@ async fn token_key_absent_or_missing_is_refused_at_push() {
         pay.tmb = identity.alg().compute_thumbprint(identity.pub_key());
         pay.typ = Some(cyphr_server::auth::token::BEARER_TOKEN_TYP.to_string());
         pay.extra
-            .insert("pr".to_string(), serde_json::Value::String(pid.clone()));
+            .insert("pg".to_string(), serde_json::Value::String(pid.clone()));
         pay.extra
             .insert("exp".to_string(), serde_json::Value::from(real_now() + 300));
         pay.extra

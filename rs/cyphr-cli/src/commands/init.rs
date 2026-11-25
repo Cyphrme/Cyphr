@@ -129,7 +129,8 @@ pub fn run(
         commit_genesis(&mut principal, &keystore, &others, &cli.authority)?;
     }
 
-    // Get identity string for output: PG if available, else PR
+    // The identity printed: PG once established; before genesis (L1/L2) the
+    // genesis identifier is the PR.
     let identity_str = {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         if let Some(pg) = principal.pg() {
@@ -154,14 +155,14 @@ pub fn run(
         OutputFormat::Json => {
             let keys: Vec<_> = principal.active_keys().map(|k| k.tmb().to_b64()).collect();
             let output = serde_json::json!({
-                "pr": identity_str,
+                "pg": identity_str,
                 "keys": keys,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         },
         OutputFormat::Table => {
             println!("Created identity");
-            println!("  pr: {identity_str}");
+            println!("  pg: {identity_str}");
             println!("  keys:");
             for key in principal.active_keys() {
                 let tag_str = key.tag().unwrap_or("-");

@@ -275,9 +275,9 @@ fn login_body(pool: &Pool, signer_name: &str, claimed_pr: &str, now: i64) -> Str
     pay.alg = Some(signer.alg.clone());
     pay.now = Some(now);
     pay.tmb = Some(tmb);
-    pay.typ = Some(format!("{AUDIENCE}/cyphr/auth/login"));
+    pay.typ = Some(format!("{AUDIENCE}/user/login/request/create"));
     pay.extra.insert(
-        "pr".to_string(),
+        "pg".to_string(),
         serde_json::Value::String(claimed_pr.into()),
     );
 
@@ -1063,7 +1063,7 @@ async fn naked_revoke_does_not_mutate_pr() {
 /// The tip roots that a naked revoke must leave untouched.
 async fn tip_roots(state: &Arc<AppState>, pid: &str) -> serde_json::Value {
     let (status, json) =
-        common::get_json(build_router(state.clone()), &format!("/tip?pr={pid}")).await;
+        common::get_json(build_router(state.clone()), &format!("/tip?pg={pid}")).await;
     assert_eq!(status, StatusCode::OK, "tip must be readable: {json:?}");
     let p = common::envelope_payload(&json);
     serde_json::json!({

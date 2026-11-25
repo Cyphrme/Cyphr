@@ -177,7 +177,7 @@ impl Peer {
     /// commit it is later sent, so this is only used to choose what to send.
     pub async fn tip(&self, principal: &str) -> Result<Option<TipAnswer>, PeerError> {
         match self
-            .send(&Request::get(format!("/tip?pr={principal}")))
+            .send(&Request::get(format!("/tip?pg={principal}")))
             .await
         {
             Ok(body) => {
@@ -293,6 +293,27 @@ impl Peer {
         let doc: Value =
             serde_json::from_slice(&answer).map_err(|e| self.malformed(e.to_string()))?;
         Ok(doc["payload"].clone())
+    }
+
+    /// Post a signed login (`POST /auth/login`) and return the bearer
+    /// token the peer issued.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerError`] when the peer is unreachable, refuses the login, or
+    /// answers without a token.
+    pub async fn login(
+        &self,
+        request: &cyphr_client::login::LoginRequest,
+    ) -> Result<String, PeerError> {
+        let bytes = serde_json::to_vec(request).map_err(|e| self.malformed(e.to_string()))?;
+        let answer = self.send(&Request::post("/auth/login", bytes)).await?;
+        let doc: Value =
+            serde_json::from_slice(&answer).map_err(|e| self.malformed(e.to_string()))?;
+        doc["payload"]["token"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| self.malformed("the answer carries no token".into()))
     }
 
     /// Send a naked revoke envelope (`{pay, sig, key}`, SPEC 6.4) to the peer.

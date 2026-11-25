@@ -212,8 +212,8 @@ async fn push_refuses_a_replayed_transaction_coz_and_keeps_the_chain() {
     let (s1, b1) = post_json(app.clone(), "/push", chain.delete_body.clone()).await;
     assert_eq!(s1, StatusCode::CREATED, "delete push: {b1:?}");
 
-    let tip_uri = format!("/tip?pr={id}");
-    let patch_uri = format!("/patch?pr={id}");
+    let tip_uri = format!("/tip?pg={id}");
+    let patch_uri = format!("/patch?pg={id}");
     let (_, tip_before) = get_json(app.clone(), &tip_uri).await;
     let (_, patch_before) = get_json(app.clone(), &patch_uri).await;
     assert_eq!(envelope_payload(&tip_before)["commit_count"], 3);

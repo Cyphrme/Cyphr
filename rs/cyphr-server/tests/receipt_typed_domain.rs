@@ -191,7 +191,7 @@ fn roots_from(pr: &str, sr: &str, ar: &str, cr: &str) -> Roots {
     }
 }
 
-/// Overwrite one payload field -- top-level (`"pr"`, `"commit_id"`,
+/// Overwrite one payload field -- top-level (`"pg"`, `"commit_id"`,
 /// `"sequence"`) or one level nested (`"roots.<field>"`) -- on an
 /// already-signed report and re-sign under the SAME identity -- the
 /// "dishonest signer hand-crafts its own report" pattern already
@@ -361,7 +361,7 @@ proptest! {
             if as_string { "string" } else { "number" }
         );
         prop_assert_eq!(
-            parsed.pr.to_string(), pr,
+            parsed.pg.to_string(), pr,
             "a pr genesis-identifier string MUST parse to the equal identifier"
         );
     }
@@ -395,7 +395,7 @@ proptest! {
     fn malformed_report_is_not_a_silent_escape(
         pr_bytes in arb_digest_bytes(),
         commit_bytes in arb_digest_bytes(),
-        malformed_field in prop_oneof![Just("sequence"), Just("pr"), Just("commit_id")],
+        malformed_field in prop_oneof![Just("sequence"), Just("pg"), Just("commit_id")],
         malformed_sequence in arb_malformed_sequence_string(),
         malformed_digest in arb_malformed_digest_string(),
     ) {
@@ -417,7 +417,7 @@ proptest! {
 
         let malformed_value = match malformed_field {
             "sequence" => serde_json::json!(malformed_sequence),
-            "pr" | "commit_id" => serde_json::json!(malformed_digest),
+            "pg" | "commit_id" => serde_json::json!(malformed_digest),
             _ => unreachable!("prop_oneof exhausts exactly these three field names"),
         };
         let b = resign_with_field(&identity, b, malformed_field, malformed_value.clone());
@@ -536,7 +536,7 @@ proptest! {
         pr_bytes in arb_digest_bytes(),
         commit_bytes in arb_digest_bytes(),
         malformed_field in prop_oneof![
-            Just("pr"), Just("commit_id"),
+            Just("pg"), Just("commit_id"),
             Just("roots.pr"), Just("roots.sr"), Just("roots.ar"), Just("roots.cr"),
         ],
         shape in arb_malformed_shape(),
@@ -575,7 +575,7 @@ proptest! {
         // The value legitimately sitting at `malformed_field` on `b`
         // before corruption -- what an array-unwrap bug would recover.
         let own_value = match malformed_field {
-            "pr" => pr.clone(),
+            "pg" => pr.clone(),
             "commit_id" => commit_b.clone(),
             "roots.pr" | "roots.sr" | "roots.ar" | "roots.cr" => pr_root.clone(),
             _ => unreachable!("prop_oneof exhausts exactly these six field names"),
@@ -619,7 +619,7 @@ proptest! {
         pr_bytes in arb_digest_bytes(),
         commit_bytes in arb_digest_bytes(),
         malformed_field in prop_oneof![
-            Just("pr"), Just("commit_id"),
+            Just("pg"), Just("commit_id"),
             Just("roots.pr"), Just("roots.sr"), Just("roots.ar"), Just("roots.cr"),
         ],
         malformed_digest in arb_malformed_digest_string(),
@@ -631,7 +631,7 @@ proptest! {
         let mut roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
         let (arg_pr, arg_commit) = match malformed_field {
-            "pr" => (malformed_digest.clone(), commit_id.clone()),
+            "pg" => (malformed_digest.clone(), commit_id.clone()),
             "commit_id" => (pr.clone(), malformed_digest.clone()),
             "roots.pr" => {
                 roots.pr = malformed_digest.clone();
