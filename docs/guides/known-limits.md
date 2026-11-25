@@ -259,7 +259,8 @@ These are guarantees a reader might assume. None is provided today.
   view is current.
 - **Timestamps.** The `now` in a receipt is the server's own clock, which
   no one else attests.
-- **Bearer tokens.** A token lives 15 minutes and cannot be revoked. A
+- **Bearer tokens.** A token lives 15 minutes by default (`session_ttl_secs`,
+  at most an hour) and cannot be revoked. A
   server grants a login the permissions its service's policy returns, and
   none without one. No Cyphr route requires a token. `POST /push` is authorized by the bundle's own
   signatures, and checks a token only when the request presents one.

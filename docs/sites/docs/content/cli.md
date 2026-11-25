@@ -49,13 +49,37 @@ cyphr init --key <thumbprint>
 
 # Explicit genesis — multiple keys (Level 3)
 cyphr init --keys <tmb1>,<tmb2>
+
+# Implicit genesis, and publish the genesis commit now
+cyphr init --genesis-commit
 ```
 
-| Flag     | Default | Description                                                  |
-| -------- | ------- | ------------------------------------------------------------ |
-| `--algo` | `ES256` | Algorithm for genesis key (ES256, ES384, ES512, Ed25519)     |
-| `--key`  | —       | Use existing key from keystore (by thumbprint)               |
-| `--keys` | —       | Comma-separated thumbprints for explicit (multi-key) genesis |
+| Flag               | Default | Description                                                                                                                                            |
+| ------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--algo`           | `ES256` | Algorithm for genesis key (ES256, ES384, ES512, Ed25519)                                                                                               |
+| `--key`            | —       | Use existing key from keystore (by thumbprint)                                                                                                         |
+| `--keys`           | —       | Comma-separated thumbprints for explicit (multi-key) genesis                                                                                           |
+| `--genesis-commit` | off     | Also sign and store the genesis commit (single-key `init` otherwise leaves a principal with no commit; `--keys` with more than one key always commits) |
+
+A principal with no commit has nothing for `cyphr push` to send, and `key add`,
+`data action` and `data commit` refuse it. `cyphr upgrade` commits it later.
+
+### `cyphr upgrade`
+
+Create the genesis commit of a Level 1 identity that `init` left without one
+(SPEC 5.1). The principal and its identifier stay the same. Refused on an
+identity that already has a commit.
+
+```bash
+cyphr upgrade --identity <pg>
+```
+
+| Flag         | Required | Description                   |
+| ------------ | -------- | ----------------------------- |
+| `--identity` | yes      | Principal Genesis (base64url) |
+
+`key add --upgrade`, `data action --upgrade` and `data commit --upgrade` make
+the genesis commit as part of the command instead of refusing.
 
 ### `cyphr key generate`
 

@@ -28,7 +28,13 @@ the CLI does to protect the file.
 cyphr init --algo ES256
 ```
 
-This generates a new ECDSA keypair, creates an implicit Level 1 Principal, and stores both the keypair and Principal state to your local storage directory.
+This generates a new ECDSA keypair, creates an implicit Level 1 Principal, and stores both the keypair and Principal state to your local storage directory. A Level 1 principal has no commit, so `cyphr push` has nothing to send for it. Pass `--genesis-commit` to publish the genesis commit at the same time (the genesis key signs a `key/create` for itself and each further key, a `principal/create` and the commit that finalizes them):
+
+```bash
+cyphr init --algo ES256 --genesis-commit
+```
+
+`--keys <tmb1>,<tmb2>` creates a multi-key principal, which always commits its genesis.
 
 ### Move a Level 1 Principal up
 
