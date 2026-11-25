@@ -122,7 +122,9 @@ unkeyed because of a typo would stop issuing logins with no signal.
 Configuration merges from four layers, each overriding the one below: CLI
 flags, then `CYPHR_*` environment variables, then a TOML file, then compiled
 defaults. The TOML file is `./cyphr-server.toml` unless `--config` names
-another, and a missing file is not an error.
+another. A file named with `--config` must exist, or the server refuses to start;
+with no `--config`, `./cyphr-server.toml` is read when present and compiled
+defaults apply when it is not.
 
 That default is worth respecting: the file is looked up in the working
 directory, not beside the binary or the data directory, and a stray
@@ -299,26 +301,24 @@ data/
 ├── record/            what the server was told; irrecoverable if lost
 │   ├── blobs/              the commits themselves, and each principal's
 │   │                       chain (including its EML commit-tree keyspaces
-│   │                       -- record data, not a derived projection)
-│   ├── observations/       the key death-set
+│   │                       -- record data, not a derived projection), and
+│   │                       the key death-set
 │   ├── admission/          spent invite tokens (policy = "invite" only)
 │   └── server-principal.json
 └── index/             what the server works out, rebuildable from record/
 ```
 
-Each of `blobs/`, `observations/`, and `admission/` is a separate embedded
-database; `server-principal.json` is a plain file. The `record/` / `index/`
+Each of `blobs/` and `admission/` is a separate embedded database; `server-principal.json` is a plain file. The `record/` / `index/`
 split is not arbitrary and it decides your backup policy: everything under
 `record/` is irrecoverable if lost, and `index/` is the only directory you
 may ever `rm -rf`.
 
-| Path                           | Rebuildable?                  | Lose it and…                                |
-| :----------------------------- | :---------------------------- | :------------------------------------------ |
-| `record/blobs/`                | No — this is the data         | Every principal you host is gone.           |
-| `index/`                       | Yes, from `record/`           | Nothing, after a rebuild.                   |
-| `record/observations/`         | No                            | Every key declared dead comes back to life. |
-| `record/admission/`            | No                            | Every spent invite token becomes reusable.  |
-| `record/server-principal.json` | By hand, from the signing key | The server will not start. See below.       |
+| Path                           | Rebuildable?                  | Lose it and…                                                                      |
+| :----------------------------- | :---------------------------- | :-------------------------------------------------------------------------------- |
+| `record/blobs/`                | No — this is the data         | Every principal you host is gone, and every key declared dead comes back to life. |
+| `index/`                       | Yes, from `record/`           | Nothing, after a rebuild.                                                         |
+| `record/admission/`            | No                            | Every spent invite token becomes reusable.                                        |
+| `record/server-principal.json` | By hand, from the signing key | The server will not start. See below.                                             |
 
 **The invite tokens file belongs in your backup plan even though it is not
 in this table.** Under `policy = "invite"` it does not have to live inside
@@ -327,10 +327,10 @@ not rebuildable. Lose it and every outstanding, unspent invite is dead; the
 `data/record/admission/` spent-set backs up the tokens already used, not the
 ones still good.
 
-**`record/observations/` is separate precisely so a rebuild cannot erase
-it.** A key declared dead by its holder is not recorded on anyone's chain —
-a naked revoke mutates no principal — so if that record lived in the index,
-the next reindex would silently wipe it. Delete the index outright and
+**The key death-set lives in `record/blobs/`, not in the index.** A key
+declared dead by its holder is not recorded on anyone's chain — a naked revoke
+mutates no principal — so the engine keeps it in the record store, where a
+rebuild re-verifies it rather than discarding it. Delete the index outright and
 rebuild it, and a key revoked beforehand is still refused afterward.
 
 ```sh
@@ -878,9 +878,8 @@ active in several principals; a death record kills it in all of them. There
 is no un-revoke.
 
 **It survives anything short of losing the disk.** The record lives in
-`data/record/observations/`, its own store, for the reason given in the
-backup section: it is not derivable from any chain, so an index rebuild must
-not be able to erase it.
+`data/record/blobs/`, for the reason given in the backup section: it is not
+derivable from any chain, so an index rebuild must not be able to erase it.
 
 **It can kill any key, a genesis key included.** The server checks the
 revoke against the key it discloses and nothing else, so a principal's
