@@ -277,6 +277,19 @@ impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::Me
     }
 }
 
+/// Whether shadow checking is asked for by the environment: only a build
+/// with `test-utils` reads it, so a release engine's behaviour is never
+/// set from outside its constructor's arguments.
+#[cfg(any(test, feature = "test-utils"))]
+fn kept_shadow_from_env() -> bool {
+    std::env::var_os("CYPHR_KEPT_SHADOW").is_some_and(|v| v != "0")
+}
+
+#[cfg(not(any(test, feature = "test-utils")))]
+fn kept_shadow_from_env() -> bool {
+    false
+}
+
 impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// Create a new engine wrapping the given backends, with `logs` opening
     /// each [`cyphr::Principal`]'s Commit Tree storage by principal and
@@ -301,7 +314,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 } else {
                     0
                 },
-                std::env::var_os("CYPHR_KEPT_SHADOW").is_some_and(|v| v != "0"),
+                kept_shadow_from_env(),
             ),
             logs_durable,
             counters: Counters::default(),
@@ -326,10 +339,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// Replay cold, and compare with the kept state, every time a write
-    /// or a reader would use one: a divergence is counted ([`Self::kept_divergences`]),
-    /// logged, and fails the write with [`EngineError::Storage`], so a
-    /// run that exercises it cannot pass over one. Also on when the
-    /// `CYPHR_KEPT_SHADOW` environment variable is set and not `0`.
+    /// or a reader would use one: a divergence is logged and fails the
+    /// write with [`EngineError::Storage`], so a run that exercises it
+    /// cannot pass over one. A build with the `test-utils` feature also
+    /// turns it on at construction when the `CYPHR_KEPT_SHADOW` environment
+    /// variable is set and not `0`; a release build never reads it.
     #[must_use]
     pub fn with_kept_shadow(mut self, on: bool) -> Self {
         self.kept.set_shadow(on);
@@ -345,18 +359,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// Uses of a principal, by a write or a reader, served from a kept
     /// state, over this engine's lifetime.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn kept_hits(&self) -> u64 {
         self.counters.get(Counter::KeptHits)
     }
 
     /// Uses of a stored principal that replayed its history because no
     /// kept state matched.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn kept_misses(&self) -> u64 {
         self.counters.get(Counter::KeptMisses)
     }
 
     /// Shadow checks where a kept state differed from the replay. Must be
     /// 0: a kept state is a cache of the replay, never another answer.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn kept_divergences(&self) -> u64 {
         self.counters.get(Counter::KeptDivergences)
     }
@@ -364,6 +381,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// Stored commits replayed by whole-chain or bounded replays, over this
     /// engine's lifetime: what a write or a root derivation cost in
     /// protocol checks.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn commits_replayed(&self) -> u64 {
         self.counters.get(Counter::CommitsReplayed)
     }
@@ -371,6 +389,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// Commit records this engine has read from its index, over its
     /// lifetime: what a request cost in index reads, which the replay count
     /// cannot see (a walk of the chain checks no signature).
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn chain_rows_read(&self) -> u64 {
         self.counters.get(Counter::ChainRowsRead)
     }
@@ -396,6 +415,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// is kept and current (the tip it stands at is the principal's tip
     /// now). A cache of the replay of the stored chain, exposed so a test
     /// can hold it to that.
+    #[cfg(any(test, feature = "test-utils"))]
     pub async fn kept_state(&self, principal_id: &str) -> Option<cyphr::PrincipalState> {
         let key = self.resolve_key(principal_id).await.ok()?;
         let stored = key.as_deref().unwrap_or(principal_id);

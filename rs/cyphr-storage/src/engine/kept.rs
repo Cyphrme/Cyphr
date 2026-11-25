@@ -162,6 +162,7 @@ impl KeptStates {
 
     /// A copy of the entry of the principal `write` locks, for a test's
     /// reader that must leave it in place ([`StorageEngine::kept_state`]).
+    #[cfg(any(test, feature = "test-utils"))]
     pub(super) fn copy(&self, write: &WriteLock<'_>) -> Option<Kept> {
         self.entries
             .lock()

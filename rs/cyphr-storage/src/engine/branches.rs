@@ -1521,12 +1521,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// How many stored commits retention has replayed so far: the cost
     /// refused bundles have put on this engine. Exposed so a test can pin
     /// that an unauthenticated bundle costs none.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn retention_replays(&self) -> u64 {
         self.counters.get(Counter::RetentionReplays)
     }
 
     /// How many positions retention has tried a bundle at so far (the
     /// positions where the bundle's signers were active).
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn retention_trials(&self) -> u64 {
         self.counters.get(Counter::RetentionTrials)
     }

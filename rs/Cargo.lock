@@ -804,6 +804,7 @@ dependencies = [
  "cyphr",
  "cyphr-blob-fjall",
  "cyphr-index-fjall",
+ "cyphr-storage",
  "fjall",
  "proptest",
  "serde",
