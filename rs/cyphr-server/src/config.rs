@@ -417,8 +417,10 @@ pub struct LimitsConfig {
     /// connection is dropped.
     pub header_read_timeout_secs: NonZeroU64,
 
-    /// Seconds a whole request may take, body included, before it is
-    /// answered `408`.
+    /// Seconds a whole exchange may take, from the request's first byte to
+    /// the response's last byte delivered. A handler still running at the
+    /// limit is answered `408`; a client that drips its request or its read
+    /// of the response is cut off a second later.
     pub request_timeout_secs: NonZeroU64,
 
     /// Seconds a connection may sit with no byte read or written, a
