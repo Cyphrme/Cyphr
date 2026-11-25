@@ -28,7 +28,7 @@ Every command accepts these flags:
 | `--store`     | `file:./cyphr-data` | Storage backend URI                         |
 | `--keystore`  | `./cyphr-keys.json` | Path to private key file                    |
 | `--authority` | `cyphr.me`          | Authority domain for transaction `typ` URIs |
-| `--output`    | `table`             | Output format: `table` or `json`            |
+| `--format`    | `table`             | Output format: `table` or `json`            |
 
 ## Commands
 
@@ -245,10 +245,10 @@ cyphr tx verify --identity U5XUZots-WmQ...
 
 ## Output Formats
 
-All commands support `--output json` for machine consumption:
+All commands support `--format json` for machine consumption:
 
 ```bash
-cyphr inspect --identity <pr> --output json
+cyphr --format json inspect --identity <pr>
 ```
 
 ```json

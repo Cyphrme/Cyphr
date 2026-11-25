@@ -336,7 +336,7 @@ impl User {
             .arg(self.dir.path().join("keys.json"))
             .arg("--store")
             .arg(format!("file:{}", self.store().display()))
-            .args(["--output", "json"])
+            .args(["--format", "json"])
             .args(args)
             .output()
             .expect("running cyphr");

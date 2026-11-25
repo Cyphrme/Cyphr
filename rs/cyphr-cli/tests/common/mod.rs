@@ -181,7 +181,7 @@ impl User {
             .arg(self.keystore())
             .arg("--store")
             .arg(self.store_uri())
-            .args(["--output", "json"])
+            .args(["--format", "json"])
             .args(args)
             .output()
             .expect("running cyphr");

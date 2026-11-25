@@ -4,7 +4,7 @@
 //! Contract these tests pin (the implementation is free to add to it):
 //!
 //! - `cyphr push --identity <pr> --peer <url>`: exit 0 if the peer accepted. A refusal is a
-//!   non-zero exit and, under `--output json`, one JSON object on stderr whose `error.kind` names
+//!   non-zero exit and, under `--format json`, one JSON object on stderr whose `error.kind` names
 //!   the typed cause (`"stale"` for a peer holding a newer tip).
 //! - `cyphr fetch --identity <pr> --peer <url> [--trust-remote]`: pulls and verifies the peer's
 //!   commits into the local store. A local history that differs from the peer's is refused with

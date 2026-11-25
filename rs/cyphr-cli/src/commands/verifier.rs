@@ -67,7 +67,7 @@ pub struct Inputs<'a> {
 }
 
 fn emit(cli: &Cli, value: &Value, table: impl FnOnce()) -> crate::Result<()> {
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(value)?),
         OutputFormat::Table => table(),
     }
@@ -811,11 +811,11 @@ pub fn watch(
     let mut done = 0u64;
     loop {
         match verify_once(cli, inputs) {
-            Ok(out) => match cli.output {
+            Ok(out) => match cli.format {
                 OutputFormat::Json => println!("{}", serde_json::to_string(&out)?),
                 OutputFormat::Table => print_table(&out),
             },
-            Err(e) => match cli.output {
+            Err(e) => match cli.format {
                 OutputFormat::Json => println!(
                     "{}",
                     json!({"error": {"kind": e.kind(), "message": e.to_string()}})

@@ -11,7 +11,7 @@ fn cyphr(keystore: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_cyphr"))
         .arg("--keystore")
         .arg(keystore)
-        .args(["--output", "json"])
+        .args(["--format", "json"])
         .args(args)
         .output()
         .expect("running cyphr")
@@ -105,7 +105,7 @@ fn key_list_labels_custody() {
     let table = Command::new(env!("CARGO_BIN_EXE_cyphr"))
         .arg("--keystore")
         .arg(&ks)
-        .args(["--output", "table", "key", "list"])
+        .args(["--format", "table", "key", "list"])
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&table.stdout).contains("software-held, unencrypted"));
@@ -120,7 +120,7 @@ fn default_keystore_leaves_cwd_mode() {
     set_mode(cwd.path(), 0o755);
     let out = Command::new(env!("CARGO_BIN_EXE_cyphr"))
         .current_dir(cwd.path())
-        .args(["--output", "json", "key", "generate", "--algo", "ES256"])
+        .args(["--format", "json", "key", "generate", "--algo", "ES256"])
         .output()
         .unwrap();
     assert!(

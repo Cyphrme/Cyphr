@@ -100,7 +100,7 @@ pub enum PeerError {
 }
 
 impl PeerError {
-    /// The refusal kind this error reports under `--output json`.
+    /// The refusal kind this error reports under `--format json`.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {

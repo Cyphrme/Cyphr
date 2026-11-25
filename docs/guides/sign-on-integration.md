@@ -150,9 +150,9 @@ guide builds the push by hand with `curl` instead, so that you see the raw
 request and the signed response your app will meet.
 
 ```sh
-PR=$(cyphr --output json key generate --algo ES256 | jq -r .tmb)
+PR=$(cyphr --format json key generate --algo ES256 | jq -r .tmb)
 cyphr upgrade --identity="$PR"
-cyphr --output json key add --identity="$PR" --signer="$PR"
+cyphr --format json key add --identity="$PR" --signer="$PR"
 cyphr export --identity="$PR" --output ./export.jsonl
 ```
 

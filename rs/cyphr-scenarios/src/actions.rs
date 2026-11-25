@@ -1473,7 +1473,7 @@ impl Client<'_> {
     }
 }
 
-/// Read a `cyphr verify --output json` answer as a [`Verdict`]. `names` and
+/// Read a `cyphr verify --format json` answer as a [`Verdict`]. `names` and
 /// `urls` pair the scenario's peer names with the URLs the CLI was given.
 fn parse_verdict(
     v: &serde_json::Value,

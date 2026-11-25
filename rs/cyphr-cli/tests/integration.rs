@@ -67,7 +67,7 @@ impl CliTest {
 
     /// Run with JSON output and parse a field.
     fn run_json(&self, args: &[&str]) -> serde_json::Value {
-        let mut full_args = vec!["--output", "json"];
+        let mut full_args = vec!["--format", "json"];
         full_args.extend(args);
         let out = self.run_ok(&full_args);
         serde_json::from_str(&out).expect("invalid JSON output")
@@ -101,7 +101,7 @@ fn test_ed25519_level2_export_import_roundtrip() {
         .args([
             "--store",
             &import_uri,
-            "--output",
+            "--format",
             "json",
             "import",
             "--input",
@@ -170,7 +170,7 @@ fn test_export_import_roundtrip() {
         .arg(cli.keystore_path())
         .arg("--store")
         .arg(&import_uri)
-        .arg("--output")
+        .arg("--format")
         .arg("json")
         .arg("key")
         .arg("list")

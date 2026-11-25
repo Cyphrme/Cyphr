@@ -58,7 +58,7 @@ pub fn upgrade(cli: &Cli, identity: &str) -> crate::Result<()> {
         .rfind(|l| !l.commit_id.is_empty())
         .map(|l| l.commit_id)
         .ok_or_else(|| Error::EmptyHistory(identity.to_owned()))?;
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -151,7 +151,7 @@ pub fn run(
     save_principal_to_engine(&store, &keystore, &principal)?;
 
     // Output result
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let keys: Vec<_> = principal.active_keys().map(|k| k.tmb().to_b64()).collect();
             let output = serde_json::json!({

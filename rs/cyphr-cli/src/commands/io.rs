@@ -45,7 +45,7 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
     }
     writer.flush()?;
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let result = serde_json::json!({
                 "identity": identity,
@@ -128,7 +128,7 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     // Store commits
     save_principal_to_engine(&store, &keystore, &principal)?;
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
             let pg_b64 = pg

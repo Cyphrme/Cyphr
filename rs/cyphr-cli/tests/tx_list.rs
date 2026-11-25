@@ -22,7 +22,7 @@ fn the_tx_list_table_names_kinds_in_words() {
         .arg("--store")
         .arg(user.store_uri())
         .args([
-            "--output",
+            "--format",
             "table",
             "tx",
             "list",

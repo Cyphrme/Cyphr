@@ -1,5 +1,5 @@
 //! One device's `cyphr` CLI: its own store and keystore, driven as a
-//! subprocess with `--output json`.
+//! subprocess with `--format json`.
 //!
 //! The CLI's machine contract is a JSON document on stdout on success, and
 //! on failure a non-zero exit whose last stderr line is
@@ -63,7 +63,7 @@ impl Device {
             .arg(format!("file:{}", self.store.display()))
             .arg("--keystore")
             .arg(&self.keystore)
-            .args(["--output", "json", "--peer-timeout-secs"])
+            .args(["--format", "json", "--peer-timeout-secs"])
             .arg(peer_wait.to_string())
             .args(bind_values(args));
         // The CLI bounds its own peer calls; a call that outlives them many
