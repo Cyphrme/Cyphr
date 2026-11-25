@@ -271,9 +271,10 @@ pub struct Cli {
     #[arg(long)]
     pub allow_cleartext: bool,
 
-    /// Output format
+    /// Output format. Named `--format` so it cannot be read as the file
+    /// `export --output` writes.
     #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
-    pub output: OutputFormat,
+    pub format: OutputFormat,
 
     /// Subcommand to execute
     #[command(subcommand)]

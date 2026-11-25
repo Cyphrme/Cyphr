@@ -109,8 +109,7 @@ commit, err := batch.Finalize()
 ```
 
 Each commit bundles one or more signed transactions into an atomic unit with
-a finality marker, appended to the principal's MALT (Merkle Append-only Log
-Tree).
+a finality marker, appended to the principal's Commit Tree, a Merkle append-only log.
 
 ## Recording Actions (Level 4)
 
@@ -132,7 +131,7 @@ recomputation.
 
 ## Next Steps
 
-- Read the [Protocol Specification](../specification.html) for the full
+- Read the [Protocol Specification](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md) for the full
   formal treatment
 - Browse the [source](https://github.com/Cyphrme/Cyphr/tree/main/go) for
   implementation details

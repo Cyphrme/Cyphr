@@ -121,12 +121,10 @@ TYPE PublicKeyInfo  = { thumbprint, algorithm, public_key }
 BlobStore — always rebuildable by scanning blobs and re-parsing. The Indexer
 MUST NOT be the source of truth for any data that can be derived from blob
 content.
-`VERIFIED: rs/cyphr-storage/src/index/mod.rs — trait doc, reindex() in engine`
 
 **[index-idempotent]**: `index_commit()` MUST be idempotent. Re-indexing a
 commit that is already indexed (identified by `commit_id`) MUST be a no-op
 and MUST NOT produce an error.
-`VERIFIED: rs/cyphr-index-fjall/src/lib.rs — db_index_commit's contains_key(commit_key) early-return; rs/cyphr-storage/src/index/memory.rs — dedup check`
 
 ### Digest Resolution
 
@@ -136,14 +134,12 @@ SR, AR, KR, CR, TR). The Indexer MUST NOT store only a single algorithm
 variant. Each variant MUST resolve to the same underlying entity. This
 enables O(1) lookup by any algorithm variant, supporting the multihash
 nature of the protocol (per `state-tree.md` [mhmr-equivalence]).
-`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — format_multihash_all()`
 
 **[alg-set-storage-transition]**: When the active algorithm set changes at
 a commit boundary (key added or removed), the MHMR variants stored in the
 digest index for that commit MUST reflect the **post-mutation** algorithm
 set. The Indexer MUST NOT store variants for deactivated algorithms on new
 commits, and MUST begin storing variants for newly activated algorithms.
-`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — uses post-commit alg set`
 
 ### Data Action Indexing
 
@@ -151,7 +147,6 @@ commits, and MUST begin storing variants for newly activated algorithms.
 mapping each data action's `czd` (as a `TaggedDigest`) to its blob, in
 addition to the aggregate DR at each commit. Actions are the atomic unit
 of data in Cyphr — individually signed and individually verifiable.
-`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — transaction_ids indexed`
 
 ### Query Scoping
 
@@ -177,7 +172,6 @@ if/when a cross-principal query method is added to the trait.
 **[no-stale-tip]**: The TipState returned by `get_tip()` MUST reflect the
 most recently indexed commit for that principal. A TipState that lags behind
 the indexed commit chain is a consistency violation.
-`VERIFIED: rs/cyphr-index-fjall/src/lib.rs — db_index_commit's tips batch.insert runs in the same atomic batch as commits/principals`
 
 ### Async
 
@@ -185,7 +179,6 @@ the indexed commit chain is a consistency violation.
 RPITIT (`impl Future<Output = ...> + Send`). See `blob-store.md`
 [async-storage] for the rationale and the RPITIT note explaining why
 `impl Future + Send` is used instead of `async fn`.
-`VERIFIED: rs/cyphr-storage/src/index/mod.rs — all methods use RPITIT`
 
 **[runtime-agnostic-index]**: The `Indexer` trait MUST NOT depend on any
 specific async runtime in its signature. See `blob-store.md`
@@ -196,7 +189,6 @@ in implementation crates.
 ### Thread Safety
 
 **[send-sync-index]**: The `Indexer` trait MUST require `Send + Sync`.
-`VERIFIED: rs/cyphr-storage/src/index/mod.rs — trait bound`
 
 ## Trait Signature
 
@@ -235,7 +227,6 @@ of its referenced blobs present in the BlobStore. An indexed commit with
 missing blobs is a consistency violation. The engine's write path (store
 blobs before indexing) prevents this under normal operation; recovery
 re-indexing repairs it.
-`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — ingest_commit ordering`
 
 ## Behavioral Properties
 
@@ -246,21 +237,18 @@ produce an index identical to one built from a clean sequential ingest of
 the same commits.
 
 - **Type**: Liveness
-  `VERIFIED: rs/cyphr-storage/src/engine/mod.rs — reindex()`
 
 **[recovery-convergence]**: Re-indexing from the BlobStore MUST converge to
 a consistent state in finite time. Given a finite set of blobs, the recovery
 process MUST terminate and MUST produce a complete, correct index.
 
 - **Type**: Liveness
-  `VERIFIED: rs/cyphr-storage/src/engine/mod.rs — reindex() terminates`
 
 **[read-after-write-index]**: After `index_commit()` returns successfully,
 any subsequent `get_tip()`, `get_commit_chain()`, or `resolve_digest()` call
 for the same principal MUST reflect the indexed commit's state.
 
 - **Type**: Safety
-  `VERIFIED: integration tests`
 
 **[monotonic-sequence]**: Commit sequence numbers within a principal MUST be
 monotonically increasing. A commit with sequence `n` MUST NOT be indexed if
@@ -268,7 +256,6 @@ a commit with sequence `n` already exists for that principal (unless
 idempotent re-indexing of the same commit).
 
 - **Type**: Safety
-  `VERIFIED: rs/cyphr-index-fjall/src/lib.rs — commit_key(principal_id, sequence) composite key`
 
 **[commit-chain-integrity]**: The commit chain returned by
 `get_commit_chain()` MUST be contiguous — no gaps in the sequence. If
@@ -276,7 +263,6 @@ commits 0..n are indexed, `get_commit_chain(principal, 0, n)` MUST return
 exactly n+1 entries in monotonic order.
 
 - **Type**: Safety
-  `VERIFIED: integration tests`
 
 ## Trustless Verification Model
 

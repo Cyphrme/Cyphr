@@ -50,6 +50,14 @@ pub const TIMESTAMP_WINDOW_SECS: i64 = 60;
 /// How long an issued challenge stays redeemable.
 pub const CHALLENGE_TTL_SECS: i64 = 120;
 
+/// Default lifetime of a signed-in session, in seconds: 15 minutes.
+///
+/// SPEC 17.4 names no duration. A bearer token is good for whoever holds
+/// it until it ends, so a session is short and never extended; one that
+/// wants longer signs in again. A server's `session_ttl_secs` and a relying
+/// party's [`session_ttl`](crate::RpConfig::session_ttl) both read as this.
+pub const DEFAULT_SESSION_TTL_SECS: i64 = 15 * 60;
+
 /// Challenge nonce length: 256 bits (SPEC 17.2).
 pub const CHALLENGE_BYTES: usize = 32;
 
@@ -326,10 +334,11 @@ pub trait Issuer: Send + Sync + std::fmt::Debug {
     fn sign(&self, pay_bytes: &[u8]) -> Result<Vec<u8>, IssuerError>;
 }
 
-/// An [`Issuer`] over raw key bytes the caller supplies.
+/// An [`Issuer`] over raw key bytes the caller supplies. The private bytes
+/// are wiped when it drops.
 pub struct SoftwareIssuer {
     alg: String,
-    prv: Vec<u8>,
+    prv: zeroize::Zeroizing<Vec<u8>>,
     pub_key: Vec<u8>,
 }
 
@@ -340,7 +349,7 @@ impl SoftwareIssuer {
     pub fn new(alg: &str, prv: &[u8], pub_key: &[u8]) -> Self {
         Self {
             alg: alg.to_owned(),
-            prv: prv.to_vec(),
+            prv: zeroize::Zeroizing::new(prv.to_vec()),
             pub_key: pub_key.to_vec(),
         }
     }

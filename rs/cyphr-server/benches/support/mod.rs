@@ -32,6 +32,7 @@ pub async fn attestor() -> (Arc<AppState>, tempfile::TempDir) {
         serde_json::json!({
             "alg": kp.alg.name(),
             "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+            "v": 1,
             "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
         })
         .to_string(),

@@ -36,8 +36,7 @@ verification and access control.
 
 ## Implementation Status (re-verified 2026-07-08)
 
-**`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
-"implemented."** The Verification table's uniform 24/24 `pass` reflects
+**`pass` below means "explicit in SPEC.md," not "implemented."** The Verification table's uniform 24/24 `pass` reflects
 SPEC-internal consistency, not implementation status. The following
 revisions apply after the login work:
 
@@ -76,13 +75,11 @@ category) once the login, bearer-token and route-protection work landed.
 **[pop-via-signature]**: Every valid signature by an authorized key MUST
 constitute a Proof of Possession (PoP). No additional authentication factor
 is required at the protocol level.
-`VERIFIED: agent-check`
 
 **[pop-types]**: The protocol recognizes four PoP types: Genesis PoP (first
 signature), Transaction PoP (key mutation), Action PoP (data action), and Login
 PoP (challenge-response or timestamp-based). Each is a valid signature under
 the same verification rules.
-`VERIFIED: agent-check`
 
 #### Login Flow
 
@@ -91,18 +88,15 @@ generate a 256-bit cryptographic challenge (nonce). The principal signs the
 challenge, and the service MUST verify: (1) signature is valid, (2) `tmb`
 belongs to an active key in KR, (3) principal lifecycle state is Active, (4)
 challenge matches the one issued.
-`VERIFIED: agent-check`
 
 **[login-timestamp-based]**: In timestamp-based login, the principal signs a
 login request with current `now`. The service MUST verify: (1) signature is
 valid, (2) `tmb` belongs to an active key in KR, (3) principal lifecycle is
 Active, (4) `now` is within the acceptable window (e.g., ±60 seconds).
-`VERIFIED: agent-check`
 
 **[login-lifecycle-gate]**: During authentication, services MUST reject
 principals whose lifecycle state is not Active. Frozen, Deleted, Errored, and
 other non-Active states MUST NOT be accepted for login.
-`VERIFIED: agent-check`
 
 #### Replay Prevention
 
@@ -110,49 +104,41 @@ other non-Active states MUST NOT be accepted for login.
 (1) challenge nonce — service issues a unique nonce per attempt, or (2)
 timestamp window — `now` within ±N seconds of server time. Implementations MUST
 support at least one mechanism.
-`VERIFIED: agent-check`
 
 #### Bearer Tokens
 
 **[bearer-token-service-signed]**: Bearer tokens MUST be signed Coz messages
 from the service (not the principal). The service signs the token with its own
 key, binding it to a specific principal PG and permission set.
-`VERIFIED: agent-check`
 
 **[bearer-token-fields]**: Bearer tokens SHOULD contain at minimum: principal
 PG, authorized permissions, and expiry (`exp`). The `typ` is service-defined.
-`VERIFIED: agent-check`
 
 #### Embedding
 
 **[embedding-weight-default]**: An embedded node MUST have a default weight of
 one (1), regardless of how many children the embedded node contains. Weight
 MAY be overridden by rules (RR) at Level 5+.
-`VERIFIED: agent-check`
 
 **[embedding-cyclic-stop]**: Embedding MUST stop recursion at the point of
 cycle. When principal A embeds principal B and B embeds A, verifying A includes
 B's members but MUST NOT recursively resolve B's embedding of A (preventing
 infinite recursion).
-`VERIFIED: agent-check`
 
 **[embedding-conjunctive-auth]**: Authorization involving an embedded principal
 MUST be conjunctive: (1) the transaction must be valid according to the
 embedded principal's own rules (its KR/RR), AND (2) the act of using that
 embedded principal must be authorized by the primary principal's rules. Both
 conditions MUST hold.
-`VERIFIED: agent-check`
 
 **[embedding-tip-retrieval]**: For PG, PR, and AR references exclusively,
 embedded nodes MUST trigger tip retrieval from the referenced principal at
 verification time before any operation. Other node types MUST NOT trigger
 retrieval. Opaque nodes MUST NOT trigger synchronization.
-`VERIFIED: agent-check`
 
 **[embedding-pinning]**: Pinned identifiers (prefixed `PIN:<alg>:<value>`)
 MUST denote static states that prohibit updates. Pinned embeddings MUST NOT
 trigger tip retrieval.
-`VERIFIED: agent-check`
 
 #### State Verification
 
@@ -161,12 +147,10 @@ MUST: (1) identify the trust anchor (PG or known PR), (2) obtain ordered
 transaction history from trust anchor to tip, (3) replay each transaction
 verifying signature, key membership in KR, lifecycle gate, timestamp ordering,
 and well-formedness, (4) compare final computed state against claimed state.
-`VERIFIED: agent-check`
 
 **[verification-timestamp-order]**: During chain replay, each transaction's
 `now` MUST be after the previous transaction's `now`. Backward timestamps MUST
 be rejected.
-`VERIFIED: agent-check`
 
 #### Checkpoints
 
@@ -174,39 +158,32 @@ be rejected.
 of the authentication-relevant state at a particular commit. Once verified, a
 checkpoint allows verification from that point forward without replaying
 earlier history.
-`VERIFIED: agent-check`
 
 **[checkpoint-genesis-foundational]**: Genesis is the foundational checkpoint.
 Services SHOULD cache later checkpoints to reduce chain length for
 verification.
-`VERIFIED: agent-check`
 
 **[checkpoint-declarative]**: A declarative transaction (`checkpoint/create`)
 MUST enumerate the full principal tree (PT). Since declarative transactions
 exhaustively declare state, they inherently serve as checkpoints.
-`VERIFIED: agent-check`
 
 #### MSS Properties
 
 **[mss-bidirectional]**: Both users and services MUST be representable as
 Cyphr principals, enabling bidirectional state tracking. Neither party
 holds a privileged position.
-`VERIFIED: agent-check`
 
 **[mss-push-on-mutation]**: After a state mutation (key/create, key/revoke,
 etc.), clients SHOULD push the mutation to all registered services. This
 enables low-latency authentication by pre-syncing state.
-`VERIFIED: agent-check`
 
 ### Forbidden States
 
 **[no-login-non-active]**: A service MUST NOT authenticate a principal whose
 lifecycle state is not Active (per [login-lifecycle-gate]).
-`VERIFIED: agent-check`
 
 **[no-unsigned-bearer]**: A bearer token that is not signed by the issuing
 service's key MUST NOT be accepted.
-`VERIFIED: agent-check`
 
 ### Behavioral Properties
 
@@ -216,14 +193,12 @@ verification without session state. Bearer tokens remain useful for access
 control and legacy system upgrades.
 
 - **Type**: Liveness / Design Guidance
-  `VERIFIED: agent-check`
 
 **[sso-without-centralization]**: Cyphr provides SSO semantics without
 centralized identity providers or password/email dependency. The principal's
 keys are the sole authentication factor, verifiable by any party.
 
 - **Type**: Design Property
-  `VERIFIED: agent-check`
 
 ## Formal Specification
 

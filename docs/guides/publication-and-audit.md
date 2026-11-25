@@ -47,6 +47,7 @@ const crypto = require("crypto");
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 console.log(
   JSON.stringify({
+    v: 1,
     alg: "Ed25519",
     pub_key: publicKey
       .export({ format: "der", type: "spki" })
@@ -105,8 +106,8 @@ when the peer answered `423` because the principal is in Error there
 (`rs/cyphr-cli/src/commands/network.rs:221-227`):
 
 ```sh
-PR=$(cyphr --output json key generate --algo ES256 | jq -r .tmb)
-cyphr --output json key add --identity="$PR" --signer="$PR"
+PR=$(cyphr --format json key generate --algo ES256 | jq -r .tmb)
+cyphr --format json key add --identity="$PR" --signer="$PR"
 cyphr export --identity="$PR" --output ./export.jsonl
 ```
 
@@ -624,11 +625,11 @@ export; restore the snapshot, add a different key, export.
 
 ```sh
 cp -r cyphr-data snap && cp cyphr-keys.json snap-keys.json
-cyphr --output json key add --identity="$PR" --signer="$PR"
+cyphr --format json key add --identity="$PR" --signer="$PR"
 cyphr export --identity="$PR" --output ./export-x.jsonl
 
 rm -rf cyphr-data && cp -r snap cyphr-data && cp snap-keys.json cyphr-keys.json
-cyphr --output json key add --identity="$PR" --signer="$PR"
+cyphr --format json key add --identity="$PR" --signer="$PR"
 cyphr export --identity="$PR" --output ./export-y.jsonl
 ```
 
@@ -662,6 +663,7 @@ curl -s "http://127.0.0.1:4101/tip?pg=$PR" | jq -c '.statement.coz.pay'
 
 ```json
 {
+  "v": 1,
   "alg": "Ed25519",
   "now": 1795229090,
   "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
@@ -682,6 +684,7 @@ curl -s "http://127.0.0.1:4101/tip?pg=$PR" | jq -c '.statement.coz.pay'
 
 ```json
 {
+  "v": 1,
   "alg": "Ed25519",
   "now": 1795229090,
   "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",

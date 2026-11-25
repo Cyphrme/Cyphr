@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::signer::SoftwareSigner;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::{Error, KeyBackend, PublicKeyInfo};
 
@@ -15,55 +16,127 @@ use crate::{Error, KeyBackend, PublicKeyInfo};
 /// stamped on its next save.
 const FORMAT_VERSION: u64 = 1;
 
-/// Read a versioned flat-map file, checking `v` before any entry is
-/// interpreted.
-fn read_versioned<T: serde::de::DeserializeOwned>(
-    path: &Path,
-    file: &'static str,
-) -> Result<HashMap<String, T>, Error> {
-    let mut doc: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&fs::read_to_string(path).map_err(io_at("reading", path))?)?;
-    if let Some(v) = doc.remove("v") {
+/// The key file as the secret reader sees it: a flat map of thumbprint to
+/// entry, with the version beside them. Entries are parsed straight into
+/// [`StoredKey`], so a private key is never held as a `serde_json::Value`.
+struct Entries(HashMap<String, StoredKey>);
+
+impl<'de> Deserialize<'de> for Entries {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Entries;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a map of thumbprint to key entry")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Entries, A::Error> {
+                let mut out = HashMap::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "v" {
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    } else {
+                        out.insert(key, map.next_value::<StoredKey>()?);
+                    }
+                }
+                Ok(Entries(out))
+            }
+        }
+        deserializer.deserialize_map(Visit)
+    }
+}
+
+/// Read the key file with its secrets, checking `v` before any entry is
+/// interpreted. The secrets live only as long as the returned map: callers
+/// take what they need and let it drop, which wipes them. A missing file is
+/// an empty map.
+fn read_stored(path: &Path) -> Result<HashMap<String, StoredKey>, Error> {
+    #[derive(Deserialize)]
+    struct Version {
+        v: Option<serde_json::Value>,
+    }
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let text = Zeroizing::new(fs::read_to_string(path).map_err(io_at("reading", path))?);
+    // First pass reads the version alone; every other field is skipped
+    // without being kept.
+    if let Some(v) = serde_json::from_str::<Version>(&text)?.v {
         let found = v.as_u64().ok_or_else(|| {
             <serde_json::Error as serde::de::Error>::custom("`v` is not an unsigned integer")
         })?;
         if found != FORMAT_VERSION {
             return Err(Error::UnsupportedVersion {
-                file,
+                file: "keystore",
                 found,
                 supported: FORMAT_VERSION,
             });
         }
     }
-    Ok(serde_json::from_value(serde_json::Value::Object(doc))?)
+    Ok(serde_json::from_str::<Entries>(&text)?.0)
 }
 
-/// Serialize a flat map with the current `v`.
-fn to_versioned<T: Serialize>(entries: &HashMap<String, T>) -> Result<String, Error> {
-    let mut doc = serde_json::Map::new();
-    for (key, entry) in entries {
-        doc.insert(key.clone(), serde_json::to_value(entry)?);
+/// Serializes the entries and the current `v` as one flat map.
+struct Versioned<'a>(&'a HashMap<String, StoredKey>);
+
+impl Serialize for Versioned<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len() + 1))?;
+        for (tmb, entry) in self.0 {
+            map.serialize_entry(tmb, entry)?;
+        }
+        map.serialize_entry("v", &FORMAT_VERSION)?;
+        map.end()
     }
-    doc.insert("v".to_string(), FORMAT_VERSION.into());
-    Ok(serde_json::to_string_pretty(&doc)?)
 }
 
-/// A stored key entry: the on-disk record.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The file's bytes, in a buffer that is wiped on drop. Sized up front so
+/// it does not grow, and so leave an unwiped copy behind, in the usual case.
+fn to_versioned(entries: &HashMap<String, StoredKey>) -> Result<Zeroizing<Vec<u8>>, Error> {
+    let mut buf = Zeroizing::new(Vec::with_capacity(2048 * (entries.len() + 1)));
+    serde_json::to_writer_pretty(&mut *buf, &Versioned(entries))?;
+    Ok(buf)
+}
+
+/// A stored key entry: the on-disk record, secret included. It exists only
+/// while a file is being read or written.
+#[derive(Serialize, Deserialize)]
 struct StoredKey {
     alg: String,
 
     #[serde(with = "base64url_bytes")]
     pub_key: Vec<u8>,
 
-    #[serde(with = "base64url_bytes")]
-    prv_key: Vec<u8>,
+    #[serde(with = "base64url_secret")]
+    prv_key: Zeroizing<Vec<u8>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     tag: Option<String>,
 }
 
 impl StoredKey {
+    fn public(&self) -> PublicEntry {
+        PublicEntry {
+            alg: self.alg.clone(),
+            pub_key: self.pub_key.clone(),
+            tag: self.tag.clone(),
+        }
+    }
+}
+
+/// What the store keeps in memory of a key: everything but the secret.
+struct PublicEntry {
+    alg: String,
+    pub_key: Vec<u8>,
+    tag: Option<String>,
+}
+
+impl PublicEntry {
     fn info(&self, tmb: &str) -> PublicKeyInfo {
         PublicKeyInfo {
             alg: self.alg.clone(),
@@ -82,7 +155,9 @@ impl StoredKey {
 /// files keep working.
 pub struct JsonKeyStore {
     path: PathBuf,
-    keys: HashMap<String, StoredKey>,
+    /// Public data only: a private key is read from the file for the one
+    /// operation that needs it and wiped when that operation ends.
+    keys: HashMap<String, PublicEntry>,
     tightened: Vec<Tightened>,
     exposed_dir: Option<ExposedDir>,
 }
@@ -181,11 +256,10 @@ impl JsonKeyStore {
             }
         }
 
-        let keys = if path.exists() {
-            read_versioned(&path, "keystore")?
-        } else {
-            HashMap::new()
-        };
+        let keys = read_stored(&path)?
+            .into_iter()
+            .map(|(tmb, stored)| (tmb, stored.public()))
+            .collect();
 
         Ok(Self {
             path,
@@ -212,9 +286,9 @@ impl JsonKeyStore {
     /// the old file or the new one, never a torn one. A missing directory
     /// is created 0700; an existing target keeps its mode when that is
     /// stricter than 0600.
-    fn save(&self) -> Result<(), Error> {
+    fn save(&self, entries: &HashMap<String, StoredKey>) -> Result<(), Error> {
         use std::io::Write;
-        let body = to_versioned(&self.keys)?;
+        let body = to_versioned(entries)?;
         let dir = key_dir(&self.path);
         #[cfg(unix)]
         if !dir.exists() {
@@ -243,8 +317,7 @@ impl JsonKeyStore {
         // name exists, that file is not ours to remove.
         let mut f = opts.open(&tmp).map_err(io_at("creating temp file", &tmp))?;
         let written = (|| -> Result<(), Error> {
-            f.write_all(body.as_bytes())
-                .map_err(io_at("writing", &tmp))?;
+            f.write_all(&body).map_err(io_at("writing", &tmp))?;
             #[cfg(unix)]
             if self.path.exists() {
                 use std::os::unix::fs::PermissionsExt;
@@ -264,7 +337,7 @@ impl JsonKeyStore {
         written
     }
 
-    fn entry(&self, tmb: &str) -> Result<&StoredKey, Error> {
+    fn entry(&self, tmb: &str) -> Result<&PublicEntry, Error> {
         self.keys
             .get(tmb)
             .ok_or_else(|| Error::NotFound(tmb.to_string()))
@@ -285,12 +358,17 @@ impl KeyBackend for JsonKeyStore {
         let stored = StoredKey {
             alg: alg.to_string(),
             pub_key: keypair.pub_bytes,
-            prv_key: keypair.prv_bytes,
+            prv_key: Zeroizing::new(keypair.prv_bytes),
             tag: tag.map(String::from),
         };
-        let info = stored.info(&tmb);
-        self.keys.insert(tmb, stored);
-        self.save()?;
+        let public = stored.public();
+        // The file is rewritten whole, so every secret is read for the
+        // write and wiped with the map once it is on disk.
+        let mut entries = read_stored(&self.path)?;
+        entries.insert(tmb.clone(), stored);
+        self.save(&entries)?;
+        let info = public.info(&tmb);
+        self.keys.insert(tmb, public);
         Ok(info)
     }
 
@@ -303,22 +381,60 @@ impl KeyBackend for JsonKeyStore {
     }
 
     fn remove(&mut self, tmb: &str) -> Result<(), Error> {
-        self.keys
-            .remove(tmb)
-            .ok_or_else(|| Error::NotFound(tmb.to_string()))?;
-        self.save()
+        if !self.keys.contains_key(tmb) {
+            return Err(Error::NotFound(tmb.to_string()));
+        }
+        let mut entries = read_stored(&self.path)?;
+        entries.remove(tmb);
+        self.save(&entries)?;
+        self.keys.remove(tmb);
+        Ok(())
     }
 
     fn signer(&self, tmb: &str) -> Result<SoftwareSigner, Error> {
-        let k = self.entry(tmb)?;
+        self.entry(tmb)?;
         let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb)
             .map_err(|_| Error::InvalidThumbprint(tmb.to_string()))?;
+        // The secret is read now and dropped (wiped) on return; what the
+        // signer holds is the caller's to keep for as short as it signs.
+        let mut stored = read_stored(&self.path)?;
+        let k = stored
+            .remove(tmb)
+            .ok_or_else(|| Error::NotFound(tmb.to_string()))?;
         Ok(SoftwareSigner::new(
             &k.alg,
             &k.prv_key,
             &k.pub_key,
             &coz::Thumbprint::from_bytes(tmb_bytes),
         ))
+    }
+}
+
+/// Serde helper for a private key's bytes: base64url, held in a type that
+/// wipes them when it drops, with the decoded text wiped too.
+mod base64url_secret {
+    use base64ct::{Base64UrlUnpadded, Encoding};
+    use serde::{Deserialize, Deserializer, Serializer, de};
+    use zeroize::{Zeroize, Zeroizing};
+
+    pub fn serialize<S>(bytes: &Zeroizing<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut text = Base64UrlUnpadded::encode_string(bytes);
+        let out = serializer.serialize_str(&text);
+        text.zeroize();
+        out
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Zeroizing<Vec<u8>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut text = String::deserialize(deserializer)?;
+        let decoded = Base64UrlUnpadded::decode_vec(&text).map_err(de::Error::custom);
+        text.zeroize();
+        decoded.map(Zeroizing::new)
     }
 }
 

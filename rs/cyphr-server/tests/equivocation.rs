@@ -65,6 +65,7 @@ fn identity_with_seed(seed: u8) -> (tempfile::TempDir, ServerIdentity) {
     let file = serde_json::json!({
         "alg": coz::Alg::Ed25519.name(),
         "pub_key": Base64UrlUnpadded::encode_string(&pub_key),
+        "v": 1,
         "prv_key": Base64UrlUnpadded::encode_string(&prv_key),
     });
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
@@ -79,6 +80,7 @@ fn write_signing_key(dir: &std::path::Path) -> std::path::PathBuf {
     let file = serde_json::json!({
         "alg": kp.alg.name(),
         "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+        "v": 1,
         "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
     });
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();

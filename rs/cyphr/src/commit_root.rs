@@ -106,6 +106,11 @@ pub(crate) fn commit_leaf(
 ///
 /// `index` and `tree_size` are trusted parameters (see [`eml::verify_inclusion`]'s
 /// trust contract): they must come from an authenticated source, never the proof.
+///
+/// The path must be exactly as long as the skeleton. The spine verifier pins
+/// only the trailing steps against the skeleton and folds any leading steps
+/// by hash chaining alone, so without this a prover could prepend steps that
+/// rebuild a different leaf into the real one and have it verify at `index`.
 #[must_use]
 pub fn verify_inclusion(
     hasher: &dyn eml::Hasher,
@@ -118,6 +123,9 @@ pub fn verify_inclusion(
     let Some(skeleton) = eml::mountain_skeleton(eml::LOG_ARITY, tree_size, index) else {
         return false;
     };
+    if proof.path.len() != skeleton.len() {
+        return false;
+    }
     eml::verify_inclusion(hasher, leaf_hash, &skeleton, &proof.path, root)
 }
 

@@ -305,6 +305,7 @@ async fn a_taller_extension_of_a_both_extended_fork_is_refused() {
 /// branch afterwards re-opens the fork, though the chosen branch is taller.
 /// Catches a rule that never lets a commit resolve, one that closes a fork
 /// for good, and tallest-wins, which keeps the taller branch Active.
+// @docket: sc-l2814 :: scripts/docket-run sc-l2814
 #[tokio::test]
 async fn one_extension_resolves_and_the_abandoned_branch_reopens_it() {
     // 1, 2 over genesis; 3 over 1 and 4 over 3 (the chosen branch); 5 over 2.

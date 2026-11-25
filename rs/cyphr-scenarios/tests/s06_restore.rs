@@ -6,7 +6,7 @@
 // extends it and fills the gap; a verifier pulling from P1 carries on; no
 // client holds peer-equivocation evidence against P2.
 //
-// GOSSIP-MIN: peers mirror principal-signed objects and sign no watermark,
+// Peers mirror principal-signed objects and sign no watermark,
 // so there is no rollback refusal to assert.
 //
 // Required capabilities: transport,peer-backup,evidence,data-commit.

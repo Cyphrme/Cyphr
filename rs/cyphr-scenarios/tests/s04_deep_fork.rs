@@ -443,14 +443,6 @@ async fn a_thief_prefilling_the_shared_keys_quota_cannot_keep_a_server_active() 
 /// place a rival beside a canonical line. The owner's A_1, A_2, signed by
 /// the same key over the base, must then land at every server.
 ///
-/// Red until the CLI sends the fork. It refuses at
-/// `rs/cyphr-cli/src/commands/network.rs:92-105` (`push`): `held_position`
-/// finds the peer's tip in no local history and returns `PeerError::Stale`
-/// ("is not in the local history", :99-103) before sending anything; and
-/// `push_commit` (:112) sends one bundle per request, with no `parent` and no
-/// resend after a `branch_limit` answer, so a root a full quota refuses
-/// could not land even if the tip check passed.
-///
 /// Catches a CLI that cannot answer a thief's tip: every server must end in
 /// state Error at one fork point, not Active on the thief's line.
 #[tokio::test(flavor = "multi_thread")]

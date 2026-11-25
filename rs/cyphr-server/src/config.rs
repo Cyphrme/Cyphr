@@ -7,7 +7,7 @@
 //! 4. Compiled defaults
 
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
@@ -16,13 +16,18 @@ use serde::Deserialize;
 // CLI (clap)
 // ========================================================================
 
+/// The configuration file read, when present, if `--config` names none.
+const DEFAULT_CONFIG_FILE: &str = "cyphr-server.toml";
+
 /// Cyphr Protocol server.
 #[derive(Parser, Debug)]
 #[command(name = "cyphr-server", version, about)]
 pub struct Cli {
-    /// Path to TOML configuration file.
-    #[arg(short, long, default_value = "cyphr-server.toml")]
-    pub config: PathBuf,
+    /// Path to a TOML configuration file. Named, it must exist; left out,
+    /// `./cyphr-server.toml` is read when present and defaults apply when
+    /// not.
+    #[arg(short, long)]
+    pub config: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Command,
@@ -397,6 +402,49 @@ pub struct LimitsConfig {
     /// needs no prior knowledge of its key, so this quota (with the rate
     /// buckets) is what bounds the set; a revoke past it is refused `507`.
     pub max_dead_keys: NonZeroU64,
+
+    /// The most bytes the blob store may hold, as the engine counts them.
+    /// A write that would pass it is refused `507` and nothing of it is
+    /// stored; reads, and the revoke of a held key, still work. Unset by
+    /// default: no ceiling. No value is recommended: size it to the disk
+    /// the data directory sits on, leaving room for the index (rebuildable)
+    /// and the server's other stores. Storage pressure is relieved by
+    /// refusing writes, never by pruning history.
+    #[serde(default)]
+    pub max_stored_bytes: Option<NonZeroU64>,
+
+    /// Seconds a client may take to send a request's headers before the
+    /// connection is dropped.
+    pub header_read_timeout_secs: NonZeroU64,
+
+    /// Seconds a whole exchange may take, from the request's first byte to
+    /// the response's last byte delivered. A handler still running at the
+    /// limit is answered `408`; a client that drips its request or its read
+    /// of the response is cut off a second later.
+    pub request_timeout_secs: NonZeroU64,
+
+    /// Seconds a connection may sit with no byte read or written, a
+    /// keep-alive between requests included, before it is closed.
+    pub idle_timeout_secs: NonZeroU64,
+
+    /// The most connections served at once. At the cap the server stops
+    /// accepting, so a new client waits in the kernel's accept queue until
+    /// a connection ends. Unset, it is the cores available times 512, as
+    /// nginx's `worker_processes auto` times its 512 `worker_connections`.
+    #[serde(default)]
+    pub max_connections: Option<NonZeroU64>,
+}
+
+impl LimitsConfig {
+    /// The connection cap in force: the configured one, else the cores
+    /// available times 512.
+    #[must_use]
+    pub fn max_connections(&self) -> usize {
+        self.max_connections.map_or_else(
+            || std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get) * 512,
+            |n| usize::try_from(n.get()).unwrap_or(usize::MAX),
+        )
+    }
 }
 
 /// A token-bucket rate: `per_second` cells replenished each second, up to a
@@ -444,6 +492,11 @@ impl Default for LimitsConfig {
             login: writes,
             revoke: writes,
             max_dead_keys: NonZeroU64::new(1_000_000).expect(NONZERO),
+            max_stored_bytes: None,
+            header_read_timeout_secs: NonZeroU64::new(10).expect(NONZERO),
+            request_timeout_secs: NonZeroU64::new(60).expect(NONZERO),
+            idle_timeout_secs: NonZeroU64::new(120).expect(NONZERO),
+            max_connections: None,
         }
     }
 }
@@ -497,6 +550,26 @@ impl From<AdmissionWire> for AdmissionConfig {
 }
 
 impl ServerConfig {
+    /// Settings that start a server which can do nothing useful, said at
+    /// start rather than discovered by a silent run.
+    #[must_use]
+    pub fn startup_warnings(&self) -> Vec<&'static str> {
+        let mut warnings = Vec::new();
+        if self.mode == ServerMode::Witness && self.gossip.peers.is_empty() {
+            warnings.push(
+                "witness mode with no upstream: `[gossip] peers` is empty, so this witness has \
+                 nothing to witness",
+            );
+        }
+        if self.audience.is_some() && self.signing_key_path.is_none() {
+            warnings.push(
+                "an audience is set but there is no signing key: the server accepts no logins \
+                 without one (set `signing_key_path`)",
+            );
+        }
+        warnings
+    }
+
     /// Whether a read of a principal this server does not hold fetches it
     /// from the peers: the setting when given, else the mode's default
     /// (a witness does, a service does not).
@@ -522,12 +595,6 @@ impl ServerConfig {
         self.record_dir().join("blobs")
     }
 
-    /// The naked-revoke observation store's path (the key death-set):
-    /// server-local, told, and not derivable from any chain.
-    pub fn observations_dir(&self) -> PathBuf {
-        self.record_dir().join("observations")
-    }
-
     /// The index database's path -- the sole derived-class member
     /// (ADR-0002 Decision 1, 6). Unchanged by the `record/` regroup: it
     /// stays a direct sibling of `record/`, the only directory an operator
@@ -547,7 +614,7 @@ pub const RECORD_DIR_NAME: &str = "record";
 pub const MAX_SESSION_TTL_SECS: i64 = 60 * 60;
 
 fn default_session_ttl_secs() -> i64 {
-    crate::auth::token::DEFAULT_TTL_SECS
+    cyphr_client::login::DEFAULT_SESSION_TTL_SECS
 }
 
 impl Default for ServerConfig {
@@ -607,9 +674,17 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
     // Layer 1: compiled defaults.
     let mut figment = Figment::new().merge(Serialized::defaults(ServerConfig::default()));
 
-    // Layer 2: TOML config file (if it exists).
-    if cli.config.exists() {
-        figment = figment.merge(Toml::file(&cli.config));
+    // Layer 2: TOML config file. One the operator named must exist: a
+    // typo'd path otherwise runs the server on defaults and says nothing.
+    match &cli.config {
+        Some(path) if !path.exists() => {
+            return Err(ConfigError::MissingConfigFile(path.clone()));
+        },
+        Some(path) => figment = figment.merge(Toml::file(path)),
+        None if Path::new(DEFAULT_CONFIG_FILE).exists() => {
+            figment = figment.merge(Toml::file(DEFAULT_CONFIG_FILE));
+        },
+        None => {},
     }
 
     let mut config: ServerConfig = figment
@@ -709,6 +784,10 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
 /// Configuration errors.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// A configuration file named with `--config` does not exist.
+    #[error("configuration file {} does not exist", .0.display())]
+    MissingConfigFile(PathBuf),
+
     /// Figment extraction failed (bad TOML, type mismatch, etc.).
     #[error("configuration: {0}")]
     Figment(Box<figment::Error>),
@@ -750,15 +829,24 @@ mod tests {
         Cli::try_parse_from(args).expect("valid CLI args")
     }
 
+    /// An empty configuration file in `dir`, so a test resolves from flags
+    /// and defaults whatever the working directory holds.
+    fn empty_config(dir: &tempfile::TempDir) -> String {
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").expect("write config");
+        path.to_str().expect("utf-8 path").to_owned()
+    }
+
     /// Backs: operator-visible `--signing-key` flag reaches `ServerConfig` (a keyed server is only
     /// reachable via it). Unit: `serve()` boots a socket; the CLI-to-config resolution is a pure
     /// function.
     #[test]
     fn serve_with_signing_key_flag_resolves_the_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
         let cli = parse(&[
             "cyphr-server",
             "--config",
-            "/nonexistent-config-for-test.toml",
+            &empty_config(&dir),
             "serve",
             "--signing-key-path",
             "/etc/cyphr/signing-key.json",
@@ -774,10 +862,11 @@ mod tests {
     /// SPEC 17.2). Unit: `serve()` boots a socket; the CLI-to-config resolution is a pure function.
     #[test]
     fn serve_with_audience_flag_resolves_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
         let cli = parse(&[
             "cyphr-server",
             "--config",
-            "/nonexistent-config-for-test.toml",
+            &empty_config(&dir),
             "serve",
             "--audience",
             "cyphr.me",
@@ -786,13 +875,32 @@ mod tests {
         assert_eq!(config.audience, Some("cyphr.me".to_string()));
     }
 
+    /// Regression: `--config` naming a file that does not exist was
+    /// ignored, so a typo'd path ran the server on compiled defaults with
+    /// no word of it. Red if a missing named file resolves.
+    #[test]
+    fn a_named_config_file_that_does_not_exist_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("typo.toml");
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            missing.to_str().expect("utf-8"),
+            "serve",
+        ]);
+        assert!(matches!(
+            resolve_config(&cli),
+            Err(ConfigError::MissingConfigFile(path)) if path == missing
+        ));
+    }
+
     /// Build a `Cli` for `serve` pointing at a TOML file carrying the given
     /// `[admission]` table body.
     fn parse_with_admission_table(tmp: &std::path::Path, admission_table: &str) -> Cli {
         let config_path = tmp.join("cyphr-server.toml");
         std::fs::write(&config_path, admission_table).expect("write config");
         Cli {
-            config: config_path,
+            config: Some(config_path),
             command: Command::Serve(ServeArgs {
                 listen: None,
                 transport_listen: None,

@@ -1591,10 +1591,9 @@ async fn actions_at_one_position_rebuild_in_now_order() {
 /// `GenesisIncomplete`, not recorded under a key its later genesis commit
 /// never reads (silent orphaning).
 ///
-/// Turns red if: the engine accepts the bundle (it does today; DEBT2).
+/// Turns red if: the engine accepts the bundle.
 /// End-to-end scenario: yes (engine ingest of a first bundle).
 #[tokio::test]
-#[ignore = "RED(DEBT2): SPEC 2.3.2"]
 async fn actions_before_the_genesis_commit_are_refused() {
     let golden = signer("golden");
     let genesis = Genesis::Implicit(golden.key.clone());

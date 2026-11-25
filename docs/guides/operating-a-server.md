@@ -87,6 +87,7 @@ without padding over raw key bytes:
 
 ```json
 {
+  "v": 1,
   "alg": "Ed25519",
   "pub_key": "y1xCqdKo0nTUHXpOnKOpw44VbKB9lvPmphkVULNnQbw",
   "prv_key": "4jl-rNm5WGFSDHTQM3cHmB5lVVs_eGzYFpmsOddUEno"
@@ -100,6 +101,7 @@ const crypto = require("crypto");
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 console.log(
   JSON.stringify({
+    v: 1,
     alg: "Ed25519",
     pub_key: publicKey
       .export({ format: "der", type: "spki" })
@@ -122,7 +124,9 @@ unkeyed because of a typo would stop issuing logins with no signal.
 Configuration merges from four layers, each overriding the one below: CLI
 flags, then `CYPHR_*` environment variables, then a TOML file, then compiled
 defaults. The TOML file is `./cyphr-server.toml` unless `--config` names
-another, and a missing file is not an error.
+another. A file named with `--config` must exist, or the server refuses to start;
+with no `--config`, `./cyphr-server.toml` is read when present and compiled
+defaults apply when it is not.
 
 That default is worth respecting: the file is looked up in the working
 directory, not beside the binary or the data directory, and a stray
@@ -131,22 +135,27 @@ up silently. It is the fastest way to get a server that behaves nothing like
 its command line — the TOML-only settings especially, since no flag can
 override them. Pass `--config` explicitly in anything you automate.
 
-| Setting            | Flag                                                                | Environment                                                                      | What it buys                                                                                                                                           |
-| :----------------- | :------------------------------------------------------------------ | :------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `listen`           | `--listen`                                                          | `CYPHR_LISTEN`                                                                   | Bind address. `:0` picks a free port and reports it on stdout.                                                                                         |
-| `transport_listen` | `--transport-listen`                                                | `CYPHR_TRANSPORT_LISTEN`                                                         | Bind address for the Noise transport, which authenticates both ends as principals. Off when unset; a keyless server refuses it and keeps serving HTTP. |
-| `data_dir`         | `--data-dir`                                                        | `CYPHR_DATA_DIR`                                                                 | Where every durable store lives. Locked exclusively while running.                                                                                     |
-| `signing_key_path` | `--signing-key-path`                                                | `CYPHR_SIGNING_KEY_PATH`                                                         | The key the server signs receipts and tokens with. Absent means keyless.                                                                               |
-| `audience`         | `--audience`                                                        | `CYPHR_AUDIENCE`                                                                 | The name clients must sign into. Absent means logins are refused.                                                                                      |
-| `mode`             | `--mode`                                                            | `CYPHR_MODE`                                                                     | `service` (accepts principals' writes; the default) or `witness` (refuses writes, keeps copies and follows its peers).                                 |
-| `log_format`       | `--log-format`                                                      | `CYPHR_LOG_FORMAT`                                                               | `pretty` for a terminal, `json` for a log pipeline.                                                                                                    |
-| `[gossip]`         | `--gossip-peer`, `--gossip-interval-secs`, `--gossip-fetch-on-read` | `CYPHR_GOSSIP_PEERS`, `CYPHR_GOSSIP_INTERVAL_SECS`, `CYPHR_GOSSIP_FETCH_ON_READ` | The peers to pull from and how. A peer can name its server principal's PG, which is **TOML only**.                                                     |
-| `[admission]`      | —                                                                   | —                                                                                | The gate on new principals. **TOML only.**                                                                                                             |
-| `[limits]`         | —                                                                   | —                                                                                | Rate, body size, and commit-count fences. **TOML only.**                                                                                               |
+| Setting                    | Flag                                            | Environment                      | What it buys                                                                                                                                                                                                                                               |
+| :------------------------- | :---------------------------------------------- | :------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `listen`                   | `--listen`                                      | `CYPHR_LISTEN`                   | Bind address. `:0` picks a free port and reports it on stdout.                                                                                                                                                                                             |
+| `transport_listen`         | `--transport-listen`                            | `CYPHR_TRANSPORT_LISTEN`         | Bind address for the Noise transport, which authenticates both ends as principals. Off when unset; a keyless server refuses it and keeps serving HTTP.                                                                                                     |
+| `data_dir`                 | `--data-dir`                                    | `CYPHR_DATA_DIR`                 | Where every durable store lives. Locked exclusively while running.                                                                                                                                                                                         |
+| `signing_key_path`         | `--signing-key-path`                            | `CYPHR_SIGNING_KEY_PATH`         | The key the server signs receipts and tokens with. Absent means keyless.                                                                                                                                                                                   |
+| `audience`                 | `--audience`                                    | `CYPHR_AUDIENCE`                 | The name clients must sign into. Absent means logins are refused.                                                                                                                                                                                          |
+| `mode`                     | `--mode`                                        | `CYPHR_MODE`                     | `service` (accepts principals' writes; the default) or `witness` (refuses writes, keeps copies and follows its peers).                                                                                                                                     |
+| `log_format`               | `--log-format`                                  | `CYPHR_LOG_FORMAT`               | `pretty` for a terminal, `json` for a log pipeline.                                                                                                                                                                                                        |
+| `session_ttl_secs`         | `--session-ttl-secs`                            | `CYPHR_SESSION_TTL_SECS`         | Lifetime of a login session's bearer token, in seconds. Default 900 (15 minutes), clamped to `1..=3600`. A session is never extended; the user signs in again.                                                                                             |
+| `allow_cleartext_upstream` | `--allow-cleartext-upstream`                    | `CYPHR_ALLOW_CLEARTEXT_UPSTREAM` | Lets the server dial a non-loopback upstream (a witness's authority, a gossip peer) over plain `http://`. Off by default, because a tip report or a patch could be rewritten in transit; `https://` and loopback never need it.                            |
+| `[gossip] peers`           | `--gossip-peer` (repeatable or comma-separated) | `CYPHR_GOSSIP_PEERS`             | The peers to pull from, each a base URL or, in TOML, a `{ url, pg }` table. The `pg` is the peer's server principal, so its signed tip reports are checked against that chain; it is **TOML only**. Empty keeps gossip off. A flag replaces the TOML list. |
+| `[gossip] interval_secs`   | `--gossip-interval-secs`                        | `CYPHR_GOSSIP_INTERVAL_SECS`     | Seconds between gossip rounds. Default 60. Every round makes a request per peer, so a short interval costs requests even when nothing changed.                                                                                                             |
+| `[gossip] fetch_on_read`   | `--gossip-fetch-on-read`                        | `CYPHR_GOSSIP_FETCH_ON_READ`     | Whether a read of a principal this server does not hold fetches it from the peers. Unset, the mode decides: on for `witness`, off for `service`.                                                                                                           |
+| `[admission]`              | —                                               | —                                | The gate on new principals. **TOML only.**                                                                                                                                                                                                                 |
+| `[limits]`                 | —                                               | —                                | Rate, body size, commit-count, stored-byte and connection-timeout fences. **TOML only.**                                                                                                                                                                   |
 
-The last three have no flag and no environment variable. If you are
+`[admission]` and `[limits]` have no flag and no environment variable, and a
+peer's pinned `pg` is TOML only. If you are
 deploying from a unit file or a container spec that only sets environment,
-the admission policy and every limit are unreachable — you need a config
+the admission policy, every limit and peer pinning are unreachable — you need a config
 file on disk. A full one:
 
 ```toml
@@ -164,6 +173,11 @@ tokens_path = "/var/lib/cyphr/invites.txt"
 [limits]
 max_body_bytes = 2097152
 count_quota = 1000000
+# max_stored_bytes = 107374182400  # unset by default: no ceiling
+header_read_timeout_secs = 10
+request_timeout_secs = 60
+idle_timeout_secs = 120
+# max_connections = 4096  # unset by default: cores available times 512
 per_ip = { per_second = 100, burst = 200 }
 read = { per_second = 100, burst = 200 }
 push = { per_second = 50, burst = 100 }
@@ -294,26 +308,24 @@ data/
 ├── record/            what the server was told; irrecoverable if lost
 │   ├── blobs/              the commits themselves, and each principal's
 │   │                       chain (including its EML commit-tree keyspaces
-│   │                       -- record data, not a derived projection)
-│   ├── observations/       the key death-set
+│   │                       -- record data, not a derived projection), and
+│   │                       the key death-set
 │   ├── admission/          spent invite tokens (policy = "invite" only)
 │   └── server-principal.json
 └── index/             what the server works out, rebuildable from record/
 ```
 
-Each of `blobs/`, `observations/`, and `admission/` is a separate embedded
-database; `server-principal.json` is a plain file. The `record/` / `index/`
+Each of `blobs/` and `admission/` is a separate embedded database; `server-principal.json` is a plain file. The `record/` / `index/`
 split is not arbitrary and it decides your backup policy: everything under
 `record/` is irrecoverable if lost, and `index/` is the only directory you
 may ever `rm -rf`.
 
-| Path                           | Rebuildable?                  | Lose it and…                                |
-| :----------------------------- | :---------------------------- | :------------------------------------------ |
-| `record/blobs/`                | No — this is the data         | Every principal you host is gone.           |
-| `index/`                       | Yes, from `record/`           | Nothing, after a rebuild.                   |
-| `record/observations/`         | No                            | Every key declared dead comes back to life. |
-| `record/admission/`            | No                            | Every spent invite token becomes reusable.  |
-| `record/server-principal.json` | By hand, from the signing key | The server will not start. See below.       |
+| Path                           | Rebuildable?                  | Lose it and…                                                                      |
+| :----------------------------- | :---------------------------- | :-------------------------------------------------------------------------------- |
+| `record/blobs/`                | No — this is the data         | Every principal you host is gone, and every key declared dead comes back to life. |
+| `index/`                       | Yes, from `record/`           | Nothing, after a rebuild.                                                         |
+| `record/admission/`            | No                            | Every spent invite token becomes reusable.                                        |
+| `record/server-principal.json` | By hand, from the signing key | The server will not start. See below.                                             |
 
 **The invite tokens file belongs in your backup plan even though it is not
 in this table.** Under `policy = "invite"` it does not have to live inside
@@ -322,10 +334,10 @@ not rebuildable. Lose it and every outstanding, unspent invite is dead; the
 `data/record/admission/` spent-set backs up the tokens already used, not the
 ones still good.
 
-**`record/observations/` is separate precisely so a rebuild cannot erase
-it.** A key declared dead by its holder is not recorded on anyone's chain —
-a naked revoke mutates no principal — so if that record lived in the index,
-the next reindex would silently wipe it. Delete the index outright and
+**The key death-set lives in `record/blobs/`, not in the index.** A key
+declared dead by its holder is not recorded on anyone's chain — a naked revoke
+mutates no principal — so the engine keeps it in the record store, where a
+rebuild re-verifies it rather than discarding it. Delete the index outright and
 rebuild it, and a key revoked beforehand is still refused afterward.
 
 ```sh
@@ -873,9 +885,8 @@ active in several principals; a death record kills it in all of them. There
 is no un-revoke.
 
 **It survives anything short of losing the disk.** The record lives in
-`data/record/observations/`, its own store, for the reason given in the
-backup section: it is not derivable from any chain, so an index rebuild must
-not be able to erase it.
+`data/record/blobs/`, for the reason given in the backup section: it is not
+derivable from any chain, so an index rebuild must not be able to erase it.
 
 **It can kill any key, a genesis key included.** The server checks the
 revoke against the key it discloses and nothing else, so a principal's
@@ -897,6 +908,40 @@ principal holds:
 The record is bounded. The death set has a ceiling, `[limits] max_dead_keys`
 (1,000,000 by default); once it is full the server still records a revoke
 of a key a stored principal holds and answers `507` to the rest.
+
+## Connection timeouts
+
+Three `[limits]` settings bound how long a client may hold a connection
+without finishing its work, so a stalled client cannot pin a connection for
+ever.
+
+| Setting                    | Default | What it bounds                                                                                                                                                                                                                                          |
+| :------------------------- | :------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `header_read_timeout_secs` | 10      | How long a client may take to send a request's headers; past it the connection is dropped.                                                                                                                                                              |
+| `request_timeout_secs`     | 60      | How long a whole exchange may take, from the request's first byte to the response's last byte delivered. A handler still running at the limit is answered `408`; a client that drips its request or its read of the response is cut off a second later. |
+| `idle_timeout_secs`        | 120     | How long a connection may carry no byte in either direction, a keep-alive between requests included, before it closes.                                                                                                                                  |
+
+Zero is refused at start. They apply to the HTTP listener; the Noise
+transport has its own idle timeout.
+
+`[limits] max_connections` caps the connections served at once. Unset, it
+is the number of cores available times 512 (as nginx's
+`worker_processes auto` times its default 512 `worker_connections`). At the
+cap the server stops accepting: a new client waits in the kernel's accept
+queue until a connection ends, and is neither refused nor dropped. Zero is
+refused at start.
+
+## The storage ceiling
+
+`[limits] max_stored_bytes` bounds what the blob store may hold. It is
+unset by default, which means no ceiling; no value is recommended, so size
+it to the disk under `data_dir`. The engine counts the bytes it finds when
+it scans the store at start and adds each new blob it writes. A write that
+would take the count past the ceiling is refused with `507`, nothing of it
+is stored, and reads and the revoke of a held key still work. The count
+is approximate under concurrent writes, which can overshoot it by what
+they add together. History is never pruned to make room: storage pressure
+is relieved by refusing writes.
 
 ## What the server tells you
 

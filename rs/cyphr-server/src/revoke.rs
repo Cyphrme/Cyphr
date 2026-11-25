@@ -112,32 +112,24 @@ pub async fn interpret(envelope: &NakedRevokeEnvelope) -> Result<VerifiedRevoke,
     })
 }
 
-/// Record a verified naked revoke in both places the server keeps deaths,
-/// in the one order every path uses: the engine first, then the
-/// observation set every capability consults. `/revoke`, gossip and
-/// witness sync all come through here, so every caller is bounded.
+/// Record a verified naked revoke in the engine, the one store of deaths
+/// every capability consults. `/revoke`, gossip and witness sync all come
+/// through here, so every caller is bounded.
 ///
 /// The engine's blob-store record is the truth (I1; it judges admission
-/// and forks, and a rebuild re-verifies it), so the observation set is
-/// written only once the engine holds the revoke: a revoke the engine
-/// refuses reaches neither store.
+/// and forks, and a rebuild re-verifies it).
 ///
 /// The operator's ceiling (`[limits] max_dead_keys`) bounds the revokes of
 /// keys no stored principal holds, for every caller: past it such a revoke
-/// is refused (507) before either store is written, while the revoke of a
-/// held key is still recorded (SPEC 6.4). A peer that names fresh
-/// thumbprints can therefore grow neither store past the ceiling plus the
-/// keys the server really holds. Ceiling check and writes run under one
-/// gate, so concurrent revokes cannot overshoot it.
-///
-/// A failure between the two writes leaves the engine dead and the set
-/// not. A repeat of the same revoke closes that gap whatever the ceiling,
-/// since the engine already holding the death is checked first and
-/// both writes are idempotent.
+/// is refused (507) before anything is written, while the revoke of a held
+/// key is still recorded (SPEC 6.4). A peer that names fresh thumbprints
+/// can therefore grow the set no further than the ceiling plus the keys the
+/// server really holds. Ceiling check and write run under one gate, so
+/// concurrent revokes cannot overshoot it.
 ///
 /// # Errors
 ///
-/// The engine's refusal or storage fault, the ceiling, or the set's fault.
+/// The engine's refusal or storage fault, or the ceiling.
 pub async fn record_everywhere(
     state: &crate::AppState,
     tmb: &Thumbprint,
@@ -145,29 +137,36 @@ pub async fn record_everywhere(
 ) -> Result<(), AppError> {
     use cyphr_storage::index::Indexer;
 
-    let _one_revoke_at_a_time = state.observations.revoke_gate().await;
+    let _one_revoke_at_a_time = state.revoke_gate.lock().await;
     let tmb_b64 = Base64UrlUnpadded::encode_string(tmb.as_bytes());
 
-    // A death the engine already holds adds nothing to either store's size.
-    if !state.engine.is_revoked(&tmb_b64) {
-        match state.observations.check_room(tmb).await {
-            Ok(()) => {},
-            Err(full @ crate::observation::ObservationError::Full { .. }) => {
-                let held = state
-                    .engine
-                    .indexer()
-                    .get_key(&tmb_b64)
-                    .await
-                    .map_err(|e| {
-                        tracing::error!(error = %e, "naked-revoke presence lookup failed");
-                        AppError::internal("key index lookup failed")
-                    })?
-                    .is_some();
-                if !held {
-                    return Err(AppError::observation(full));
-                }
-            },
-            Err(other) => return Err(AppError::observation(other)),
+    // A death the engine already holds adds nothing to the set's size.
+    if !state
+        .engine
+        .is_revoked(&tmb_b64)
+        .await
+        .map_err(AppError::engine)?
+    {
+        let ceiling = state.config.limits.max_dead_keys.get();
+        let held_dead = state
+            .engine
+            .revoked_count()
+            .await
+            .map_err(AppError::engine)?;
+        if u64::try_from(held_dead).unwrap_or(u64::MAX) >= ceiling {
+            let held = state
+                .engine
+                .indexer()
+                .get_key(&tmb_b64)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, "naked-revoke presence lookup failed");
+                    AppError::internal("key index lookup failed")
+                })?
+                .is_some();
+            if !held {
+                return Err(AppError::death_set_full(ceiling));
+            }
         }
     }
 
@@ -176,10 +175,5 @@ pub async fn record_everywhere(
         .engine
         .record_revoke(evidence, crate::auth::server_now())
         .await
-        .map_err(AppError::engine)?;
-    state
-        .observations
-        .record(tmb, evidence.clone())
-        .await
-        .map_err(AppError::observation)
+        .map_err(AppError::engine)
 }

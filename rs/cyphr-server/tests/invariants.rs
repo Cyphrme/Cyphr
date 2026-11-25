@@ -251,6 +251,20 @@ async fn signed_statements_carry_freshness() {
         Some(true),
         "N0.3 / I6: statement signature must verify over the freshness timestamp"
     );
+
+    // 4. A later request is stamped later: a server that signs a stamp it
+    // cached (at boot, or at the first request) still passes the drift
+    // bound above for a minute, and fails here.
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    let (tip_status, tip_resp) = inst.get(&format!("/tip?pg={principal_id}")).await;
+    assert_eq!(tip_status, StatusCode::OK, "{tip_resp:?}");
+    let later = tip_resp["statement"]["coz"]["pay"]["now"]
+        .as_i64()
+        .expect("a signed tip report carries an integer 'now'");
+    assert!(
+        later > now_val,
+        "N0.3 / I6: a request a second later must be stamped later ({later} vs {now_val})"
+    );
 }
 
 /// N0.4: `no_standing_honesty_claim`

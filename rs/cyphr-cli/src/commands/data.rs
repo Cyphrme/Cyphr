@@ -81,7 +81,7 @@ pub(super) fn sign(
 }
 
 fn emit(cli: &Cli, value: &Value, table: impl FnOnce()) -> crate::Result<()> {
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(value)?),
         OutputFormat::Table => table(),
     }

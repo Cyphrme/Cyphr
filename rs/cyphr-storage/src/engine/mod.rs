@@ -54,9 +54,9 @@ use kept::{
     Verified, VerifiedFuture,
 };
 use read::{
-    ActionBundle, ActionHistory, ActionStore, EMBED_DEPTH, Frame, Frames, HeldCache, HeldRead,
-    HeldTips, NoTips, PinSource, Signed, StoredChain, action_bundle, bundle_czds, replay_first,
-    replay_order, signed_of,
+    ActionBundle, ActionHistory, ActionStore, EMBED_DEPTH, Frame, HeldCache, HeldRead, HeldTips,
+    NoTips, PinSource, Signed, StoredChain, action_bundle, bundle_czds, replay_first, replay_order,
+    signed_of,
 };
 pub use read::{DerivedRoots, PatchActions, PatchFork, PatchResponse, StoredEntry};
 use rebuild::HealGate;
@@ -237,7 +237,6 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// keys it introduced, by principal id and commit id: a cache of the
     /// commit manifests in the blob store (I1), filled by the rebuild scan
     /// and by ingest. The index's commit records name blobs only.
-    frames: Frames,
     /// Revocations in force: a cache of the revoke records in the blob
     /// store (I1), filled by the rebuild scan and by
     /// [`Self::record_revoke`].
@@ -255,6 +254,11 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     logs_durable: bool,
     /// The engine's cost counters, which tests pin.
     counters: Counters,
+    /// Bytes the blob store holds, as this engine counts them: set by the
+    /// rebuild scan, grown by each new blob it writes.
+    stored_bytes: std::sync::atomic::AtomicU64,
+    /// The most bytes a write may leave stored; `None` is no ceiling.
+    storage_ceiling: Option<u64>,
     /// The four roots at each commit this engine admitted or derived,
     /// by principal id and commit id: a commit's roots depend on its
     /// history alone, so an entry is exact for the commit that names it.
@@ -277,6 +281,19 @@ impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::Me
     }
 }
 
+/// Whether shadow checking is asked for by the environment: only a build
+/// with `test-utils` reads it, so a release engine's behaviour is never
+/// set from outside its constructor's arguments.
+#[cfg(any(test, feature = "test-utils"))]
+fn kept_shadow_from_env() -> bool {
+    std::env::var_os("CYPHR_KEPT_SHADOW").is_some_and(|v| v != "0")
+}
+
+#[cfg(not(any(test, feature = "test-utils")))]
+fn kept_shadow_from_env() -> bool {
+    false
+}
+
 impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// Create a new engine wrapping the given backends, with `logs` opening
     /// each [`cyphr::Principal`]'s Commit Tree storage by principal and
@@ -292,7 +309,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             healed: HealGate::new(),
             branches: BranchStore::new(DEFAULT_KEPT_CAPACITY),
             actions: ActionStore::new(),
-            frames: Frames::new(),
             deaths: DeathSet::new(),
             resyncs: ResyncStore::new(),
             kept: KeptStates::new(
@@ -301,13 +317,69 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 } else {
                     0
                 },
-                std::env::var_os("CYPHR_KEPT_SHADOW").is_some_and(|v| v != "0"),
+                kept_shadow_from_env(),
             ),
             logs_durable,
             counters: Counters::default(),
+            stored_bytes: std::sync::atomic::AtomicU64::new(0),
+            storage_ceiling: None,
             roots_at: BoundedCache::new(ROOTS_MEMO_CAPACITY),
             durability: Durability::new(),
         }
+    }
+
+    /// Refuse a write that would take the stored bytes past `ceiling`
+    /// ([`EngineError::StorageFull`]); `None`, the default, sets no ceiling.
+    /// The count is the blob store's bytes, as the rebuild scan found them
+    /// plus what this engine has written since, so concurrent writes can
+    /// overshoot it by what they add together.
+    #[must_use]
+    pub fn with_storage_ceiling(mut self, ceiling: Option<u64>) -> Self {
+        self.storage_ceiling = ceiling;
+        self
+    }
+
+    /// [`Self::with_storage_ceiling`] on an engine already built.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_storage_ceiling(&mut self, ceiling: Option<u64>) {
+        self.storage_ceiling = ceiling;
+    }
+
+    /// Bytes the blob store holds, as this engine counts them.
+    pub fn stored_bytes(&self) -> u64 {
+        self.stored_bytes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Refuse before anything is written when `incoming` more bytes would
+    /// pass the ceiling. An upper bound: a blob already held adds nothing,
+    /// which this does not credit.
+    pub(super) fn ensure_room(&self, incoming: u64) -> Result<(), EngineError> {
+        let Some(ceiling) = self.storage_ceiling else {
+            return Ok(());
+        };
+        let stored = self.stored_bytes();
+        if stored.saturating_add(incoming) > ceiling {
+            return Err(EngineError::StorageFull {
+                ceiling,
+                stored,
+                incoming,
+            });
+        }
+        Ok(())
+    }
+
+    /// `put`, counting the bytes of a blob the store did not hold.
+    pub(super) async fn put_counted(&self, bytes: &[u8]) -> Result<Blake3Hash, EngineError> {
+        let expected = Blake3Hash::from_bytes(*blake3::hash(bytes).as_bytes());
+        let known = self.blob_store.exists(&expected).await?;
+        let hash = self.blob_store.put(bytes).await?;
+        if !known {
+            self.stored_bytes.fetch_add(
+                u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }
+        Ok(hash)
     }
 
     /// Keep at most `capacity` principals' verified states between their
@@ -326,10 +398,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// Replay cold, and compare with the kept state, every time a write
-    /// or a reader would use one: a divergence is counted ([`Self::kept_divergences`]),
-    /// logged, and fails the write with [`EngineError::Storage`], so a
-    /// run that exercises it cannot pass over one. Also on when the
-    /// `CYPHR_KEPT_SHADOW` environment variable is set and not `0`.
+    /// or a reader would use one: a divergence is logged and fails the
+    /// write with [`EngineError::Storage`], so a run that exercises it
+    /// cannot pass over one. A build with the `test-utils` feature also
+    /// turns it on at construction when the `CYPHR_KEPT_SHADOW` environment
+    /// variable is set and not `0`; a release build never reads it.
     #[must_use]
     pub fn with_kept_shadow(mut self, on: bool) -> Self {
         self.kept.set_shadow(on);
@@ -345,18 +418,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// Uses of a principal, by a write or a reader, served from a kept
     /// state, over this engine's lifetime.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn kept_hits(&self) -> u64 {
         self.counters.get(Counter::KeptHits)
     }
 
     /// Uses of a stored principal that replayed its history because no
     /// kept state matched.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn kept_misses(&self) -> u64 {
         self.counters.get(Counter::KeptMisses)
     }
 
     /// Shadow checks where a kept state differed from the replay. Must be
     /// 0: a kept state is a cache of the replay, never another answer.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn kept_divergences(&self) -> u64 {
         self.counters.get(Counter::KeptDivergences)
     }
@@ -364,6 +440,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// Stored commits replayed by whole-chain or bounded replays, over this
     /// engine's lifetime: what a write or a root derivation cost in
     /// protocol checks.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn commits_replayed(&self) -> u64 {
         self.counters.get(Counter::CommitsReplayed)
     }
@@ -371,6 +448,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// Commit records this engine has read from its index, over its
     /// lifetime: what a request cost in index reads, which the replay count
     /// cannot see (a walk of the chain checks no signature).
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn chain_rows_read(&self) -> u64 {
         self.counters.get(Counter::ChainRowsRead)
     }
@@ -396,6 +474,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// is kept and current (the tip it stands at is the principal's tip
     /// now). A cache of the replay of the stored chain, exposed so a test
     /// can hold it to that.
+    #[cfg(any(test, feature = "test-utils"))]
     pub async fn kept_state(&self, principal_id: &str) -> Option<cyphr::PrincipalState> {
         let key = self.resolve_key(principal_id).await.ok()?;
         let stored = key.as_deref().unwrap_or(principal_id);

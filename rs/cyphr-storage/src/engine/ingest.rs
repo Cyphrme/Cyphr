@@ -9,6 +9,11 @@ use std::sync::Arc;
 
 use super::*;
 
+/// What a manifest is assumed to add to the bytes a write is counted at,
+/// beyond its blobs: the manifest is written after the check, so its size
+/// is estimated.
+const MANIFEST_SLACK_BYTES: u64 = 4096;
+
 /// Result from [`StorageEngine::ingest_commit`] and
 /// [`StorageEngine::submit_commit`].
 #[derive(Debug, Clone)]
@@ -486,10 +491,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         seen: Option<i64>,
         embedded: &[EmbeddedPin],
     ) -> Result<(IndexableCommit, Blake3Hash), EngineError> {
+        // Before anything is written, so a refusal leaves no blob behind.
+        self.ensure_room(
+            bundle
+                .cozies()
+                .map(|b| u64::try_from(b.len()).unwrap_or(u64::MAX))
+                .fold(MANIFEST_SLACK_BYTES, u64::saturating_add),
+        )?;
         // Store each blob, in bundle order.
         let mut blob_hashes = Vec::with_capacity(commit.cozies.len());
         for (i, blob) in bundle.cozies().enumerate() {
-            let hash = self.blob_store.put(blob).await?;
+            let hash = self.put_counted(blob).await?;
             blob_hashes.push(hash);
             if i < commit.cozies.len() {
                 commit.cozies[i].blob_hash = hash;
@@ -511,7 +523,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut manifest_bytes = prefix.to_vec();
         serde_json::to_writer(&mut manifest_bytes, &manifest)
             .map_err(|e| EngineError::MalformedBlob(format!("commit manifest serialize: {e}")))?;
-        let manifest_hash = self.blob_store.put(&manifest_bytes).await?;
+        let manifest_hash = self.put_counted(&manifest_bytes).await?;
+        commit.manifest = Some(manifest_hash);
         // The key a commit revokes is dead from its receipt, whichever
         // branch the commit is kept on. Noted here, where the record that
         // derives it is written, so a rebuild reaches the same set; the
@@ -735,10 +748,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 cr: admitted.cr,
             },
         );
-        // The manifest is stored, so its frame is known before the index
-        // shows the commit: a reader that finds the commit in the index
-        // must find its frame, or it refuses the index as inconsistent.
-        self.record_frame(&commit, &Shape::of(bundle), seen, embedded);
         self.indexer
             .index_commit(&commit, &DeriveToken::new())
             .await?;
@@ -1399,10 +1408,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Ok(true);
         }
         let chain = self.chain(principal_id, None, None).await?;
-        Ok(chain.iter().any(|commit| {
-            self.frame(principal_id, commit)
+        for commit in &chain {
+            if self
+                .frame(commit)
+                .await?
                 .is_none_or(|f| !f.embedded.is_empty())
-        }))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Follow every Key Tree digest of `principal` that names a principal
@@ -1575,9 +1590,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         blobs: &[Vec<u8>],
         embedded: &[EmbeddedPin],
     ) -> Result<Vec<Blake3Hash>, EngineError> {
+        self.ensure_room(
+            blobs
+                .iter()
+                .map(|b| u64::try_from(b.len()).unwrap_or(u64::MAX))
+                .fold(MANIFEST_SLACK_BYTES, u64::saturating_add),
+        )?;
         let mut blob_hashes = Vec::with_capacity(blobs.len());
         for blob in blobs {
-            blob_hashes.push(self.blob_store.put(blob).await?);
+            blob_hashes.push(self.put_counted(blob).await?);
         }
         let manifest = ActionManifest {
             kind: ACTION_MANIFEST_KIND.to_string(),
@@ -1588,7 +1609,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut bytes = ACTION_MANIFEST_PREFIX.to_vec();
         serde_json::to_writer(&mut bytes, &manifest)
             .map_err(|e| EngineError::MalformedBlob(format!("action manifest serialize: {e}")))?;
-        let hash = self.blob_store.put(&bytes).await?;
+        let hash = self.put_counted(&bytes).await?;
         // The push is answered 201 with these hashes, which tells the caller
         // the actions are recorded: durable before they are listed or the
         // answer is built.
@@ -1727,6 +1748,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             timestamp: last_timestamp,
             keys: extracted_keys,
             pg,
+            manifest: None,
         };
 
         Ok(Built::Commit(Box::new(StagedBuild {

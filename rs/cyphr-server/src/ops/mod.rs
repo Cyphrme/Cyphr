@@ -2,7 +2,7 @@
 //! `backup`, `restore` ([`snapshot`]) and `export`, `verify-all`
 //! ([`chains`]).
 //!
-//! Peers are mirrors of principal-signed objects (GOSSIP-MIN): a restored
+//! Peers are mirrors of principal-signed objects: a restored
 //! peer holds an older prefix of every chain it lost and catches up by
 //! re-push, and no signed statement of the server's names what it held.
 //! These commands therefore keep no watermark and refuse nothing on

@@ -267,6 +267,7 @@ fn index_one(state: &mut MemoryState, commit: &IndexableCommit) -> Result<(), In
         ar: primary_ar.clone(),
         cr: primary_cr.clone(),
         blob_hashes: commit.blob_hashes.clone(),
+        manifest: commit.manifest,
     };
 
     // Append to commit chain.

@@ -623,10 +623,13 @@ async fn run_golden_dir(subdir: &str) {
     let pool = load_pool();
     let dir = golden_dir().join(subdir);
 
-    if !dir.exists() {
-        println!("Skipping {} (not found)", subdir);
-        return;
-    }
+    // A category with no directory has had its vectors renamed or never
+    // generated; passing it would pin nothing.
+    assert!(
+        dir.is_dir(),
+        "golden category {subdir} has no directory at {}",
+        dir.display()
+    );
 
     let mut count = 0;
     for entry in fs::read_dir(&dir).expect("failed to read dir") {
@@ -636,6 +639,7 @@ async fn run_golden_dir(subdir: &str) {
             count += 1;
         }
     }
+    assert!(count > 0, "golden category {subdir} holds no vector");
     println!("Ran {} test(s) from {}/", count, subdir);
 }
 
@@ -684,6 +688,13 @@ async fn test_golden_errors() {
 #[tokio::test]
 async fn test_golden_lifecycle() {
     run_golden_dir("lifecycle").await;
+}
+
+/// Data-action constraint vectors (SPEC 2.3.3): a `pre` in an action has no
+/// meaning and does not refuse it.
+#[tokio::test]
+async fn test_golden_data_action_constraints() {
+    run_golden_dir("data_action_constraints").await;
 }
 
 #[tokio::test]

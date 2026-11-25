@@ -9,7 +9,7 @@ use cyphr_cli::{Cli, Commands, GossipCommands, OutputFormat, commands};
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let json = matches!(cli.output, OutputFormat::Json);
+    let json = matches!(cli.format, OutputFormat::Json);
     if let Err(e) = run_on_runtime(cli) {
         if json {
             // One object on the last stderr line, switchable on `error.kind`.

@@ -21,6 +21,7 @@ fn make_meta(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
     let dummy_hash = crate::blob::Blake3Hash::from_bytes([0; 32]);
     IndexableCommit {
         pg: Vec::new(),
+        manifest: None,
         principal_id: principal_id.to_string(),
         commit_ids: vec![format!("SHA-256:commit-{principal_id}-{seq}")],
         sequence: seq,

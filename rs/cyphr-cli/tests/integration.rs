@@ -67,7 +67,7 @@ impl CliTest {
 
     /// Run with JSON output and parse a field.
     fn run_json(&self, args: &[&str]) -> serde_json::Value {
-        let mut full_args = vec!["--output", "json"];
+        let mut full_args = vec!["--format", "json"];
         full_args.extend(args);
         let out = self.run_ok(&full_args);
         serde_json::from_str(&out).expect("invalid JSON output")
@@ -101,7 +101,7 @@ fn test_ed25519_level2_export_import_roundtrip() {
         .args([
             "--store",
             &import_uri,
-            "--output",
+            "--format",
             "json",
             "import",
             "--input",
@@ -170,7 +170,7 @@ fn test_export_import_roundtrip() {
         .arg(cli.keystore_path())
         .arg("--store")
         .arg(&import_uri)
-        .arg("--output")
+        .arg("--format")
         .arg("json")
         .arg("key")
         .arg("list")
@@ -601,7 +601,7 @@ fn wall_second() -> i64 {
         .as_secs() as i64
 }
 
-/// Backs NETSIM-2 D1 (key-timeline tie rule, forge #213): a data action signed by a key, then
+/// Backs the key-timeline tie rule (forge #213): a data action signed by a key, then
 /// `key replace` of that key in the same second (a signature dated at a
 /// removal is judged after it), must not fail the replace. The action is a
 /// verdict its history flipped: ignored, not refused as `unknown key`.

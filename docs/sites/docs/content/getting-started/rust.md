@@ -7,7 +7,7 @@ toc         = true
 
 ## Installation
 
-Requires Rust 1.88 or later.
+Requires Rust 1.90 or later.
 
 ```bash
 cargo add cyphr
@@ -19,122 +19,123 @@ cryptographic signing and key management.
 ## Creating a Principal
 
 A **principal** is a self-sovereign identity. At Level 1, a principal is a
-single key — the key's thumbprint _is_ the identity.
+single key — the key's thumbprint _is_ the identity. Constructing one is
+async because it opens the principal's commit log.
 
 ```rust
-use cyphr::Principal;
-use cyphr::key::Key;
-use coz::SigningKey;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-fn main() -> Result<(), cyphr::Error> {
-    // Generate a new ES256 key pair.
-    let sk = SigningKey::generate(coz::Alg::ES256);
-    let key = Key::from_coz_key(sk.to_key());
+use coz::Alg;
+use cyphr::signer::SoftwareSigner;
+use cyphr::{Key, Principal};
 
-    // Create a Level 1 principal (implicit genesis).
-    let p = Principal::implicit(key)?;
+async fn create() -> Result<(), Box<dyn std::error::Error>> {
+    // Two ES256 keypairs: the genesis key and a second key.
+    let first = Alg::ES256.generate_keypair();
+    let second = Alg::ES256.generate_keypair();
+    let first_key = Key::from_pub_key("ES256", first.pub_bytes.clone())?;
+    let second_key = Key::from_pub_key("ES256", second.pub_bytes.clone())?;
 
-    println!("Principal Root: {}", p.pr());
-    println!("Level: {:?}", p.level());
-    println!("Active keys: {}", p.active_key_count());
+    // Level 1: implicit genesis. The key's thumbprint is the identity.
+    // The constructor is async because it opens the principal's commit
+    // log (here in memory).
+    let mut principal = Principal::implicit(first_key).await?;
+    println!("Identity (PR): {:?}", principal.pr());
+    println!("Level: {:?}", principal.level()); // L1
+
+    // Level 3: the genesis commit, signed by the genesis key, creates the
+    // second key and freezes the Principal Genesis (PG).
+    let signer = SoftwareSigner::new("ES256", &first.prv_bytes, &first.pub_bytes, &first.thumbprint);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+    principal
+        .commit_genesis(&signer, &[second_key], now, "cyphr.me")
+        .await?;
+    println!("Genesis (PG): {:?}", principal.pg());
+    println!("Level: {:?}", principal.level()); // L3
     Ok(())
 }
 ```
 
 At Level 1, implicit promotion means that the key thumbprint promotes through
-KR → AR → SR → PR. One value. One identity. No ceremony.
+KR → AR → SR → PR. One value. One identity. No ceremony. The genesis commit
+then moves the principal to Level 3.
 
 ## Inspecting State
 
 Every principal exposes its internal Merkle state:
 
 ```rust
-println!("KR: {:?}", p.key_root());    // Key Root
-println!("AR: {:?}", p.auth_root());   // Auth Root
-println!("SR: {:?}", p.sr());          // State Root
-println!("PR: {:?}", p.pr());          // Principal Root
+println!("KR: {:?}", principal.key_root());  // Key Root
+println!("AR: {:?}", principal.auth_root()); // Auth Root
+println!("SR: {:?}", principal.sr());        // State Root
+println!("PR: {:?}", principal.pr());        // Principal Root
 ```
 
 At Level 1 all four are identical — they diverge as you add keys, commit
 transactions, and record actions.
 
-## Type Safety: Nascent vs. Established
-
-The Rust implementation encodes the principal lifecycle in the type system.
-Internally, a `Principal` is either **Nascent** (L1/L2 — no Principal
-Genesis exists) or **Established** (L3+ — PG is frozen by
-`principal/create`). This distinction is invisible to most code thanks to
-`Deref`, but it means invalid states — like a Level 1 principal with a
-fabricated PG — are structurally unrepresentable.
-
-```rust
-// Nascent: pg() returns None
-assert!(p.pg().is_none());
-
-// After principal/create, PG is frozen and pg() returns Some
-```
-
 ## Multi-Key Genesis (Level 3)
 
-For principals with multiple concurrent keys, use explicit genesis:
-
-```rust
-let sk1 = SigningKey::generate(coz::Alg::ES256);
-let sk2 = SigningKey::generate(coz::Alg::ES256);
-
-let keys = vec![
-    Key::from_coz_key(sk1.to_key()),
-    Key::from_coz_key(sk2.to_key()),
-];
-
-let p = Principal::explicit(keys)?;
-
-println!("Active keys: {}", p.active_key_count()); // 2
-println!("Level: {:?}", p.level());                // L3
-```
+A principal with several keys is its genesis key plus the keys its genesis
+commit creates. Pass them as `others` to `commit_genesis`, as in the example
+above; `principal.pg()` is `None` before that commit and `Some` after it.
 
 ## Applying Transactions
 
-State mutations are applied as verified Coz messages. The borrow checker
-enforces that no code can observe intermediate state during a commit:
+State mutations are signed Coz messages. The borrow checker enforces that
+no code can observe intermediate state during a commit: a `CommitScope` holds
+`&mut Principal`.
 
 ```rust
-// Single-transaction atomic commit.
-let commit = p.apply_transaction(verified_coz)?;
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use coz::Alg;
+use cyphr::signer::{Signer, SoftwareSigner};
+use cyphr::{Key, Principal};
+
+// `principal` and `signer` are the genesis key's, as above, and `prv` and
+// `pub_key` its raw key bytes.
+async fn add_key(
+    principal: &mut Principal,
+    signer: &SoftwareSigner,
+    prv: &[u8],
+    pub_key: &[u8],
+    now: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let third = Alg::ES256.generate_keypair();
+    let third_key = Key::from_pub_key("ES256", third.pub_bytes.clone())?;
+
+    // A `key/create` coz: the genesis key signs the new key's thumbprint.
+    let pay = serde_json::json!({
+        "alg": "ES256",
+        "id": Base64UrlUnpadded::encode_string(third.thumbprint.as_bytes()),
+        "now": now + 1,
+        "tmb": Base64UrlUnpadded::encode_string(signer.tmb().as_bytes()),
+        "typ": "cyphr.me/cyphr/key/create",
+    });
+    let pay_json = serde_json::to_vec(&pay)?;
+    let (sig, cad) = coz::sign_json(&pay_json, "ES256", prv, pub_key).ok_or("signing failed")?;
+    let czd = coz::czd_for_alg(&cad, &sig, "ES256").ok_or("czd failed")?;
+
+    // Verify the coz against the principal's state and apply it inside one
+    // commit; the commit itself is signed too.
+    let mut scope = principal.begin_commit();
+    scope.verify_and_apply(&pay_json, &sig, czd, Some(third_key))?;
+    scope.finalize_with_software(signer, now + 1, "cyphr.me").await?;
+    Ok(())
+}
 ```
 
-For multi-transaction commits, use the scoped API:
-
-```rust
-let mut scope = p.begin_commit();
-scope.apply(vtx1)?;
-scope.apply(vtx2)?;
-let commit = scope.finalize()?;
-```
-
-The `CommitScope` holds `&mut Principal`, which means the Rust compiler
-statically prevents reading the principal's state while the commit is
-in-flight — a structural guarantee that the Go implementation enforces
-by convention.
+For a single transaction, `principal.verify_and_apply_transaction(..)`
+verifies and applies it as one commit. The scope's `stage()` and
+`StagedCommit::commit()` split a commit into a verification step that writes
+nothing and the one log write.
 
 ## Storage
 
-The `cyphr-storage` crate provides export/import for principal state:
-
-```bash
-cargo add cyphr-storage
-```
-
-```rust
-use cyphr_storage::FileStore;
-
-// Export principal state to a directory.
-let store = FileStore::new("./my-principal")?;
-store.export(&principal)?;
-
-// Import principal state from a directory.
-let restored = store.import()?;
-```
+The `cyphr-storage` crate stores principals durably. See its
+[README](https://github.com/Cyphrme/Cyphr/blob/master/rs/cyphr-storage/README.md)
+for `StorageEngine` and for replaying a principal's commits with
+`load_principal_from_commits`.
 
 ## Next Steps
 

@@ -415,18 +415,25 @@ cargo run -p fixture-gen -- \
 
 ### Golden Tests (Pre-Computed Fixtures)
 
-| Category                | Tests  |
-| ----------------------- | ------ |
-| mutations               | 6      |
-| multi_key               | 4      |
-| algorithm_diversity     | 2      |
-| state_computation       | 9      |
-| edge_cases              | 4      |
-| actions                 | 5      |
-| errors                  | 12     |
-| data_action_constraints | 1      |
-| structural_constraints  | 2      |
-| **Total**               | **45** |
+| Category                | Tests   |
+| ----------------------- | ------- |
+| actions                 | 7       |
+| algorithm_diversity     | 3       |
+| data_action_constraints | 1       |
+| edge_cases              | 4       |
+| embedding               | 2       |
+| errors                  | 23      |
+| key_auth                | 3       |
+| lifecycle               | 10      |
+| merge                   | 4       |
+| multi_key               | 4       |
+| mutations               | 22      |
+| numbered_keys           | 4       |
+| state_computation       | 9       |
+| structural_constraints  | 2       |
+| transaction_grouping    | 4       |
+| witness                 | 2       |
+| **Total**               | **104** |
 
 ---
 

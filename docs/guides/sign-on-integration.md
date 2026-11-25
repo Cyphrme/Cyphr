@@ -53,6 +53,7 @@ file holding a raw keypair:
 
 ```json
 {
+  "v": 1,
   "alg": "Ed25519",
   "pub_key": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
   "prv_key": "-YSZ3MD_vmCxINuQHpTM3LkQ9zCdBVkYEVr1glDJp-Q"
@@ -67,6 +68,7 @@ const crypto = require("crypto");
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 console.log(
   JSON.stringify({
+    v: 1,
     alg: "Ed25519",
     pub_key: publicKey
       .export({ format: "der", type: "spki" })
@@ -150,9 +152,9 @@ guide builds the push by hand with `curl` instead, so that you see the raw
 request and the signed response your app will meet.
 
 ```sh
-PR=$(cyphr --output json key generate --algo ES256 | jq -r .tmb)
+PR=$(cyphr --format json key generate --algo ES256 | jq -r .tmb)
 cyphr upgrade --identity="$PR"
-cyphr --output json key add --identity="$PR" --signer="$PR"
+cyphr --format json key add --identity="$PR" --signer="$PR"
 cyphr export --identity="$PR" --output ./export.jsonl
 ```
 
@@ -206,6 +208,11 @@ lacks: re-sending one it already holds is an error.
 Use the genesis thumbprint as the principal id, as above. Any other id is
 refused with a `400` before anything is stored; see
 [Map `pg` to an account](#5-map-pg-to-an-account).
+
+`cyphr init --algo ES256 --genesis-commit` does the first two steps in one
+command. A plain `cyphr init` makes a Level 1 principal with no commit, and
+`cyphr push` has nothing to send for it until `cyphr upgrade` (or
+`--genesis-commit` at `init`) creates the genesis commit.
 
 One CLI limit to know before you lean on it: `key revoke` refuses unless
 `--key` equals `--signer`, so it can only ever self-revoke.
@@ -309,7 +316,7 @@ principal specifically. Your client therefore has to remember which principal
 it is signing in as. Store it next to the key.
 
 `cyphr key generate` left your test key in `./cyphr-keys.json`, keyed by
-thumbprint: `{"<tmb>": {"alg", "pub_key", "prv_key"}}`, both key fields
+thumbprint, beside a top-level `"v": 1`: `{"v": 1, "<tmb>": {"alg", "pub_key", "prv_key"}}`, both key fields
 base64url without padding over raw bytes. Base64url-decode them into the
 `prv`/`pub` the signing code below expects.
 
@@ -536,6 +543,43 @@ that holds the same identifier can match its account to yours, so accounts
 can be correlated across sites. Cyphr sign-on does not hide this; if your
 users need accounts that cannot be linked, this scheme does not provide it.
 
+## Skipping the server's token
+
+The exchange above makes your app trust the Cyphr server's word: the token says
+the server found the key active. If your app is written in Rust, you can drop
+that trust. `cyphr_client::RelyingParty` (in `rs/cyphr-client`) holds its own
+copy of one principal's record and decides a sign-in from the key set it
+replayed itself; the server is only a peer it pulls from.
+
+- **Pin the principal.** You construct a `RelyingParty` with an `Anchor`, the
+  principal's genesis key or genesis commit id, never the `pg` alone: one key
+  set under different openers derives one `pg`, so a `pg` cannot tell which
+  principal you meant.
+- **Pull from peers you choose.** `refresh` runs the same pull step a
+  verifying client runs, over any `Connector` (`HttpConnector`, or the Noise
+  transport) and the peers you give it. No peer's statement about the current
+  key is believed; only what replays and verifies is kept.
+- **Sign in against the replayed record.** `challenge()` issues a challenge
+  your service signs, `sign_in` verifies the user's login against the replayed
+  key set and returns a `Session`, and `check_session` re-decides a session
+  token on every use.
+- **Currency is yours to bound.** `RpConfig::pull_age_bound` is the longest the
+  view may go without a successful pull. Past it the relying party refuses to
+  sign anyone in and ends its sessions, and says why (`Refusal::Stale`). A
+  removed key stops holding a session within the bound plus one refresh
+  interval of the removal reaching a peer you pull from. A fork it cannot
+  record, or one that abandoned its own branch, also refuses.
+
+`cargo run -p cyphr-client --example relying_party -- --server
+http://127.0.0.1:3999` signs a fresh principal in this way against a running
+server. The login itself is the same signed request as above (`cyphr login`
+makes it), so a user's client does not change. The library does not run the
+refresh timer, generate or store your service's signing key, or map `pg` to
+an account: those stay yours.
+
+The `pg` and the keys' `tmb` are the same at every service, with either path, so
+accounts can be correlated across sites; see step 5.
+
 ## The rejections you have to handle
 
 The message text is the `payload.error` field verbatim. Every row except the
@@ -577,17 +621,16 @@ intact. Their client signs a `key/create` transaction with the surviving key,
 adding the new one. The principal is the same principal. `pg` does not change.
 Your account row does not change.
 
-The same surviving key can also push a `key/delete` naming the lost device's
-key, removing it from the principal outright; afterward it fails login
-exactly like a key the server has never seen. This exists at the protocol
-level — the CLI does not expose it yet (`cyphr key` has generate, add,
-revoke, and list, no delete), so pushing one means building the Coz payload
-by hand, the same way the naked-revoke request below does — with one
-difference. It goes through `POST /push`, which canonicalizes `pay` before
-verifying: keys sorted recursively, including objects nested inside arrays.
-Sort your keys before you serialize and sign, or you will have signed
-different bytes than the server checks and the push will come back with an
-invalid signature.
+The same surviving key can also remove the lost device's key from the
+principal outright with `cyphr key delete --identity "$PG" --key "$LOST"
+--signer "$SURVIVOR"`, which signs a `key/delete` commit (SPEC 6.2);
+`cyphr push` then sends it. Afterward the lost key fails login exactly like
+a key the server has never seen. A client that builds the commit itself
+sends it through `POST /push`, which canonicalizes `pay` before verifying:
+keys sorted recursively, including objects nested inside arrays. Sort your
+keys before you serialize and sign, or you will have signed different bytes
+than the server checks and the push will come back with an invalid
+signature.
 
 But your Cyphr server does not know yet. It reconstructs each principal from
 the commits it has been given, so until the client pushes that new commit, the
@@ -757,17 +800,22 @@ primary key makes every one of them a migration.
 Named plainly, because finding these out mid-integration is worse than reading
 them here:
 
-- **No client library.** There is no SDK for signing a login. The code in this
-  guide is the reference; port it to your stack.
+- **Signing a login is not an SDK for your language.** `cyphr login` signs one
+  from the command line, and the Rust crate `cyphr-client` carries the login
+  contract (`cyphr_client::login`) and a relying party that checks sign-ins
+  without trusting this server's token (see [Skipping the server's
+  token](#skipping-the-servers-token)). For any other stack, the code in this
+  guide is the reference; port it.
 - **`cyphr key revoke` only self-revokes.** It requires `--key` to equal
   `--signer`, and that is not a CLI shortcoming — non-self revoke is refused
   at the protocol level, full stop. Removing a key you no longer hold is
-  `key/delete`'s job, not revoke's, and the CLI has no `delete` subcommand
-  (`cyphr key` has generate, add, revoke, and list).
-- **`POST /revoke` cannot kill a genesis key**, as above.
+  `key/delete`'s job, and `cyphr key delete` does it. `cyphr key` has
+  generate, add, delete, replace, revoke, naked-revoke, request, accept, and
+  list.
 - **No permissions by default.** A server grants a login the permissions its
   service's policy returns, and none if the service supplies none.
-- **No token revocation.** Expiry only, 15 minutes.
+- **No token revocation.** Expiry only: 15 minutes by default, set with the
+  server's `session_ttl_secs` (at most an hour).
 - **No recovery transactions on the server.** Recovery agents, freeze, and
   thaw are specified; the server does not implement them.
 - **Bearer tokens gate almost nothing.** `POST /push` accepts a token and

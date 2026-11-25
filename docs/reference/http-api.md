@@ -806,7 +806,7 @@ Example: `a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch`
 (`rs/cyphr-server/tests/resync.rs`). SPEC §13 and §15.8 define the proof;
 they name no route and no payload field beyond `typ`: that `id` holds the
 asserted tip's Principal Root and that the signer is read at that tip are
-choices recorded in the frame for the spec author.
+choices this implementation made that the spec author has not yet ruled on.
 
 ## Authentication
 

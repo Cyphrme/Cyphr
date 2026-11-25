@@ -217,7 +217,7 @@ pub struct HealthProbe {
     generation: AtomicU64,
     last_ok: AtomicBool,
     /// Side stores that close themselves to writes after a failed sync.
-    latches: std::sync::Mutex<Vec<std::sync::Arc<crate::observation::SyncLatch>>>,
+    latches: std::sync::Mutex<Vec<std::sync::Arc<crate::durable::SyncLatch>>>,
 }
 
 impl HealthProbe {
@@ -243,7 +243,7 @@ impl HealthProbe {
     }
 
     /// Report a store's latch through [`Self::stores_writable`].
-    pub(crate) fn watch(&self, latch: std::sync::Arc<crate::observation::SyncLatch>) {
+    pub(crate) fn watch(&self, latch: std::sync::Arc<crate::durable::SyncLatch>) {
         self.latches
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn a_watched_store_that_lost_a_sync_fails_health() {
         let probe = HealthProbe::with_probe(|| Ok(()));
-        let latch = Arc::new(crate::observation::SyncLatch::default());
+        let latch = Arc::new(crate::durable::SyncLatch::default());
         probe.watch(latch.clone());
         assert!(probe.stores_writable());
         let _ = latch.sync(|| Err(fjall::Error::Io(std::io::Error::other("disk gone"))));

@@ -16,12 +16,13 @@
 pub mod admission;
 pub mod auth;
 pub mod config;
+pub mod durable;
 pub mod envelope;
 pub mod error;
 pub mod gossip;
+mod http_serve;
 pub mod logging;
 pub mod metrics;
-pub mod observation;
 pub mod ops;
 pub mod rate_limit;
 pub mod receipt;
@@ -95,11 +96,11 @@ pub struct AppState {
     /// service ([`AppState::with_login_policy`]). Defaults to granting none.
     pub login_policy: Arc<dyn auth::policy::LoginPolicy>,
 
-    /// Durable, server-local naked-revoke observations (SPEC §6.4). Its
-    /// own store, distinct from the rebuildable index: a naked revoke
-    /// mutates no chain and must survive a reindex, so it cannot live in
-    /// the index that a reindex rebuilds.
-    pub observations: observation::ObservationStore,
+    /// Serializes a naked revoke's ceiling check and its write, so
+    /// concurrent revokes cannot each pass the check and overshoot
+    /// `[limits] max_dead_keys`. The deaths themselves live in the engine
+    /// alone ([`StorageEngine::record_revoke`]).
+    pub revoke_gate: tokio::sync::Mutex<()>,
 
     /// Reusable HTTP client for witness state sync and upstream calls.
     pub http_client: reqwest::Client,
@@ -122,23 +123,28 @@ impl AppState {
         let blob_store = FjallBlobStore::from_database(db.clone())?;
         let indexer = FjallIndexer::open(&config.index_dir())?;
         let logs = cyphr_blob_fjall::EmlLogs::new(db)?;
-        let engine = StorageEngine::with_log_factory(blob_store, indexer, logs);
+        let engine = StorageEngine::with_log_factory(blob_store, indexer, logs)
+            .with_storage_ceiling(
+                config
+                    .limits
+                    .max_stored_bytes
+                    .map(std::num::NonZeroU64::get),
+            );
 
         let identity = match &config.signing_key_path {
             Some(path) => Some(Arc::new(auth::ServerIdentity::load_from_path(path)?)),
             None => None,
         };
 
-        let observations = observation::ObservationStore::open(&config.observations_dir())?
-            .with_ceiling(config.limits.max_dead_keys.get());
-
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(10))
+            // A redirect could carry an upstream call off the peer the
+            // operator named (the client's own connector refuses them too).
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
 
         let health = metrics::HealthProbe::new(&config.record_dir());
-        health.watch(observations.latch());
 
         Ok(Self {
             config,
@@ -148,7 +154,7 @@ impl AppState {
             principal: None,
             challenges: auth::login::ChallengeStore::new(),
             login_policy: Arc::new(auth::policy::NoPermissions),
-            observations,
+            revoke_gate: tokio::sync::Mutex::new(()),
             http_client,
             metrics: metrics::Metrics::default(),
             health,
@@ -370,6 +376,10 @@ pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn st
         app = app.layer(gate);
     }
     app = app.layer(rate_limit::layer(&limits, count_probe));
+    app = app.layer(tower_http::timeout::TimeoutLayer::with_status_code(
+        axum::http::StatusCode::REQUEST_TIMEOUT,
+        std::time::Duration::from_secs(limits.request_timeout_secs.get()),
+    ));
     app = app.layer(axum::extract::DefaultBodyLimit::max(
         limits.max_body_bytes.get() as usize,
     ));
@@ -442,6 +452,10 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     // loaded, so the boot signs with the chain's active key.
     reconcile_key_rotation(&config).await?;
 
+    for warning in config.startup_warnings() {
+        tracing::warn!("{warning}");
+    }
+
     let listen_addr = config.listen.clone();
     let transport_listen = config.transport_listen.clone();
     let mut state = AppState::new(config)?;
@@ -505,14 +519,22 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
 
     // Serve with per-connection peer info so the per-IP fence can key on the
     // real peer address the kernel reports.
-    axum::serve(
+    http_serve::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app,
+        http_serve::Timeouts {
+            header_read: std::time::Duration::from_secs(
+                state.config.limits.header_read_timeout_secs.get(),
+            ),
+            request: std::time::Duration::from_secs(state.config.limits.request_timeout_secs.get()),
+            idle: std::time::Duration::from_secs(state.config.limits.idle_timeout_secs.get()),
+            max_connections: state.config.limits.max_connections(),
+        },
+        shutdown_signal(
+            #[cfg(unix)]
+            signals,
+        ),
     )
-    .with_graceful_shutdown(shutdown_signal(
-        #[cfg(unix)]
-        signals,
-    ))
     .await?;
 
     if let Some(handle) = transport {
@@ -610,6 +632,7 @@ mod tests {
         let file = serde_json::json!({
             "alg": kp.alg.name(),
             "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+            "v": 1,
             "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
         });
         std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();

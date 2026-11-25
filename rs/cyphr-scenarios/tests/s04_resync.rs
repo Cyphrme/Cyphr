@@ -1,5 +1,5 @@
 // Scenario S04, resync: theft of a key whose two holders fork with both
-// branches extended (SPEC 15.8 item 2, frame 12).
+// branches extended (SPEC 15.8 item 2).
 // Alice and a thief holding her laptop key each extend their own branch
 // twice on partitioned peers.
 // Must hold: Alice's resync makes every server Active on her tip; the
@@ -9,8 +9,7 @@
 // PoP cannot be allowed to win.)
 //
 // Required capabilities:
-// transport,cli-network,branch-store,evidence,peer-gossip,data-commit,key-pairing. Red until `cyphr
-// resync` exists: the CLI answers an unknown command.
+// transport,cli-network,branch-store,evidence,peer-gossip,data-commit,key-pairing.
 
 use std::time::Duration;
 
@@ -19,6 +18,7 @@ use cyphr_scenarios::{Capability, Harness};
 
 const CONVERGE: Duration = Duration::from_secs(30);
 
+// @docket: sc-l2822 :: scripts/docket-run sc-l2822
 #[tokio::test(flavor = "multi_thread")]
 async fn s04_a_second_branchs_pop_is_error_for_good() {
     let h = Harness::start_gossiping(&["p1", "p2", "p3"], 1)

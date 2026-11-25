@@ -22,7 +22,7 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
 
     let cozies: Vec<_> = principal.iter_all_cozies().collect();
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let tx_list: Vec<_> = cozies
                 .iter()
@@ -54,7 +54,7 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
             } else {
                 for (i, tx) in cozies.iter().enumerate() {
                     println!(
-                        "  [{}] {:?} by {} @ {}",
+                        "  [{}] {} by {} @ {}",
                         i,
                         tx.kind(),
                         &tx.signer().to_b64()[..12],
@@ -103,7 +103,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
             }
         }
 
-        match cli.output {
+        match cli.format {
             OutputFormat::Json => {
                 let output = serde_json::json!({
                     "identity": identity,
@@ -170,7 +170,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 
     let tx_count: usize = principal.iter_all_cozies().count();
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let output = serde_json::json!({
                 "identity": identity,

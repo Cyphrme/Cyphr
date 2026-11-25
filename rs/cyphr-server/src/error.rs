@@ -102,25 +102,17 @@ impl AppError {
         }
     }
 
-    /// Map an observation-store failure to a 500. The store is durable
-    /// server infrastructure, so a failure to read or write it is a server
-    /// fault, never a client error. The specific cause is logged, not
-    /// leaked to the client.
-    ///
-    /// The one exception is a full death set: the operator's ceiling
-    /// refusing a new record is storage pressure relieved by refusal (507),
-    /// logged as a warning, not a fault.
-    pub fn observation(err: crate::observation::ObservationError) -> Self {
-        if let crate::observation::ObservationError::Full { .. } = err {
-            tracing::warn!(error = %err, "naked revoke refused: death set at its ceiling");
-            return Self {
-                status: StatusCode::INSUFFICIENT_STORAGE,
-                message: err.to_string(),
-                kind: None,
-            };
+    /// The operator's ceiling on the naked-revoke death set refuses a new
+    /// record: storage pressure relieved by refusal (507), logged as a
+    /// warning, not a fault.
+    pub fn death_set_full(ceiling: u64) -> Self {
+        let message = format!("death set is full ({ceiling} keys)");
+        tracing::warn!(error = %message, "naked revoke refused: death set at its ceiling");
+        Self {
+            status: StatusCode::INSUFFICIENT_STORAGE,
+            message,
+            kind: None,
         }
-        tracing::error!(error = %err, "naked-revoke observation store error");
-        Self::internal("observation store error")
     }
 }
 
@@ -236,6 +228,16 @@ impl AppError {
                 Self::internal("internal storage error")
             },
             EngineError::BranchLimit { .. } => Self::conflict(err.to_string()),
+            // The operator's storage ceiling: pressure relieved by refusal,
+            // as the dead-key ceiling is (507).
+            EngineError::StorageFull { .. } => {
+                tracing::warn!(error = %err, "write refused: storage ceiling reached");
+                Self {
+                    status: StatusCode::INSUFFICIENT_STORAGE,
+                    message: err.to_string(),
+                    kind: None,
+                }
+            },
             // Key death at admission (SPEC 6.4) is an auth refusal, never a
             // stale-predecessor 409.
             EngineError::DeadKey { .. } => Self::unauthorized("push signing key was revoked"),
@@ -273,6 +275,7 @@ impl AppError {
             EngineError::InvalidInput(_) => Some("invalid_input"),
             EngineError::MalformedBlob(_) => Some("malformed_blob"),
             EngineError::BranchLimit { .. } => Some("branch_limit"),
+            EngineError::StorageFull { .. } => Some("storage_full"),
             EngineError::Errored { .. } => Some("errored"),
             EngineError::Protocol(cyphr::Error::Storage(_)) => None,
             EngineError::Protocol(cyphr::Error::StateMismatch) => Some("state_mismatch"),

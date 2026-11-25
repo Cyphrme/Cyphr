@@ -16,7 +16,7 @@ echo ""
 
 # 1. Key Generate
 echo "=== 1. key generate ==="
-GENESIS=$($CLI --keystore "$KEYSTORE" --store "file:$STORE" --output json key generate --algo ES256 --tag genesis | jq -r '.tmb')
+GENESIS=$($CLI --keystore "$KEYSTORE" --store "file:$STORE" --format json key generate --algo ES256 --tag genesis | jq -r '.tmb')
 echo "✅ Generated genesis key: $GENESIS"
 echo ""
 
@@ -37,7 +37,7 @@ echo ""
 
 # 5. Key Add (creates first transaction)
 echo "=== 5. key add ==="
-ADD_OUT=$($CLI --keystore "$KEYSTORE" --store "file:$STORE" --output json key add --identity="$GENESIS" --signer="$GENESIS")
+ADD_OUT=$($CLI --keystore "$KEYSTORE" --store "file:$STORE" --format json key add --identity="$GENESIS" --signer="$GENESIS")
 SECOND=$(echo "$ADD_OUT" | jq -r '.added_key')
 echo "$ADD_OUT" | jq .
 echo ""

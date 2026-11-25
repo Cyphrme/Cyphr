@@ -78,7 +78,7 @@ pub fn run(cli: &Cli, req: &Request<'_>) -> crate::Result<()> {
         None => json!({"identity": req.identity, "key": req.signer, "audience": req.audience,
             "login": request}),
     };
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&out)?),
         OutputFormat::Table => match req.peer {
             Some(peer_url) => {

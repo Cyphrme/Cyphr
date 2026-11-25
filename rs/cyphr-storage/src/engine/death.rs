@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use cyphr::replay::WireBundle;
 
 use super::{
-    BlobStore, EngineError, Indexer, IndexerWrite, REVOKE_RECORD_PREFIX, RevokeRecord,
+    Blake3Hash, BlobStore, EngineError, Indexer, IndexerWrite, REVOKE_RECORD_PREFIX, RevokeRecord,
     StorageEngine,
 };
 use crate::index::IndexableCommit;
@@ -55,6 +55,10 @@ impl Revoked {
         self.0.is_empty()
     }
 
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
     /// Whether `tmb` was dead at `now`: revoked, with `now` at or after
     /// this node's receipt time of the revoke (the spec author on #203:
     /// "honor it from the witness's own receipt time").
@@ -83,6 +87,20 @@ impl DeathSet {
     /// set from the blobs.
     pub(super) fn replace(&self, revoked: Revoked) {
         *self.revoked.lock().unwrap_or_else(|p| p.into_inner()) = revoked;
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.revoked.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
+    /// The hash of the revoke record kept for `tmb`.
+    pub(super) fn record_of(&self, tmb: &str) -> Option<[u8; 32]> {
+        self.revoked
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .0
+            .get(tmb)
+            .map(|death| death.record)
     }
 
     pub(super) fn contains(&self, tmb: &str) -> bool {
@@ -254,7 +272,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         )
         .map_err(|e| EngineError::MalformedBlob(format!("revoke record serialize: {e}")))?;
         let death = Death::new(wrt, *blake3::hash(&bytes).as_bytes());
-        self.blob_store.put(&bytes).await?;
+        // The revoke of a key a stored principal holds is recorded whatever
+        // the ceiling (SPEC 6.4); a revoke of an unheld key is held to it.
+        if self.indexer.get_key(&tmb).await?.is_none() {
+            self.ensure_room(u64::try_from(bytes.len()).unwrap_or(u64::MAX))?;
+        }
+        self.put_counted(&bytes).await?;
         // The caller is told the key was durably recorded dead (the
         // /revoke response), and a death-set a power cut can revert would
         // let a dead key's commits back in: durable before it is visible.
@@ -263,10 +286,50 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(())
     }
 
-    /// Whether the engine holds a revoke record for `tmb` (base64url).
-    #[must_use]
-    pub fn is_revoked(&self, tmb: &str) -> bool {
-        self.deaths.contains(tmb)
+    /// Whether the engine holds a revoke record for `tmb` (base64url): the
+    /// key is dead on this node, for every principal that holds it.
+    ///
+    /// # Errors
+    ///
+    /// A storage error from the rebuild a first read runs.
+    pub async fn is_revoked(&self, tmb: &str) -> Result<bool, EngineError> {
+        self.ensure_healed().await?;
+        Ok(self.deaths.contains(tmb))
+    }
+
+    /// How many keys this node holds a revoke record for.
+    ///
+    /// # Errors
+    ///
+    /// A storage error from the rebuild a first read runs.
+    pub async fn revoked_count(&self) -> Result<usize, EngineError> {
+        self.ensure_healed().await?;
+        Ok(self.deaths.len())
+    }
+
+    /// The revoke envelope kept for `tmb` (base64url), as it was received,
+    /// or `None` when the key is not dead: what a peer reads to verify the
+    /// death itself.
+    ///
+    /// # Errors
+    ///
+    /// A storage error, or [`EngineError::MalformedBlob`] when the record
+    /// the death set names is absent or unreadable.
+    pub async fn revoke_of(&self, tmb: &str) -> Result<Option<serde_json::Value>, EngineError> {
+        self.ensure_healed().await?;
+        let Some(hash) = self.deaths.record_of(tmb) else {
+            return Ok(None);
+        };
+        let hash = Blake3Hash::from_bytes(hash);
+        let data = self.blob_store.get(&hash).await?.ok_or_else(|| {
+            EngineError::MalformedBlob(format!("revoke record {hash} is not in the blob store"))
+        })?;
+        let json = data.strip_prefix(REVOKE_RECORD_PREFIX).ok_or_else(|| {
+            EngineError::MalformedBlob(format!("blob {hash} is not a revoke record"))
+        })?;
+        let record: RevokeRecord = serde_json::from_slice(json)
+            .map_err(|e| EngineError::MalformedBlob(format!("revoke record {hash}: {e}")))?;
+        Ok(Some(record.evidence))
     }
 }
 

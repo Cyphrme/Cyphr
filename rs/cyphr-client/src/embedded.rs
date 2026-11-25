@@ -1,5 +1,6 @@
 //! Embedded-principal tips over gossip: a [`TipSource`] backed by the pull
-//! step (SPEC be0663f §10.3, §10.7; GOSSIP-MIN section 2).
+//! step (SPEC be0663f §10.3, §10.7): peers are mirrors of principal-signed
+//! objects, never a source of truth.
 //!
 //! For each embedded principal it follows, [`GossipTips`] keeps the
 //! verifier's own [`Record`] and pulls it from each chosen peer in turn.

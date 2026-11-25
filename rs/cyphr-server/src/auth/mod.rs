@@ -1,15 +1,14 @@
 //! Server authentication and signing identity.
 //!
 //! This module root holds the server's own signing key
-//! ([`ServerIdentity`]) and is the home later campaign nodes extend with
-//! bearer-token issuance, login flows, and route protection (SPEC.md
-//! 17.4). This node only establishes the identity.
+//! ([`ServerIdentity`]) and is the home of bearer-token issuance, login
+//! flows, and route protection (SPEC 17.4).
 //!
 //! The server holds one signing key, loaded from a file at startup, and
-//! uses it to sign and verify its own Coz payloads (SPEC.md 17.4 bearer
+//! uses it to sign and verify its own Coz payloads (SPEC 17.4 bearer
 //! token issuance signs with this key). Consumers hold a [`ServerIdentity`]
-//! rather than raw key bytes, so a later campaign can back the same
-//! abstraction with a full Cyphr principal without rewriting call sites.
+//! rather than raw key bytes, so the same abstraction can later be backed
+//! by a full Cyphr principal without rewriting call sites.
 
 pub mod login;
 pub mod middleware;
@@ -65,6 +64,11 @@ pub enum AuthError {
     /// key was loaded from it.
     #[error("signing key file version {found} is not the supported {supported}")]
     UnsupportedVersion { found: u64, supported: u32 },
+
+    /// The key file carries no `v`. A file from before versions is not
+    /// read, and is not rewritten: add `"v": 1` to it.
+    #[error("signing key file has no format version: add \"v\": {FILE_FORMAT_VERSION} to it")]
+    Unversioned,
 }
 
 /// The format version of the signing-key file and the server-principal
@@ -109,8 +113,8 @@ struct KeyFile {
     alg: String,
     #[serde(with = "base64url_bytes")]
     pub_key: Vec<u8>,
-    #[serde(with = "base64url_bytes")]
-    prv_key: Vec<u8>,
+    #[serde(with = "base64url_secret")]
+    prv_key: zeroize::Zeroizing<Vec<u8>>,
 }
 
 /// The server's own signing key.
@@ -122,7 +126,7 @@ struct KeyFile {
 pub struct ServerIdentity {
     alg: coz::Alg,
     pub_bytes: Vec<u8>,
-    prv_bytes: Vec<u8>,
+    prv_bytes: zeroize::Zeroizing<Vec<u8>>,
 }
 
 impl std::fmt::Debug for ServerIdentity {
@@ -145,8 +149,13 @@ impl ServerIdentity {
     /// that does not match the private key.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, AuthError> {
         let path = path.as_ref();
-        let content = std::fs::read_to_string(path)?;
+        warn_if_readable_by_others(path);
+        // The file text holds the private key; it is wiped once parsed.
+        let content = zeroize::Zeroizing::new(std::fs::read_to_string(path)?);
         let doc: serde_json::Value = serde_json::from_str(&content)?;
+        if doc.get("v").is_none() {
+            return Err(AuthError::Unversioned);
+        }
         let found = document_version(&doc)?;
         if found != u64::from(FILE_FORMAT_VERSION) {
             return Err(AuthError::UnsupportedVersion {
@@ -154,7 +163,6 @@ impl ServerIdentity {
                 supported: FILE_FORMAT_VERSION,
             });
         }
-        let stamped = doc.get("v").is_some();
         let file: KeyFile = serde_json::from_value(doc)?;
 
         let alg = coz::Alg::from_str(&file.alg)
@@ -165,12 +173,6 @@ impl ServerIdentity {
             .ok_or_else(|| AuthError::InvalidPrivateKey(file.alg.clone()))?;
         if derived_pub != file.pub_key {
             return Err(AuthError::PublicKeyMismatch);
-        }
-
-        // A file from before versions is v1: rewrite it stamped, so every
-        // later read is of a versioned file.
-        if !stamped {
-            std::fs::write(path, serde_json::to_vec(&file)?)?;
         }
 
         Ok(Self {
@@ -261,7 +263,7 @@ pub(crate) fn stage_key_file(path: &Path, kp: &coz::KeyPair) -> Result<(), AuthE
         v: FILE_FORMAT_VERSION,
         alg: kp.alg.name().to_string(),
         pub_key: kp.pub_bytes.clone(),
-        prv_key: kp.prv_bytes.clone(),
+        prv_key: zeroize::Zeroizing::new(kp.prv_bytes.clone()),
     };
     let next = next_key_path(path);
     let mut options = std::fs::OpenOptions::new();
@@ -273,7 +275,7 @@ pub(crate) fn stage_key_file(path: &Path, kp: &coz::KeyPair) -> Result<(), AuthE
     // torn run keeps its old mode, so narrow it explicitly too.
     #[cfg(unix)]
     out.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-    out.write_all(&serde_json::to_vec(&file)?)?;
+    out.write_all(&zeroize::Zeroizing::new(serde_json::to_vec(&file)?))?;
     out.sync_all()?;
     Ok(())
 }
@@ -293,9 +295,46 @@ pub(crate) fn discard_staged_key(path: &Path) -> Result<(), AuthError> {
     Ok(())
 }
 
+/// Replace the file at `path` with `bytes` so a crash leaves either the old
+/// contents or the new, never a torn file: write a sibling temp file, fsync
+/// it, rename it over `path`, fsync the directory. A plain `fs::write`
+/// truncates in place, so a crash mid-write leaves a file that parses as
+/// nothing and a server that refuses to boot.
+pub(crate) fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // A name no other writer shares (process and call), created exclusively,
+    // so two writers never truncate one temp file under each other.
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(
+        ".tmp{}.{}",
+        std::process::id(),
+        CALLS.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp = PathBuf::from(tmp);
+    let written = (|| {
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        out.write_all(bytes)?;
+        out.sync_all()?;
+        drop(out);
+        std::fs::rename(&tmp, path)?;
+        sync_parent_dir(path)
+    })();
+    if written.is_err() {
+        // After a rename the temp name is gone and this is a no-op.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
 /// fsync the directory holding `path`, making a rename or unlink in it
 /// durable (POSIX: the directory entry is data of the directory).
-fn sync_parent_dir(path: &Path) -> Result<(), AuthError> {
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -303,6 +342,27 @@ fn sync_parent_dir(path: &Path) -> Result<(), AuthError> {
     std::fs::File::open(dir)?.sync_all()?;
     Ok(())
 }
+
+/// Say so when other users can read the signing key file. The server does
+/// not change the mode: it is the operator's file, and the keystore's own
+/// check likewise only reports a directory it does not own.
+#[cfg(unix)]
+fn warn_if_readable_by_others(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            tracing::warn!(
+                path = %path.display(),
+                mode = format!("{mode:04o}"),
+                "signing key file is accessible to other users; restrict it to its owner (0600)"
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_if_readable_by_others(_path: &Path) {}
 
 /// Wall-clock server time in Unix seconds, shared by every auth surface
 /// that needs "now" for expiry/window checks (login's timestamp window
@@ -314,6 +374,34 @@ pub(crate) fn server_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Serde helper for a private key's bytes: base64url, held in a type that
+/// wipes them when it drops, with the decoded text wiped too.
+mod base64url_secret {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use serde::{Deserialize, Deserializer, Serializer, de};
+    use zeroize::{Zeroize, Zeroizing};
+
+    pub fn serialize<S>(bytes: &Zeroizing<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut text = Base64UrlUnpadded::encode_string(bytes);
+        let out = serializer.serialize_str(&text);
+        text.zeroize();
+        out
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Zeroizing<Vec<u8>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut text = String::deserialize(deserializer)?;
+        let decoded = Base64UrlUnpadded::decode_vec(&text).map_err(de::Error::custom);
+        text.zeroize();
+        decoded.map(Zeroizing::new)
+    }
 }
 
 /// Serde helper for base64url encoding/decoding of byte vectors.
@@ -382,7 +470,7 @@ mod tests {
             v: FILE_FORMAT_VERSION,
             alg: kp.alg.name().to_string(),
             pub_key: other_kp.pub_bytes, // mismatched on purpose
-            prv_key: kp.prv_bytes,
+            prv_key: zeroize::Zeroizing::new(kp.prv_bytes),
         };
         std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
 
@@ -411,7 +499,7 @@ mod tests {
         let path = dir.path().join("signing-key.json");
         std::fs::write(
             &path,
-            br#"{"alg":"Ed25519","pub_key":"AAAA","prv_key":424242424242}"#,
+            br#"{"v":1,"alg":"Ed25519","pub_key":"AAAA","prv_key":424242424242}"#,
         )
         .unwrap();
         let err =
@@ -442,7 +530,7 @@ mod tests {
             v: FILE_FORMAT_VERSION,
             alg: "NotAnAlgorithm".to_string(),
             pub_key: kp.pub_bytes,
-            prv_key: kp.prv_bytes,
+            prv_key: zeroize::Zeroizing::new(kp.prv_bytes),
         };
         std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
         assert!(matches!(

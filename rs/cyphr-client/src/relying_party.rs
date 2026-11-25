@@ -6,7 +6,7 @@
 //! because one key set under different openers derives one PG, so a PG
 //! cannot tell the principal the relying party was pinned to from another
 //! opener's chain. It keeps the record current with [`RelyingParty::refresh`]
-//! (the G2 pull step over peers it chose) and decides a login only from the
+//! (the pull step over peers it chose) and decides a login only from the
 //! key set that replay produced. No peer's statement is believed.
 //!
 //! Currency is the relying party's own: the **pull age**, how long ago its
@@ -75,6 +75,11 @@ pub struct RpConfig {
     /// party does not run the timer; the host does, and the sign-on window
     /// is [`pull_age_bound`](Self::pull_age_bound) plus this.
     pub refresh_interval: Duration,
+    /// How long a session lasts after sign-in. Never extended: a session
+    /// that has reached it ends ([`Refusal::Expired`]) and the holder signs
+    /// in again. The same meaning as a server's `session_ttl_secs`
+    /// ([`login::DEFAULT_SESSION_TTL_SECS`] is its default).
+    pub session_ttl: Duration,
 }
 
 impl RpConfig {
@@ -137,6 +142,10 @@ pub enum Refusal {
     /// verified naked revoke.
     #[error("the signing key is not active in the replayed chain")]
     KeyNotActive,
+    /// The session reached its lifetime ([`RpConfig::session_ttl`]) and
+    /// ended. It is dropped, never revived.
+    #[error("the session reached its lifetime")]
+    Expired,
     /// No session holds this token (never issued, or it already ended).
     #[error("no live session holds this token")]
     NoSession,
@@ -192,6 +201,16 @@ pub struct Session {
     pub binding: SessionBinding,
     /// What was trusted when the session opened.
     pub trust: Trust,
+    /// The relying party's clock reading at which the session ends.
+    pub expires_at: i64,
+}
+
+/// What a relying party holds for one live session.
+#[derive(Debug, Clone)]
+struct Held {
+    key: Thumbprint,
+    binding: SessionBinding,
+    expires_at: i64,
 }
 
 /// A relying party for one principal.
@@ -234,7 +253,7 @@ pub struct RelyingParty {
     overflowed: bool,
     /// Challenges already redeemed, so each signs one login.
     spent: SpentChallenges,
-    sessions: BTreeMap<String, (Thumbprint, SessionBinding)>,
+    sessions: BTreeMap<String, Held>,
 }
 
 impl RelyingParty {
@@ -484,6 +503,8 @@ impl RelyingParty {
         binding: SessionBinding,
     ) -> Result<Session, Refusal> {
         let now = (self.clock)();
+        // A session nobody presents again would otherwise stay for ever.
+        self.sessions.retain(|_, held| now < held.expires_at);
         let parsed = login::parse_request(login).map_err(|e| match e {
             VerifyError::MissingField(name) => Refusal::Malformed(name),
             VerifyError::NotALogin | VerifyError::AudienceMissing => {
@@ -529,14 +550,23 @@ impl RelyingParty {
         rand::thread_rng().fill_bytes(&mut raw);
         let token = Base64UrlUnpadded::encode_string(&raw);
         let principal = trust.principal.clone();
-        self.sessions
-            .insert(token.clone(), (tmb.clone(), binding.clone()));
+        let ttl = i64::try_from(self.config.session_ttl.as_secs()).unwrap_or(i64::MAX);
+        let expires_at = now.saturating_add(ttl);
+        self.sessions.insert(
+            token.clone(),
+            Held {
+                key: tmb.clone(),
+                binding: binding.clone(),
+                expires_at,
+            },
+        );
         Ok(Session {
             token,
             principal,
             key: tmb,
             binding,
             trust,
+            expires_at,
         })
     }
 
@@ -565,13 +595,22 @@ impl RelyingParty {
         token: &str,
         channel: Option<&ChannelBinding>,
     ) -> Result<Trust, Refusal> {
-        let (key, binding) = self.sessions.get(token).ok_or(Refusal::NoSession)?.clone();
+        let Held {
+            key,
+            binding,
+            expires_at,
+        } = self.sessions.get(token).ok_or(Refusal::NoSession)?.clone();
+        let now = (self.clock)();
+        if now >= expires_at {
+            self.sessions.remove(token);
+            return Err(Refusal::Expired);
+        }
         if let SessionBinding::Channel(bound) = &binding
             && channel != Some(bound)
         {
             return Err(Refusal::ChannelMismatch);
         }
-        match self.trust(&key, (self.clock)()) {
+        match self.trust(&key, now) {
             Ok(trust) => Ok(trust),
             Err(refusal) => {
                 self.sessions.remove(token);
@@ -686,6 +725,7 @@ mod tests {
                 )),
                 pull_age_bound: Duration::from_secs(30),
                 refresh_interval: Duration::from_secs(10),
+                session_ttl: Duration::from_secs(900),
             },
             || 0,
         )

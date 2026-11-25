@@ -1,5 +1,5 @@
 // Scenario S03, resync: the double-offline fork whose both branches were
-// extended (SPEC 15.8 item 2, frame 12).
+// extended (SPEC 15.8 item 2).
 // Alice's laptop and phone each commit twice on partitioned peers; no commit
 // leaves that Error (see s03_offline). Alice resyncs from the phone: a
 // `resync/create` over the phone's tip, sent with the phone's line.
@@ -9,7 +9,6 @@
 //
 // Required capabilities:
 // transport,cli-network,branch-store,evidence,peer-gossip,data-commit,key-pairing,relying-party.
-// Red until `cyphr resync` exists: the CLI answers an unknown command.
 
 use std::time::Duration;
 
@@ -19,6 +18,7 @@ use cyphr_scenarios::{Capability, Harness};
 
 const CONVERGE: Duration = Duration::from_secs(30);
 
+// @docket: sc-l2822 :: scripts/docket-run sc-l2822
 #[tokio::test(flavor = "multi_thread")]
 async fn s03_resync_resolves_the_double_offline_fork() {
     let h = Harness::start_gossiping(&["p1", "p2"], 1)

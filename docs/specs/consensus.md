@@ -55,7 +55,7 @@ history, or deny service.
 
 ## Implementation Status
 
-**`VERIFIED: agent-check` / `pass` in this document means "explicit in or
+**`pass` in this document means "explicit in or
 inferable from SPEC.md at `be0663f`," not "implemented in `rs/` or
 `go/`."** What `rs/` does at this revision:
 
@@ -89,8 +89,7 @@ inferable from SPEC.md at `be0663f`," not "implemented in `rs/` or
 - **Timestamps:** `cyphr::Principal` rejects a data action whose `now`
   is older than the latest it has seen (`TimestampPast`), and rejects a
   future-dated one (`TimestampFuture`) beyond the verifier clock plus a
-  skew. The default skew is 360 s (SPEC §15.9); `set_max_clock_skew(0)`
-  removes the tolerance and does not disable the check.
+  skew of 360 s (SPEC §15.9), which is fixed.
 - **No third-party resolution:** no server route resolves a fork or
   picks a branch, and no server pushes a principal's commits to another
   server (`rs/cyphr-server/tests/no_registration.rs`).
@@ -132,14 +131,12 @@ lists "invalid fork" as "forbidden chain divergence"). This is distinct
 from an **explicit fork** (`cyphr/principal/fork/create`), which is a
 sanctioned, history-preserving protocol operation, not a violation — see
 "Fork Detection and Resolution" below.
-`VERIFIED: agent-check`
 
 **[proof-of-error]**: Witnesses MAY retain invalid messages as proof of
 error — a signed message demonstrating bad behavior (e.g., invalid
 signature, conflicting commit). Proof of error MAY be shared via gossip,
 presented during recovery or escalation, or retained until resync
 resolves the error (§15.2).
-`VERIFIED: agent-check`
 
 #### Timestamp Verification
 
@@ -151,18 +148,15 @@ witnesses MAY use different tolerances. The protocol-level constraint
 is [timestamp-monotonic]. Open for the spec author: §15.7.1 names the
 timestamp tolerance as ±60 s ("within timestamp tolerance, ±60s") where
 §15.9 gives ±360 s; SPEC does not say which governs.
-`VERIFIED: agent-check`
 
 **[timestamp-monotonic]**: Witnesses MUST track the latest known timestamp
 per principal from the most recent valid message. Any `now` earlier than
 the latest known timestamp MUST be rejected, which prevents history
 rewriting (§15.9).
-`VERIFIED: agent-check`
 
 **[timestamp-global-range]**: Messages with `now` outside a global
 tolerance (e.g., more than one year in the future) are rejected as
 `TIMESTAMP_OUT_OF_RANGE` (§15.6 error list).
-`VERIFIED: agent-check`
 
 #### Consensus State Machine
 
@@ -171,7 +165,6 @@ state per principal: Active, Pending, Resync, Offline, Error, Ignore, and
 Client Mismatch (§15.5). These states are orthogonal to the principal's
 base lifecycle states. A witness's consensus state is its own verdict and
 binds no other party.
-`VERIFIED: agent-check`
 
 **[consensus-state-transitions]**: §15.6 lists these transitions:
 
@@ -189,14 +182,11 @@ binds no other party.
 | Any     | Ignore         | Principal dropped from gossip                         |
 | Any     | ClientMismatch | Witness and client disagree on message validity       |
 
-`VERIFIED: agent-check`
-
 #### Error Handling
 
 **[error-reject-atomic]**: Implementations MUST reject transactions with
 any error condition. Implementations MUST NOT apply partial state
 changes — transaction processing is atomic (§19.5).
-`VERIFIED: agent-check`
 
 **[error-codes-transaction]**: Implementations MUST detect these
 transaction errors (§19, §19.1): `INVALID_SIGNATURE`, `UNKNOWN_KEY`,
@@ -204,17 +194,14 @@ transaction errors (§19, §19.1): `INVALID_SIGNATURE`, `UNKNOWN_KEY`,
 `KEY_REVOKED`, `INVALID_PRIOR` (Level 2+), `TRANSACTION_ORDER_UNKNOWN`
 (Level 3+), `COZ_REUSE` (Level 3+), `DUPLICATE_KEY` (Level 3+),
 `THRESHOLD_NOT_MET` (Level 5+).
-`VERIFIED: agent-check`
 
 **[error-codes-state]**: Implementations MUST detect: `STATE_MISMATCH`
 (computed PR ≠ claimed PR), `HASH_ALG_MISMATCH`, `ALG_INCOMPATIBLE`,
 `CHAIN_BROKEN` (Level 2+) (§19.3).
-`VERIFIED: agent-check`
 
 **[error-codes-recovery]**: Implementations MUST detect:
 `UNRECOVERABLE_PRINCIPAL` (no keys capable of transaction, no designated
 recovery agents), `RECOVERY_NOT_DESIGNATED` (Level 3+) (§19.2).
-`VERIFIED: agent-check`
 
 ### Transitions
 
@@ -229,11 +216,9 @@ peer that served it is not trusted for its content.
 
 - **PRE**: Witness trust anchor is behind current tip.
 - **POST**: Trust anchor is advanced to current tip. Consensus state → Active.
-  `VERIFIED: agent-check`
 
 **[resync-backoff]**: Witnesses SHOULD use exponential backoff for
 repeated resync attempts to prevent denial-of-service (§13, "Resync").
-`VERIFIED: agent-check`
 
 **[resync-pop]**: A principal MAY re-iterate an existing state as
 authoritative without mutating PR/AR through a resync PoP, signing a
@@ -243,7 +228,6 @@ the chain.
 
 - **PRE**: Principal has an active key.
 - **POST**: Witnesses that see it confirm the asserted tip. No state mutation.
-  `VERIFIED: agent-check`
 
 #### Fork Detection and Resolution
 
@@ -263,7 +247,6 @@ in gossip, inconsistent `/patch` responses, and conflicting signed proofs
 (§15.7.1). Detection is comparison: any verifier holding two conflicting
 commits signed under the principal's keys with the same `pre` has
 detected the fork, whichever peers it collected them from.
-`VERIFIED: agent-check`
 
 **[fork-response]**: On detecting an invalid fork, a witness holds both
 branches, and the principal's consensus state is Error until the fork is
@@ -278,7 +261,6 @@ and no witness picks a branch. Per §15.5, Error means no new
 transactions or actions are processed until resolved. §15.7 also lists
 ignoring the message, escalation, and holding it as proof of error as
 possible responses, without a verb that makes any of them required.
-`VERIFIED: agent-check`
 
 **[fork-resolution]**: An invalid fork is resolved when the principal
 unambiguously selects one branch (§15.8), by either: (1) a new commit
@@ -305,7 +287,6 @@ multi-sig confirmation in Level 5+"; §15.8 does not define them.
 - **PRE**: Two conflicting branches exist; consensus state is Error.
 - **POST**: One branch is canonical; abandoned branch retained as proof of
   error. Consensus state → Active.
-  `VERIFIED: agent-check`
 
 #### State Jumping
 
@@ -318,24 +299,20 @@ without fetching every intermediate transaction (§18, §18.1).
   service-reported or independently obtained current tip.
 - **POST**: Client trust anchor updated to `jump_to_ps`. Future
   resolutions start from the new anchor.
-  `VERIFIED: agent-check`
 
 **[state-jump-revocation-check]**: State jumps MUST NOT bypass revocation
 semantics. If a signing key was revoked between the anchor and tip, the
 jump MUST fail with `JUMP_INVALID` (§18.3; §15.6 error list).
-`VERIFIED: agent-check`
 
 **[state-jump-optional]**: Clients MAY reject state jumps. The reference
 client rejects state jumps by default (§18). A state jump delegates some
 trust to third-party services, so accepting one is the verifier's own
 choice.
-`VERIFIED: agent-check`
 
 **[state-jump-multi]**: Multiple jumps MAY be required to traverse from
 anchor to tip when keys have been revoked in the intermediate range.
 Each jump uses a key valid at both the jump source and the jump
 destination (§18, §18.4).
-`VERIFIED: agent-check`
 
 ### Forbidden States
 
@@ -344,27 +321,22 @@ or verifier accepts either branch as the principal's state: the
 consensus state is Error (§15.7.1, §15.8). This governs acceptance, not
 evidence — both branches and the fork proof are still kept and shared
 (see [fork-evidence-propagates]).
-`VERIFIED: agent-check`
 
 **[no-third-party-resolution]**: No server, witness or verifier resolves
 a principal's fork or selects a branch on its behalf. Only the
 principal's own signed act ends the fork (§15.8).
-`VERIFIED: agent-check`
 
 **[no-backward-timestamp]**: A message with `now` earlier than the latest
 known timestamp for that principal MUST NOT be accepted (per
 [timestamp-monotonic]).
-`VERIFIED: agent-check`
 
 **[no-partial-apply]**: Implementations MUST NOT apply partial state
 changes from a commit that contains any error (per
 [error-reject-atomic]).
-`VERIFIED: agent-check`
 
 **[no-jump-bypassing-revocation]**: A state jump MUST NOT succeed if the
 signing key was revoked at any point between the anchor and the tip (per
 [state-jump-revocation-check]).
-`VERIFIED: agent-check`
 
 ### Behavioral Properties
 
@@ -375,7 +347,6 @@ emerges from what actually occurred and who published what when (§15.1,
 §15.5).
 
 - **Type**: Design Property
-  `VERIFIED: agent-check`
 
 **[fork-evidence-propagates]**: Both branches of an invalid fork, and the
 fork proof, are evidence that witnesses keep and share by gossip, to
@@ -384,14 +355,12 @@ never withheld to protect a branch, and resolving the fork does not
 delete it.
 
 - **Type**: Design Property
-  `VERIFIED: agent-check`
 
 **[proof-of-error-durable]**: Witnesses retain proof of error for
 resolution, escalation, or forensic analysis (§15.2: "retained until
 resync error resolution").
 
 - **Type**: Liveness
-  `VERIFIED: agent-check`
 
 **[resync-resolves-transient]**: Many transient errors resolve via
 resync. Persistent failure escalates to errored state or ignore (§13,
@@ -399,7 +368,6 @@ resync. Persistent failure escalates to errored state or ignore (§13,
 attempts) as the Resync → Error trigger.
 
 - **Type**: Liveness
-  `VERIFIED: agent-check`
 
 ## Formal Specification
 

@@ -20,7 +20,7 @@ edition      = "2024"
 homepage     = "https://cyphr.me"
 license-file = "../LICENSE"
 repository   = "https://github.com/Cyphrme/Cyphr"
-rust-version = "1.88"
+rust-version = "1.90"
 
 [workspace.dependencies]
 # Core crypto - from coz-rs (re-exports digest, sha2)
@@ -32,6 +32,10 @@ eml           = "0.12"
 fjall         = "3"
 polydigest    = "0.2.1"
 storage-fjall = { package = "polydigest-storage-fjall", version = "0.3" }
+
+# Key material
+# Wipes private-key bytes when they drop.
+zeroize = "1"
 
 # Serialization
 base64ct   = { version = "1", features = ["alloc"] }
@@ -47,7 +51,7 @@ clap = { version = "4", features = ["derive", "env"] }
 axum               = "0.8"
 figment            = { version = "0.10", features = ["toml", "env"] }
 tokio              = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
-tower-http         = { version = "0.6", features = ["trace"] }
+tower-http         = { version = "0.6", features = ["trace", "timeout"] }
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid               = { version = "1", features = ["v4"] }
