@@ -367,17 +367,6 @@ impl<S: eml::Storage> Principal<S> {
         &mut self.log
     }
 
-    /// Configure the tolerance for a `now` ahead of the verifier clock.
-    ///
-    /// A `now` greater than `clock() + seconds` is refused with
-    /// `TimestampFuture`. The default is `DEFAULT_MAX_CLOCK_SKEW`; 0 means
-    /// no tolerance, not "unchecked": the bound cannot be turned off.
-    /// Unsigned, so a skew that would refuse a `now` at or before the
-    /// verifier clock cannot be expressed.
-    pub fn set_max_clock_skew(&mut self, seconds: u64) {
-        self.state.core_unjudged_mut().max_clock_skew = seconds;
-    }
-
     /// Install the verifier's time source (Unix seconds).
     ///
     /// The default reads the system clock where one exists. On

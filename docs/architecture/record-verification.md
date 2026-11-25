@@ -390,7 +390,7 @@ data action are refused, not which error.
 #### [rv-genesis-immutable]
 
 The Principal Genesis, once written by `principal/create`, is never changed. A
-second `principal/create` is refused with `StateMismatch`, and key creation,
+second `principal/create` is refused with `DuplicatePrincipal` (SPEC 7.6), and key creation,
 replacement, deletion of a genesis key and revocation leave the recorded PG
 as it was.
 
@@ -400,7 +400,7 @@ evaluator: test
 ```
 
 Backed by `s2_3_2_no_operation_changes_the_principal_genesis` in
-`rs/cyphr/tests/spec_conformance.rs`, which asserts `StateMismatch` for the
+`rs/cyphr/tests/spec_conformance.rs`, which asserts `DuplicatePrincipal` for the
 second create. The first `principal/create`, which is accepted before the
 second is refused, is its only control. `principal/create` signed by a key other
 than the genesis key (the first) is refused with `UnknownKey`, and one whose
@@ -513,7 +513,9 @@ elsewhere are named.
 
 #### [rv-key-set]
 
-A `key/create` of a key already in the key set is refused with `DuplicateKey`.
+A `key/create` of a key already in the key set is refused with `DuplicateKey`,
+as is a `key/replace` naming a key already in the set, the signer included
+(SPEC 6.3, 7.6); `key_set_refusals.rs` in `rs/cyphr/tests` pins it.
 Revoking or deleting the last key is accepted and leaves the principal Dead
 (SPEC §3.1, §11.2), so a replay can empty the key set; a genesis with no key is
 still refused with `NoActiveKeys`. Deleting or revoking a key outside the
@@ -684,8 +686,7 @@ Unbound. Tests exercise the refusal at the default skew
 (`s15_9_future_dated_message_is_rejected_by_default` in
 `rs/cyphr/tests/spec_conformance.rs`, and the extremes in
 `rs/cyphr-server/tests/now_range.rs`), but this claim has no evaluator
-registered. No test configures a skew with `set_max_clock_skew` and checks
-that setting it to 0 keeps the check. Binding needs such a test.
+registered. The skew is fixed at `DEFAULT_MAX_CLOCK_SKEW`; nothing sets it.
 
 #### [rv-lifecycle-transitions]
 
@@ -776,6 +777,7 @@ paths have no row; its source gives the reason for each.
 | `AlgMismatch`            | `rv-alg-alignment`         |
 | `CzdMismatch`            | `rv-alg-alignment`         |
 | `DuplicateKey`           | `rv-key-set`               |
+| `DuplicatePrincipal`     | `rv-genesis-immutable`     |
 | `DuplicateNonce`         | `rv-nonce-ledger`          |
 | `UnknownNonce`           | `rv-nonce-ledger`          |
 | `CozReuse`               | `rv-no-coz-reuse`          |

@@ -1,4 +1,4 @@
-//! Acceptance suite for the `Signer` seam (node SG1).
+//! Acceptance suite for the `Signer` seam.
 //!
 //! Every commit-finalizing path must sign through a [`Signer`] that need
 //! never expose key bytes, so non-exportable keys (hardware, WebCrypto) can

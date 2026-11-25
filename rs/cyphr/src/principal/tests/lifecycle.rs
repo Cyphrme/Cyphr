@@ -189,7 +189,7 @@ async fn principal_delete_from_frozen_succeeds_and_clears_frozen() {
     assert!(principal.is_deleted());
     assert!(
         !principal.is_frozen(),
-        "delete must clear frozen (mutual exclusivity, SPEC.md:1974-1978)"
+        "delete must clear frozen (mutual exclusivity, SPEC §11.2)"
     );
     assert_eq!(
         principal.lifecycle_state(),
@@ -271,7 +271,7 @@ async fn freeze_delete_on_non_frozen_is_rejected() {
 // the `principal_delete_transitions_to_deleted` golden vector).
 // FreezeDelete is exempted from this gate too, but for a structural
 // reason rather than a same-commit one: it requires `self.frozen`,
-// and Deleted/Frozen are mutually exclusive (SPEC.md:1974-1978), so
+// and Deleted/Frozen are mutually exclusive (SPEC §11.2), so
 // FreezeDelete can never be reachable on a Deleted principal in the
 // first place, so no redundant check is added.
 // ========================================================================
