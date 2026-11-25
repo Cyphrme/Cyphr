@@ -47,13 +47,6 @@ use serde_json::Value;
 
 use super::ServerIdentity;
 
-/// Default token lifetime: 15 minutes.
-///
-/// SPEC.md 17.4 names no specific duration. Short enough that R8's
-/// no-revocation stance is a reasonable trade, long enough to avoid
-/// re-authenticating on every request.
-pub const DEFAULT_TTL_SECS: i64 = 15 * 60;
-
 /// The `typ` every bearer token this server issues is stamped with, and
 /// the only `typ` [`ServerIdentity::verify_token`] accepts.
 ///

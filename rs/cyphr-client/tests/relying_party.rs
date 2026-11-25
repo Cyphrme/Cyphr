@@ -22,6 +22,7 @@ const T0: i64 = 1_700_000_000;
 const AUDIENCE: &str = "rp.example";
 const BOUND: Duration = Duration::from_secs(30);
 const REFRESH: Duration = Duration::from_secs(10);
+const SESSION_TTL: Duration = Duration::from_secs(cyphr_client::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs());
 
 fn config() -> RpConfig {
     let site = coz::Alg::Ed25519.generate_keypair();
@@ -34,6 +35,7 @@ fn config() -> RpConfig {
         )),
         pull_age_bound: BOUND,
         refresh_interval: REFRESH,
+        session_ttl: SESSION_TTL,
     }
 }
 
@@ -379,6 +381,60 @@ async fn session_ends_on_stale_view_and_on_replayed_removal() {
         rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
         Err(Refusal::KeyNotActive)
     );
+}
+
+static TTL_CLOCK: AtomicI64 = AtomicI64::new(T0);
+fn ttl_clock() -> i64 {
+    TTL_CLOCK.load(Ordering::SeqCst)
+}
+
+/// Claim: a session ends at its lifetime however current the view and
+/// however active the key. A relying party that keeps pulling and whose
+/// key is never removed still ends the session at `session_ttl`, drops it
+/// for good, and lets the holder sign in again.
+///
+/// Turns red if: a session outlives `session_ttl` while the view stays
+/// current; the end is early; or an expired session revives.
+/// End-to-end scenario: yes (a real chain, pulls through the lifetime).
+#[tokio::test]
+async fn a_session_ends_at_its_lifetime_with_a_current_view() {
+    let (g, device) = (kp(), kp());
+    let pg = g.tmb.to_b64();
+    let mut chain = Chain::new(&g).await;
+    let mut line = Line::of(&chain);
+    let blobs = chain.commit(&device, T0 + 50).await;
+    line.push(&chain, blobs);
+    let mirror = Mirror::of(line);
+    TTL_CLOCK.store(T0 + 100, Ordering::SeqCst);
+    let mut rp = RelyingParty::new(
+        &pg,
+        Anchor::GenesisKey(g.domain_key(T0)),
+        config(),
+        ttl_clock,
+    );
+    rp.refresh(&[peer("p1", &mirror)]).await;
+    let c = rp.challenge().expect("challenge");
+    let session = rp
+        .sign_in(&login(&device, &pg, AUDIENCE, &c))
+        .expect("signed in");
+    let ttl = i64::try_from(SESSION_TTL.as_secs()).expect("fits");
+    assert_eq!(session.expires_at, T0 + 100 + ttl);
+
+    TTL_CLOCK.store(T0 + 100 + ttl - 1, Ordering::SeqCst);
+    rp.refresh(&[peer("p1", &mirror)]).await;
+    rp.check_session(&session.token).expect("live a second before its lifetime");
+
+    TTL_CLOCK.store(T0 + 100 + ttl, Ordering::SeqCst);
+    rp.refresh(&[peer("p1", &mirror)]).await;
+    assert_eq!(rp.check_session(&session.token), Err(Refusal::Expired));
+    assert_eq!(
+        rp.check_session(&session.token),
+        Err(Refusal::NoSession),
+        "an expired session stays ended"
+    );
+    let c = rp.challenge().expect("challenge");
+    rp.sign_in(&login(&device, &pg, AUDIENCE, &c))
+        .expect("signing in again opens a fresh session");
 }
 
 fn noise_binding(h: u8) -> ChannelBinding {

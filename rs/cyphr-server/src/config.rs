@@ -547,7 +547,7 @@ pub const RECORD_DIR_NAME: &str = "record";
 pub const MAX_SESSION_TTL_SECS: i64 = 60 * 60;
 
 fn default_session_ttl_secs() -> i64 {
-    crate::auth::token::DEFAULT_TTL_SECS
+    cyphr_client::login::DEFAULT_SESSION_TTL_SECS
 }
 
 impl Default for ServerConfig {

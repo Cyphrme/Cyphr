@@ -581,6 +581,9 @@ impl Harness {
                 },
                 pull_age_bound: Duration::from_secs(30),
                 refresh_interval: Duration::from_secs(5),
+                session_ttl: Duration::from_secs(
+                    cyphr_client::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs(),
+                ),
             },
             original: Mutex::new(None),
             enrolled: tokio::sync::Mutex::new(None),

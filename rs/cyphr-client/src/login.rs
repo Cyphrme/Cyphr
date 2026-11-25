@@ -50,6 +50,14 @@ pub const TIMESTAMP_WINDOW_SECS: i64 = 60;
 /// How long an issued challenge stays redeemable.
 pub const CHALLENGE_TTL_SECS: i64 = 120;
 
+/// Default lifetime of a signed-in session, in seconds: 15 minutes.
+///
+/// SPEC 17.4 names no duration. A bearer token is good for whoever holds
+/// it until it ends, so a session is short and never extended; one that
+/// wants longer signs in again. A server's `session_ttl_secs` and a relying
+/// party's [`session_ttl`](crate::RpConfig::session_ttl) both read as this.
+pub const DEFAULT_SESSION_TTL_SECS: i64 = 15 * 60;
+
 /// Challenge nonce length: 256 bits (SPEC 17.2).
 pub const CHALLENGE_BYTES: usize = 32;
 

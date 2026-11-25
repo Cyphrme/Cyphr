@@ -100,6 +100,9 @@ async fn run(server: &str, audience: &str) -> Result<(), String> {
         )),
         pull_age_bound: Duration::from_secs(30),
         refresh_interval: Duration::from_secs(10),
+        session_ttl: Duration::from_secs(
+            cyphr_client::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs(),
+        ),
     };
     let mut rp = RelyingParty::new(&pg, Anchor::GenesisKey(genesis), config, system_clock);
     rp.refresh(&[PullPeer {
