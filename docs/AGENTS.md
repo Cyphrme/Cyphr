@@ -133,17 +133,13 @@ sites; Netlify builds on push.
 
 ## Trust calibration (verified 2026-07-06)
 
-- **Do not trust `VERIFIED`/`pass` annotations in `docs/specs/*.md`.**
-  They have no single meaning. Worst offenders: `consensus.md` (every
-  row "pass" means SPEC-consistent; its Implementation Status lists the
-  little that is built), `authentication.md` (24/24, no
-  login/bearer/embedding code), `principal-lifecycle.md` (25/25, no
-  lifecycle state machine; `level()` cannot return L2). The storage-layer
-  specs are closer to reality; `storage-engine.md`'s claim that the
-  reindex permutation search was removed is now accurate (removed in the
-  reindex rewrite, 2026-07-08) — re-verify any `VERIFIED`/`pass` claim on
-  sight regardless, this trap entry describes a general calibration
-  failure mode, not a standing exception list.
+- **The `VERIFIED:` marks are gone; the `pass` rows in the specs'
+  Verification tables remain, and they do not mean "implemented".** A
+  `pass` there means "explicit in or inferable from SPEC", an
+  agent-checked reading of the spec, not a check of the code. Each
+  spec's own Implementation Status section says what is built; trust
+  that section and the tests, not the table. Do not add a `VERIFIED:` or
+  `pass` annotation that cannot name its evaluator.
 - **Section citations are broken repo-wide.** SPEC.md was renumbered
   2026-07-02; most `docs/specs/*.md` headers and some rustdoc cite the old
   §-numbers, and five specs cite dead `.sketches/` paths (that material was
@@ -230,15 +226,16 @@ SPEC.md change:
 - **I1 — Truthful status or none.** A verification/status annotation that
   cannot name its evaluator must be corrected or removed, not propagated.
   Grounding: the 2026-07-06 spec-drift findings above (verifiable against
-  the named files and `rs/`). Signpost: new docs copying `VERIFIED:
-agent-check` style claims without an evaluator.
+  the named files and `rs/`). Signpost: new docs adding a `VERIFIED:`
+  style claim without an evaluator.
 
 ## Unknowns
 
-- **U1 — `VERIFIED` semantics.** What the annotation must mean
+- **U1 — `pass` semantics.** What a Verification-table `pass` must mean
   (implementation-verified vs spec-internally-consistent) is undefined;
   resolves when the documentation-repair work is scoped. Grounding: the
-  contradictory usage documented above.
+  disclaimers at the top of `authentication.md`, `consensus.md` and
+  `principal-lifecycle.md`.
 
 ## Spec Pointers
 
