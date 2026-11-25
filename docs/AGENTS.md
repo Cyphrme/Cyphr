@@ -89,7 +89,7 @@ runs it, and that command is always `scripts/docket-run <claim-id>` — the
 one runner, described above. Register the claim id in the script's
 `CLAIMS_INDEX` plus the array of commands it names; the commands carry
 their own `rs/Cargo.toml` path and `-p cyphr-server` scope, so a `--lib`
-run cannot fall through to the whole nine-member workspace. A marker is
+run cannot fall through to the whole twelve-member workspace. A marker is
 bound only if it uses the `@docket:` form; a plain `// docket:` comment
 binds nothing and docket reports `implementation-marker-absent`.
 
@@ -108,8 +108,8 @@ wiring — a fixture per failure mode the gate must catch (a malformed
 marker, an exempt marker's silent pass, a stale registration, a renamed
 test behind a green marker) plus `scripts/docket-run`'s list-valued
 behavior. Run it after any change to `docket.ncl`, `scripts/docket-run`,
-or the pinned docket commit; it is not wired into CI (none exists on this
-repository yet) — run it by hand.
+or the pinned docket commit; it is not wired into CI (`.github/workflows/ci.yml`
+has no docket job) — run it by hand.
 
 Any docket shortfall a fixture reveals is filed upstream against
 `axiosoph/docket`, never patched or forked locally.

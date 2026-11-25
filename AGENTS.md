@@ -68,15 +68,17 @@ of PR #23 is the candidate list for what comes after.
   nightly-only rules rather than enforcing them on new code — see
   `rs/AGENTS.md`.
 - **CI** (`.github/workflows/ci.yml`, on push and pull request to
-  `main`/`master`, and manual dispatch):
+  `main`, `master` and `campaign/mvp-close`, and manual dispatch):
   - `rust`: `cargo build`, `cargo test`, `cargo clippy --all-targets -- -D warnings`
-    on ubuntu and macos;
-  - `fuzz`: 60-second smoke runs of `fuzz_coz_parser` and `fuzz_reindex`
+    on ubuntu and macos (macos does not gate), plus a Windows build;
+  - `fuzz`: 60-second smoke runs of each of the nine fuzz targets
     (nightly);
   - `fmt`: `treefmt --fail-on-change`;
   - `fixture-freshness`: regenerates `tests/golden` from `tests/intents`
     and fails on any diff (the enforcement of R2);
-  - `rust-audit` (rustsec) and `rust-msrv` (`cargo check --all-features`).
+  - `rust-audit` (rustsec), `rust-msrv` (`cargo check --all-features` on
+    the declared minimum Rust version) and `rust-wasm` (the core builds
+    for `wasm32-unknown-unknown`).
 
   Go is not built in CI until it is revived. Releases: `release-rs.yml`
   on tags.
@@ -251,8 +253,8 @@ Procedure when a contradiction surfaces during any work:
   not disposability): its bytes can be rebuilt if lost, but losing them
   is a recovery event, not a routine operation, unlike the index. The
   index alone is a rebuildable cache: the sole derived-class member,
-  safely and routinely disposable. Grounding: ADR-0002 (`SPEC.md:114`,
-  `:333-339`, `:587-588`), superseding forge issue #26's framing.
+  safely and routinely disposable. Grounding: ADR-0002 (SPEC §3.7.1,
+  §3.7.6, §4.2), superseding forge issue #26's framing.
   Signpost: any design that makes the index authoritative, or that
   treats deleting the EML keyspaces as a routine operation, violates
   this.
