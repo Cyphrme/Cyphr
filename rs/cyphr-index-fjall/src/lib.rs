@@ -62,8 +62,10 @@ use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 /// rebuilt from blobs; a newer one is refused (downgrade guard). Version 6
 /// records what each commit wrote beside its chain entry ([`CommitRow`])
 /// and version 7 drops the `index_errored` partition (Error is computed
-/// from the held commits).
-const SCHEMA_VERSION: u32 = 7;
+/// from the held commits). Version 8 records the manifest each commit's
+/// entry names ([`CommitRef::manifest`]), so an older index is discarded
+/// and rebuilt, which fills it.
+const SCHEMA_VERSION: u32 = 8;
 
 /// Fixed key under which the `meta` partition stores its single tracking
 /// record.
