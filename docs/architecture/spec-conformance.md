@@ -174,7 +174,7 @@ SPEC 2.3.2, line 240. Disposition: `covered`.
 - spec-text: 2. **Principal Genesis (PG) is immutable**: No operation can change a PG.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s2_3_2_no_operation_changes_the_principal_genesis`
-- fails when: a second `principal/create` overwrites the PG (the only writer; it must fail with `StateMismatch`), or a key create, replace, delete or revoke changes it.
+- fails when: a second `principal/create` overwrites the PG (the only writer; it must fail with `DuplicatePrincipal`), or a key create, replace, delete or revoke changes it.
 
 ```claim
 kind: requirement

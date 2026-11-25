@@ -1736,7 +1736,7 @@ async fn s2_2_2_non_canonical_b64ut_is_rejected() {
 
 /// Backs SPEC 2.3.2: "No operation can change a PG." Scenario: a two-key
 /// genesis establishes its PG, a second `principal/create` (the only
-/// writer of the PG) is refused with `StateMismatch`, then it runs every key operation (create,
+/// writer of the PG) is refused with `DuplicatePrincipal`, then it runs every key operation (create,
 /// replace, delete of a genesis key, revoke); its PG is compared after each. Turns red if any
 /// operation changes the recorded PG. End to end: yes.
 // @docket: sc-l240 :: scripts/docket-run sc-l240
@@ -1767,7 +1767,7 @@ async fn s2_3_2_no_operation_changes_the_principal_genesis() {
     let before = snapshot(&p);
     let r = commit_one(&mut p, &a, sign(&a, again), None, T).await;
     assert!(
-        matches!(r, Err(Error::StateMismatch)),
+        matches!(r, Err(Error::DuplicatePrincipal)),
         "a second principal/create must be refused (PG is write-once): {r:?}"
     );
     assert_eq!(
