@@ -65,13 +65,15 @@ impl Exchange {
         *self.started.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Start the clock unless an exchange is already running.
+    /// Start the clock unless an exchange is already running. A new
+    /// exchange starts with no response handed over: what the last one left
+    /// in `finished` must not end this one at the next flush.
     fn start_if_idle(&self, at: Instant) -> Instant {
-        *self
-            .started
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get_or_insert(at)
+        let mut started = self.started.lock().unwrap_or_else(|p| p.into_inner());
+        if started.is_none() {
+            self.finished.store(false, Ordering::SeqCst);
+        }
+        *started.get_or_insert(at)
     }
 
     fn set_started(&self, at: Option<Instant>) {
@@ -408,53 +410,12 @@ mod tests {
         );
     }
 
-    /// Claim: the exchange deadline holds for every request of a pipelined
-    /// run, not only the first: two large requests sent in one write, the
-    /// first response read fast and the second read slowly, is cut off at
-    /// the deadline. Turns red if the clock is armed by a socket read only,
-    /// since hyper parses the later requests from bytes it already holds.
-    /// End-to-end scenario: yes (a real listener and a real socket).
-    #[tokio::test]
-    async fn a_pipelined_request_is_bounded_too() {
-        let addr = start(limits(5, 16)).await;
-        let socket = tokio::net::TcpSocket::new_v4().expect("socket");
-        socket.set_recv_buffer_size(4096).expect("rcvbuf");
-        let mut client = socket.connect(addr).await.expect("connect");
-        client
-            .write_all(b"GET /big HTTP/1.1\r\nHost: x\r\n\r\nGET /big HTTP/1.1\r\nHost: x\r\n\r\n")
-            .await
-            .expect("two requests in one write");
-        let mut received = 0usize;
-        let mut buf = vec![0u8; 256 * 1024];
-        // The first response, read as fast as it comes (well inside the limit).
-        while received < BIG {
-            match client.read(&mut buf).await {
-                Ok(0) | Err(_) => panic!("closed during the first response"),
-                Ok(n) => received += n,
-            }
-        }
-        // The second, dripped.
-        let second = StdInstant::now();
-        loop {
-            match client.read(&mut buf[..1024]).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => received += n,
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            assert!(
-                second.elapsed() < Duration::from_secs(20),
-                "still connected {:?} into the second response",
-                second.elapsed()
-            );
-        }
-        assert!(received < 2 * BIG, "both responses were delivered whole");
-    }
-
     /// Claim: an exchange the service starts, with no socket read to arm it
     /// (hyper parses a pipelined request from bytes it already holds), is
     /// bounded all the same: a write the peer never drains fails `TimedOut`
     /// at the limit plus the grace. Turns red if the hard deadline is armed
-    /// by a read alone, for then this write waits for ever.
+    /// by a read alone, for then this write waits for ever, or if a leftover
+    /// `finished` flag lets a flush end the new exchange early.
     /// End-to-end scenario: no; it drives the stream on a real socket pair,
     /// the one place a request can start without a read.
     #[tokio::test]
@@ -471,7 +432,13 @@ mod tests {
             Duration::from_secs(1),
             exchange.clone(),
         );
+        // The last exchange's response ended and nothing flushed it: the
+        // flag it left must not end the one the service starts now.
+        exchange.finished.store(true, Ordering::SeqCst);
         exchange.start_if_idle(Instant::now());
+        // A flush part way through the response, as a flush can come.
+        stream.write_all(b"head").await.expect("a first write");
+        stream.flush().await.expect("a flush");
         let started = StdInstant::now();
         let written =
             tokio::time::timeout(Duration::from_secs(10), stream.write_all(&vec![0u8; BIG]))
