@@ -544,6 +544,42 @@ async fn a_service_policy_grants_and_its_route_requires_a_permission() {
     assert_eq!(save(Some(token_for("golden").await)).await, StatusCode::OK);
 }
 
+/// A challenge signed by another issuer is refused, though it is for this
+/// audience, fresh, and answered by a valid login: the server accepts only
+/// challenges it signed itself.
+#[tokio::test]
+async fn login_refuses_a_challenge_another_issuer_signed() {
+    let state = login_state();
+    let pool = load_pool();
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let other = coz::Alg::Ed25519.generate_keypair();
+    let other = cyphr_client::login::SoftwareIssuer::new(
+        other.alg.name(),
+        &other.prv_bytes,
+        &other.pub_bytes,
+    );
+    let foreign = serde_json::to_value(
+        cyphr_client::login::issue_challenge(&other, AUDIENCE, now_secs()).expect("issues"),
+    )
+    .expect("json");
+
+    let body = login_body(
+        &pool,
+        "golden",
+        AUDIENCE,
+        Some(&pid),
+        Some(&foreign),
+        now_secs(),
+    );
+    let (status, json) = post_json(build_router(state), "/auth/login", body).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a challenge another issuer signed must be refused: {json:?}"
+    );
+}
+
 // ========================================================================
 // Replay defenses
 // ========================================================================

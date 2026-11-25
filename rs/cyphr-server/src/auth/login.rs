@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::Json;
 use axum::extract::State;
-use cyphr_client::login::{self, LoginRequest, ParsedRequest, SpentChallenges};
+use cyphr_client::login::{self, LoginRequest, ParsedRequest, SpentChallenges, VerifiedRequest};
 use cyphr_storage::engine::{EngineError, bare_digest};
 use serde::Serialize;
 
@@ -43,18 +43,15 @@ use crate::config::MAX_SESSION_TTL_SECS;
 use crate::envelope::Envelope;
 use crate::error::AppError;
 
-impl From<login::LoginError> for LoginError {
-    fn from(err: login::LoginError) -> Self {
+impl From<login::VerifyError> for LoginError {
+    fn from(err: login::VerifyError) -> Self {
         match err {
-            login::LoginError::MissingField(name) => Self::MissingField(name),
-            login::LoginError::NotALogin => Self::NotALogin,
-            login::LoginError::AudienceMissing => Self::AudienceMissing,
-            login::LoginError::ChannelMalformed => Self::ChannelMismatch("`h` is not base64url"),
-            login::LoginError::ChallengeInvalid => Self::ChallengeInvalid,
-            login::LoginError::InvalidSignature => Self::InvalidSignature,
-            // Signing is the client's act; a server parsing a login never
-            // reaches it, so a refusal is the honest reading.
-            login::LoginError::Signing(_) => Self::InvalidSignature,
+            login::VerifyError::MissingField(name) => Self::MissingField(name),
+            login::VerifyError::NotALogin => Self::NotALogin,
+            login::VerifyError::AudienceMissing => Self::AudienceMissing,
+            login::VerifyError::ChannelMalformed => Self::ChannelMismatch("`h` is not base64url"),
+            login::VerifyError::ChallengeInvalid => Self::ChallengeInvalid,
+            login::VerifyError::InvalidSignature => Self::InvalidSignature,
         }
     }
 }
@@ -72,7 +69,8 @@ pub enum LoginError {
     #[error("login payload is missing required field `{0}`")]
     MissingField(&'static str),
 
-    /// `typ` is absent or is not a login request (`.../cyphr/auth/login`).
+    /// `typ` is absent or is not a login request
+    /// (`<audience>/user/login/request/create`).
     #[error("login payload `typ` is not a login request")]
     NotALogin,
 
@@ -152,9 +150,9 @@ pub fn parse_login(
 /// caller. The key is looked up in *this* principal only -- never a
 /// global `tmb` index -- which is what closes the key-sharing ambiguity.
 pub fn authorize_login<S: eml::Storage>(
-    login: &ParsedRequest,
+    login: ParsedRequest,
     principal: &cyphr::Principal<S>,
-) -> Result<(), LoginError> {
+) -> Result<VerifiedRequest, LoginError> {
     // The key must be one this claimed principal knows. `get_key` returns
     // active or revoked keys; an unknown key (active only in some *other*
     // principal that shares it) is not found here and is rejected.
@@ -163,9 +161,7 @@ pub fn authorize_login<S: eml::Storage>(
         .ok_or(LoginError::KeyNotActive)?;
 
     // Proof of possession: the signature must verify against that key.
-    if !login.verifies(key.alg(), key.pub_key()) {
-        return Err(LoginError::InvalidSignature);
-    }
+    let login = login.verify(key.alg(), key.pub_key())?;
 
     // A present-but-revoked key proves possession but is no longer active.
     if !principal.is_key_active(&login.tmb) {
@@ -177,7 +173,7 @@ pub fn authorize_login<S: eml::Storage>(
         return Err(LoginError::PrincipalNotActive);
     }
 
-    Ok(())
+    Ok(login)
 }
 
 /// In-memory store of redeemed challenges for the challenge-response flow.
@@ -202,7 +198,7 @@ impl ChallengeStore {
     pub fn redeem(
         &self,
         identity: &ServerIdentity,
-        request: &ParsedRequest,
+        request: &VerifiedRequest,
         now: i64,
     ) -> Result<(), LoginError> {
         // The set holds only nonces and expiries, so a panic mid-mutation
@@ -353,7 +349,7 @@ pub async fn login(
         .await
         .map_err(map_load_error)?
         .ok_or_else(|| AppError::unauthorized("login: unknown principal"))?;
-    authorize_login(&parsed, &principal)?;
+    let parsed = authorize_login(parsed, &principal)?;
     let canonical_id = state
         .engine
         .canonical_principal_id(&parsed.pg)

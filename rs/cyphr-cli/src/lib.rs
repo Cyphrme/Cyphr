@@ -409,6 +409,7 @@ pub enum Commands {
     /// for most uses. The principal's `pg` and the key's `tmb` are the same
     /// at every service, so accounts can be correlated across sites. To
     /// sign out, delete the token.
+    #[command(group(clap::ArgGroup::new("delivery").required(true).multiple(false).args(["peer", "sign_only"])))]
     Login {
         /// Principal Genesis (base64url)
         #[arg(long, allow_hyphen_values = true)]
@@ -425,7 +426,7 @@ pub enum Commands {
 
         /// Post the login to this peer (e.g., http://127.0.0.1:8080) and
         /// print the token
-        #[arg(long, conflicts_with = "sign_only")]
+        #[arg(long)]
         peer: Option<String>,
 
         /// Print the signed login instead of sending it

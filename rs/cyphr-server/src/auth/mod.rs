@@ -226,8 +226,12 @@ impl cyphr_client::login::Issuer for ServerIdentity {
         &self.pub_bytes
     }
 
-    fn sign(&self, pay_bytes: &[u8]) -> Option<Vec<u8>> {
-        ServerIdentity::sign(self, pay_bytes).map(|(sig, _)| sig)
+    fn sign(&self, pay_bytes: &[u8]) -> Result<Vec<u8>, cyphr_client::login::IssuerError> {
+        ServerIdentity::sign(self, pay_bytes)
+            .map(|(sig, _)| sig)
+            .ok_or_else(|| {
+                cyphr_client::login::IssuerError("coz rejected the server's signing key".into())
+            })
     }
 }
 

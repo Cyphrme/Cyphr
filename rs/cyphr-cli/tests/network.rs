@@ -1124,16 +1124,24 @@ fn login_signs_in_to_a_server_by_timestamp_and_by_challenge() {
     );
 
     let challenge = a.dir.path().join("challenge.json");
-    let served = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "-X",
-            "POST",
-            &format!("{}/auth/challenge", server.url),
-        ])
-        .output()
-        .expect("curl");
-    std::fs::write(&challenge, served.stdout).expect("save challenge");
+    let served = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let http = cyphr_client::HttpConnector::connect(
+                &server.url,
+                &cyphr_client::HttpOptions::new(std::time::Duration::from_secs(10)),
+            )
+            .expect("connect");
+            cyphr_client::Connector::exchange(
+                &http,
+                &cyphr_client::Request::post("/auth/challenge", Vec::new()),
+            )
+            .await
+        })
+        .expect("a challenge is served");
+    std::fs::write(&challenge, served).expect("save challenge");
     let file = challenge.to_string_lossy().into_owned();
     let by_challenge = login(&["--audience=svc.example", "--challenge", &file]);
     assert!(by_challenge.ok, "challenge login: {}", by_challenge.stderr);

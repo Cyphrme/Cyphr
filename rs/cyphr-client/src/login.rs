@@ -67,9 +67,9 @@ pub mod field {
     pub const CHANNEL: &str = "h";
 }
 
-/// Why a login or challenge was refused by the contract.
+/// Why a login or challenge was refused when checked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum LoginError {
+pub enum VerifyError {
     /// A required claim is absent or not the type the contract needs.
     #[error("login is missing required claim `{0}`")]
     MissingField(&'static str),
@@ -87,13 +87,32 @@ pub enum LoginError {
     /// nonce, or was already redeemed.
     #[error("login challenge is unknown, used, or expired")]
     ChallengeInvalid,
-    /// The signature did not verify.
+    /// The request's signature did not verify under the key it names.
     #[error("login signature is invalid")]
     InvalidSignature,
-    /// Building or signing failed.
-    #[error("login could not be signed: {0}")]
-    Signing(String),
 }
+
+/// Why a login request or challenge could not be signed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SignError {
+    /// The pay does not serialize or canonicalize.
+    #[error("login pay cannot be canonicalized: {0}")]
+    Canonicalize(String),
+    /// The challenge to answer carries no nonce.
+    #[error("the challenge to answer carries no nonce")]
+    ChallengeHasNoNonce,
+    /// The user's signer failed.
+    #[error("the signer failed: {0}")]
+    Signer(String),
+    /// The issuer's key cannot sign.
+    #[error(transparent)]
+    Issuer(#[from] IssuerError),
+}
+
+/// An [`Issuer`] failed to produce a signature.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the issuer key cannot sign: {0}")]
+pub struct IssuerError(pub String);
 
 /// A login request on the wire: the signed Coz and, in the challenge flow,
 /// the challenge the service signed, returned to it.
@@ -134,10 +153,20 @@ pub struct ParsedRequest {
 }
 
 impl ParsedRequest {
-    /// Whether the signature verifies under `alg` and `pub_key`.
-    #[must_use]
-    pub fn verifies(&self, alg: &str, pub_key: &[u8]) -> bool {
-        alg == self.alg && coz::verify_json(&self.pay_bytes, &self.sig, alg, pub_key) == Some(true)
+    /// Check the signature under the key the caller looked up for
+    /// [`tmb`](Self::tmb) (`alg`, `pub_key`).
+    ///
+    /// # Errors
+    ///
+    /// [`VerifyError::InvalidSignature`] when it does not verify.
+    pub fn verify(self, alg: &str, pub_key: &[u8]) -> Result<VerifiedRequest, VerifyError> {
+        if alg == self.alg
+            && coz::verify_json(&self.pay_bytes, &self.sig, alg, pub_key) == Some(true)
+        {
+            Ok(VerifiedRequest(self))
+        } else {
+            Err(VerifyError::InvalidSignature)
+        }
     }
 
     /// Whether the request's `now` is within the window of `server_now`
@@ -157,44 +186,58 @@ pub fn within_window(client_now: i64, server_now: i64) -> bool {
     server_now.abs_diff(client_now) <= TIMESTAMP_WINDOW_SECS.unsigned_abs()
 }
 
-fn str_claim<'a>(pay: &'a Value, name: &'static str) -> Result<&'a str, LoginError> {
+/// A request whose signature verified under the key its signer named: the
+/// only thing [`redeem_challenge`] accepts, so a challenge cannot be spent
+/// by a login that was never checked.
+#[derive(Debug, Clone)]
+pub struct VerifiedRequest(ParsedRequest);
+
+impl std::ops::Deref for VerifiedRequest {
+    type Target = ParsedRequest;
+
+    fn deref(&self) -> &ParsedRequest {
+        &self.0
+    }
+}
+
+fn str_claim<'a>(pay: &'a Value, name: &'static str) -> Result<&'a str, VerifyError> {
     pay.get(name)
         .and_then(Value::as_str)
-        .ok_or(LoginError::MissingField(name))
+        .ok_or(VerifyError::MissingField(name))
 }
 
 /// Extract and shape-check a request's claims.
 ///
 /// # Errors
 ///
-/// The [`LoginError`] naming the first claim that is absent or malformed.
-pub fn parse_request(request: &LoginRequest) -> Result<ParsedRequest, LoginError> {
+/// The [`VerifyError`] naming the first claim that is absent or malformed.
+pub fn parse_request(request: &LoginRequest) -> Result<ParsedRequest, VerifyError> {
     let pay = &request.coz.pay;
-    let pay_bytes = serde_json::to_vec(pay).map_err(|_| LoginError::MissingField("pay"))?;
+    let pay_bytes = serde_json::to_vec(pay).map_err(|_| VerifyError::MissingField("pay"))?;
     let typ = pay
         .get("typ")
         .and_then(Value::as_str)
-        .ok_or(LoginError::NotALogin)?;
+        .ok_or(VerifyError::NotALogin)?;
     let audience = typ
         .strip_suffix(REQUEST_TYP_SUFFIX)
-        .ok_or(LoginError::NotALogin)?;
+        .ok_or(VerifyError::NotALogin)?;
     if audience.is_empty() {
-        return Err(LoginError::AudienceMissing);
+        return Err(VerifyError::AudienceMissing);
     }
     let tmb = Thumbprint::from_bytes(
         Base64UrlUnpadded::decode_vec(str_claim(pay, "tmb")?)
-            .map_err(|_| LoginError::MissingField("tmb"))?,
+            .map_err(|_| VerifyError::MissingField("tmb"))?,
     );
     let now = pay
         .get("now")
         .and_then(Value::as_i64)
-        .ok_or(LoginError::MissingField("now"))?;
+        .ok_or(VerifyError::MissingField("now"))?;
     let channel = pay
         .get(field::CHANNEL)
         .map(|v| {
             v.as_str()
                 .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
-                .ok_or(LoginError::ChannelMalformed)
+                .ok_or(VerifyError::ChannelMalformed)
         })
         .transpose()?;
     Ok(ParsedRequest {
@@ -220,8 +263,7 @@ pub fn parse_request(request: &LoginRequest) -> Result<ParsedRequest, LoginError
 ///
 /// # Errors
 ///
-/// [`LoginError::Signing`] if the pay cannot be canonicalized or the
-/// signer fails.
+/// [`SignError`] if the pay cannot be canonicalized or the signer fails.
 pub async fn sign_request<S: Signer>(
     signer: &S,
     audience: &str,
@@ -229,7 +271,7 @@ pub async fn sign_request<S: Signer>(
     now: i64,
     challenge: Option<&CozJson>,
     channel: Option<&[u8]>,
-) -> Result<LoginRequest, LoginError> {
+) -> Result<LoginRequest, SignError> {
     let mut pay = Map::new();
     pay.insert("alg".into(), signer.alg().into());
     pay.insert("now".into(), now.into());
@@ -240,7 +282,7 @@ pub async fn sign_request<S: Signer>(
         format!("{audience}{REQUEST_TYP_SUFFIX}").into(),
     );
     if let Some(challenge) = challenge {
-        let nonce = challenge_nonce(challenge)?;
+        let nonce = challenge_nonce(challenge).map_err(|_| SignError::ChallengeHasNoNonce)?;
         pay.insert(field::CHALLENGE.into(), nonce.into());
     }
     if let Some(h) = channel {
@@ -251,20 +293,21 @@ pub async fn sign_request<S: Signer>(
     }
     pay.sort_keys();
     let pay = Value::Object(pay);
-    let pay_bytes = serde_json::to_vec(&pay).map_err(|e| LoginError::Signing(e.to_string()))?;
-    let cad = coz::canonical_hash_for_alg(&pay_bytes, signer.alg(), None)
-        .ok_or_else(|| LoginError::Signing("cannot canonicalize the pay".into()))?;
+    let pay_bytes = serde_json::to_vec(&pay).map_err(|e| SignError::Canonicalize(e.to_string()))?;
+    let cad = coz::canonical_hash_for_alg(&pay_bytes, signer.alg(), None).ok_or_else(|| {
+        SignError::Canonicalize(format!("no canonical hash for {}", signer.alg()))
+    })?;
     let sig = signer
         .sign(&cad)
         .await
-        .map_err(|e| LoginError::Signing(e.to_string()))?;
+        .map_err(|e| SignError::Signer(e.to_string()))?;
     Ok(LoginRequest {
         coz: CozJson { pay, sig },
         challenge: challenge.cloned(),
     })
 }
 
-fn challenge_nonce(challenge: &CozJson) -> Result<String, LoginError> {
+fn challenge_nonce(challenge: &CozJson) -> Result<String, VerifyError> {
     str_claim(&challenge.pay, field::NONCE).map(str::to_owned)
 }
 
@@ -276,7 +319,11 @@ pub trait Issuer: Send + Sync + std::fmt::Debug {
     /// Public key bytes, as `coz::verify_json` takes them.
     fn pub_key(&self) -> &[u8];
     /// Sign `pay_bytes` as `coz::sign_json` does.
-    fn sign(&self, pay_bytes: &[u8]) -> Option<Vec<u8>>;
+    ///
+    /// # Errors
+    ///
+    /// [`IssuerError`] naming why the key could not sign.
+    fn sign(&self, pay_bytes: &[u8]) -> Result<Vec<u8>, IssuerError>;
 }
 
 /// An [`Issuer`] over raw key bytes the caller supplies.
@@ -318,8 +365,10 @@ impl Issuer for SoftwareIssuer {
         &self.pub_key
     }
 
-    fn sign(&self, pay_bytes: &[u8]) -> Option<Vec<u8>> {
-        coz::sign_json(pay_bytes, &self.alg, &self.prv, &self.pub_key).map(|(sig, _)| sig)
+    fn sign(&self, pay_bytes: &[u8]) -> Result<Vec<u8>, IssuerError> {
+        coz::sign_json(pay_bytes, &self.alg, &self.prv, &self.pub_key)
+            .map(|(sig, _)| sig)
+            .ok_or_else(|| IssuerError(format!("{} rejected the key material", self.alg)))
     }
 }
 
@@ -328,14 +377,14 @@ impl Issuer for SoftwareIssuer {
 ///
 /// # Errors
 ///
-/// [`LoginError::Signing`] if the issuer's key cannot sign.
+/// [`SignError`] if the issuer's key has no thumbprint or cannot sign.
 pub fn issue_challenge(
     issuer: &dyn Issuer,
     audience: &str,
     now: i64,
-) -> Result<CozJson, LoginError> {
+) -> Result<CozJson, SignError> {
     let tmb = coz::compute_thumbprint_for_alg(issuer.alg(), issuer.pub_key())
-        .ok_or_else(|| LoginError::Signing("the issuer key has no thumbprint".into()))?;
+        .ok_or_else(|| IssuerError("the key has no thumbprint".into()))?;
     let mut nonce = [0u8; CHALLENGE_BYTES];
     rand::rngs::OsRng.fill_bytes(&mut nonce);
     let mut pay = Map::new();
@@ -352,10 +401,8 @@ pub fn issue_challenge(
     );
     pay.sort_keys();
     let pay = Value::Object(pay);
-    let pay_bytes = serde_json::to_vec(&pay).map_err(|e| LoginError::Signing(e.to_string()))?;
-    let sig = issuer
-        .sign(&pay_bytes)
-        .ok_or_else(|| LoginError::Signing("the issuer key cannot sign".into()))?;
+    let pay_bytes = serde_json::to_vec(&pay).map_err(|e| SignError::Canonicalize(e.to_string()))?;
+    let sig = issuer.sign(&pay_bytes)?;
     Ok(CozJson { pay, sig })
 }
 
@@ -365,28 +412,28 @@ pub fn issue_challenge(
 ///
 /// # Errors
 ///
-/// [`LoginError::ChallengeInvalid`] for anything else.
+/// [`VerifyError::ChallengeInvalid`] for anything else.
 pub fn verify_challenge(
     issuer: &dyn Issuer,
     audience: &str,
     challenge: &CozJson,
     now: i64,
-) -> Result<(String, i64), LoginError> {
+) -> Result<(String, i64), VerifyError> {
     let pay = &challenge.pay;
     let typ_ok = pay.get("typ").and_then(Value::as_str)
         == Some(format!("{audience}{CHALLENGE_TYP_SUFFIX}").as_str());
     let issued = pay.get("now").and_then(Value::as_i64);
-    let pay_bytes = serde_json::to_vec(pay).map_err(|_| LoginError::ChallengeInvalid)?;
+    let pay_bytes = serde_json::to_vec(pay).map_err(|_| VerifyError::ChallengeInvalid)?;
     let signed =
         coz::verify_json(&pay_bytes, &challenge.sig, issuer.alg(), issuer.pub_key()) == Some(true);
     let (Some(issued), true, true) = (issued, typ_ok, signed) else {
-        return Err(LoginError::ChallengeInvalid);
+        return Err(VerifyError::ChallengeInvalid);
     };
-    let nonce = challenge_nonce(challenge).map_err(|_| LoginError::ChallengeInvalid)?;
+    let nonce = challenge_nonce(challenge).map_err(|_| VerifyError::ChallengeInvalid)?;
     let expires = issued.saturating_add(CHALLENGE_TTL_SECS);
     // A challenge from the future would outlive its TTL, so it is refused.
     if issued > now || expires <= now {
-        return Err(LoginError::ChallengeInvalid);
+        return Err(VerifyError::ChallengeInvalid);
     }
     Ok((nonce, expires))
 }
@@ -395,22 +442,31 @@ pub fn verify_challenge(
 /// ([`verify_challenge`]), carry the nonce the request signed, and not have
 /// been redeemed before.
 ///
+/// # Verification order
+///
+/// The one order every party follows: verify the request's signature
+/// ([`ParsedRequest::verify`]) first, then redeem. Redeeming spends the
+/// challenge, so a login with a junk signature must never reach it; taking a
+/// [`VerifiedRequest`] makes the order the only one that compiles. Whatever
+/// else a party checks (key activity, lifecycle, channel) it checks before
+/// calling this, so the spend is the last step that can refuse.
+///
 /// # Errors
 ///
-/// [`LoginError::ChallengeInvalid`] when any of those fails.
+/// [`VerifyError::ChallengeInvalid`] when any of those fails.
 pub fn redeem_challenge(
     issuer: &dyn Issuer,
-    request: &ParsedRequest,
+    request: &VerifiedRequest,
     spent: &mut SpentChallenges,
     now: i64,
-) -> Result<(), LoginError> {
+) -> Result<(), VerifyError> {
     let challenge = request
         .challenge
         .as_ref()
-        .ok_or(LoginError::ChallengeInvalid)?;
+        .ok_or(VerifyError::ChallengeInvalid)?;
     let (nonce, expires) = verify_challenge(issuer, &request.audience, challenge, now)?;
     if request.nonce.as_deref() != Some(nonce.as_str()) {
-        return Err(LoginError::ChallengeInvalid);
+        return Err(VerifyError::ChallengeInvalid);
     }
     spent.spend(&nonce, expires, now)
 }
@@ -434,11 +490,11 @@ impl SpentChallenges {
     ///
     /// # Errors
     ///
-    /// [`LoginError::ChallengeInvalid`] if it was already redeemed.
-    pub fn spend(&mut self, nonce: &str, expires: i64, now: i64) -> Result<(), LoginError> {
+    /// [`VerifyError::ChallengeInvalid`] if it was already redeemed.
+    pub fn spend(&mut self, nonce: &str, expires: i64, now: i64) -> Result<(), VerifyError> {
         self.until.retain(|_, until| *until > now);
         if self.until.contains_key(nonce) {
-            return Err(LoginError::ChallengeInvalid);
+            return Err(VerifyError::ChallengeInvalid);
         }
         self.until.insert(nonce.to_owned(), expires);
         Ok(())
@@ -490,27 +546,5 @@ mod tests {
                 issued <= now && now < issued + CHALLENGE_TTL_SECS
             );
         }
-    }
-
-    /// Backs: a challenge is single use. The second redemption of one
-    /// nonce is refused while it could still verify, and a challenge for
-    /// another audience or signed by another key is never redeemed.
-    #[test]
-    fn a_challenge_redeems_once_and_only_for_its_audience_and_issuer() {
-        let (issuer, other) = (issuer(), issuer());
-        let challenge = issue_challenge(&issuer, "svc.example", 1_000).expect("issues");
-        let mut spent = SpentChallenges::new();
-        let (nonce, expires) =
-            verify_challenge(&issuer, "svc.example", &challenge, 1_001).expect("verifies");
-        assert_eq!(spent.spend(&nonce, expires, 1_001), Ok(()));
-        assert_eq!(
-            spent.spend(&nonce, expires, 1_002),
-            Err(LoginError::ChallengeInvalid)
-        );
-        assert!(verify_challenge(&issuer, "other.example", &challenge, 1_001).is_err());
-        assert!(verify_challenge(&other, "svc.example", &challenge, 1_001).is_err());
-        // Once the challenge can no longer verify, the nonce is forgotten.
-        assert_eq!(spent.spend("fresh", expires + 10, expires + 1), Ok(()));
-        assert_eq!(spent.until.len(), 1);
     }
 }

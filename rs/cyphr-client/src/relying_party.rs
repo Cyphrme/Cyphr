@@ -30,7 +30,7 @@ use rand::RngCore;
 
 use crate::connector::{ChannelBinding, Connector};
 use crate::evidence::names_pg;
-use crate::login::{self, Issuer, LoginError, LoginRequest, SpentChallenges};
+use crate::login::{self, Issuer, LoginRequest, SignError, SpentChallenges, VerifyError};
 use crate::sync::{Anchor, PeerStanding, PullPeer, PullReport, Record, RecordTip, pull};
 
 /// How many commits off the record's chain a relying party keeps (rivals
@@ -433,8 +433,8 @@ impl RelyingParty {
     ///
     /// # Errors
     ///
-    /// [`LoginError::Signing`] if the configured key cannot sign.
-    pub fn challenge(&self) -> Result<coz::CozJson, LoginError> {
+    /// [`SignError`] if the configured key cannot sign.
+    pub fn challenge(&self) -> Result<coz::CozJson, SignError> {
         login::issue_challenge(
             self.config.issuer.as_ref(),
             &self.config.audience,
@@ -451,9 +451,9 @@ impl RelyingParty {
     /// # Errors
     ///
     /// The [`Refusal`] naming the first condition not met. A challenge is
-    /// spent only by a login whose audience and principal were right, so a
-    /// misdirected login does not burn a live challenge, and a login that
-    /// reaches the signature check spends it whether or not it passes.
+    /// spent last, by a login whose signature already verified
+    /// ([`login::redeem_challenge`]): a misdirected or forged login burns
+    /// nothing.
     pub fn sign_in(&mut self, login: &LoginRequest) -> Result<Session, Refusal> {
         self.sign_in_bound(login, SessionBinding::Key)
     }
@@ -485,14 +485,13 @@ impl RelyingParty {
     ) -> Result<Session, Refusal> {
         let now = (self.clock)();
         let parsed = login::parse_request(login).map_err(|e| match e {
-            LoginError::MissingField(name) => Refusal::Malformed(name),
-            LoginError::NotALogin | LoginError::AudienceMissing => {
+            VerifyError::MissingField(name) => Refusal::Malformed(name),
+            VerifyError::NotALogin | VerifyError::AudienceMissing => {
                 Refusal::Malformed("typ is not a login")
             },
-            LoginError::ChannelMalformed => Refusal::Malformed("h is not base64url"),
-            LoginError::ChallengeInvalid => Refusal::ChallengeInvalid,
-            LoginError::InvalidSignature => Refusal::InvalidSignature,
-            LoginError::Signing(_) => Refusal::Malformed("login"),
+            VerifyError::ChannelMalformed => Refusal::Malformed("h is not base64url"),
+            VerifyError::ChallengeInvalid => Refusal::ChallengeInvalid,
+            VerifyError::InvalidSignature => Refusal::InvalidSignature,
         })?;
         if parsed.audience != self.config.audience {
             return Err(Refusal::AudienceMismatch);
@@ -515,15 +514,16 @@ impl RelyingParty {
         }
 
         self.require_current(now)?;
-        login::redeem_challenge(self.config.issuer.as_ref(), &parsed, &mut self.spent, now)
-            .map_err(|_| Refusal::ChallengeInvalid)?;
-
         let tmb = parsed.tmb.clone();
         let trust = self.trust(&tmb, now)?;
         let key = self.record.key(&tmb).ok_or(Refusal::InvalidSignature)?;
-        if !parsed.verifies(key.alg(), key.pub_key()) {
-            return Err(Refusal::InvalidSignature);
-        }
+        // The contract's one order: the signature first, then the spend, so
+        // a junk signature cannot burn a live challenge.
+        let verified = parsed
+            .verify(key.alg(), key.pub_key())
+            .map_err(|_| Refusal::InvalidSignature)?;
+        login::redeem_challenge(self.config.issuer.as_ref(), &verified, &mut self.spent, now)
+            .map_err(|_| Refusal::ChallengeInvalid)?;
 
         let mut raw = [0u8; login::CHALLENGE_BYTES];
         rand::thread_rng().fill_bytes(&mut raw);

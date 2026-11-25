@@ -63,7 +63,7 @@ fn run(cli: Cli) -> cyphr_cli::Result<()> {
             signer,
             audience,
             peer,
-            sign_only,
+            sign_only: _,
             challenge,
             channel_hash,
         } => commands::login::run(
@@ -73,7 +73,6 @@ fn run(cli: Cli) -> cyphr_cli::Result<()> {
                 signer,
                 audience,
                 peer: peer.as_deref(),
-                sign_only: *sign_only,
                 challenge: challenge.as_deref(),
                 channel_hash: channel_hash.as_deref(),
             },

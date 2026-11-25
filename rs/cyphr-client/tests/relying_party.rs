@@ -276,6 +276,16 @@ async fn pin_decides_which_chain_the_relying_party_trusts() {
         "a redeemed challenge signs one login"
     );
 
+    // A challenge another issuer signed, for this audience and fresh, is
+    // refused though the login answering it is valid.
+    let other = config();
+    let foreign =
+        login::issue_challenge(other.issuer.as_ref(), AUDIENCE, pin_clock()).expect("issues");
+    assert_eq!(
+        rp.sign_in(&login(&a, &pg, AUDIENCE, &foreign)),
+        Err(Refusal::ChallengeInvalid)
+    );
+
     // A login for another service, and a replay of a spent challenge.
     let c = rp.challenge().expect("challenge");
     assert_eq!(

@@ -21,10 +21,9 @@ pub struct Request<'a> {
     pub signer: &'a str,
     /// The service signed in to.
     pub audience: &'a str,
-    /// A Cyphr server to post the login to.
+    /// A Cyphr server to post the login to; `None` prints the signed login
+    /// (`--sign-only`).
     pub peer: Option<&'a str>,
-    /// Print the login instead of sending it.
-    pub sign_only: bool,
     /// A file holding the service's signed challenge.
     pub challenge: Option<&'a std::path::Path>,
     /// The channel hash to commit to, base64url.
@@ -33,11 +32,6 @@ pub struct Request<'a> {
 
 /// Run `cyphr login`.
 pub fn run(cli: &Cli, req: &Request<'_>) -> crate::Result<()> {
-    if req.peer.is_none() && !req.sign_only {
-        return Err(Error::InvalidArgument(
-            "login needs --peer to send the login or --sign-only to print it".into(),
-        ));
-    }
     let keystore = super::common::open_backend(cli)?;
     let signer = keystore.signer(req.signer)?;
     let pg = parse_principal_genesis(req.identity)?;
