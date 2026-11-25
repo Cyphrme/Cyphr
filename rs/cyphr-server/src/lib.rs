@@ -526,7 +526,9 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
             header_read: std::time::Duration::from_secs(
                 state.config.limits.header_read_timeout_secs.get(),
             ),
+            request: std::time::Duration::from_secs(state.config.limits.request_timeout_secs.get()),
             idle: std::time::Duration::from_secs(state.config.limits.idle_timeout_secs.get()),
+            max_connections: state.config.limits.max_connections(),
         },
         shutdown_signal(
             #[cfg(unix)]

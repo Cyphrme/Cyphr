@@ -1,81 +1,129 @@
-//! The HTTP listener: an accept loop with the timeouts a public socket
+//! The HTTP listener: an accept loop with the bounds a public socket
 //! needs, in place of `axum::serve`, which has none.
 //!
 //! - **Header read.** A client that does not finish its request head in [`Timeouts::header_read`]
 //!   is dropped (slowloris).
-//! - **Idle.** A connection with no byte read or written for [`Timeouts::idle`] is closed, which
-//!   also ends an idle keep-alive.
-//! - The whole-request bound is a layer on the router ([`crate::build_app_router`]), so it covers
-//!   the body a handler reads.
+//! - **The exchange.** From a request's first byte to the last byte of its response,
+//!   [`Timeouts::request`]: a handler still running at the limit is answered `408`, and a client
+//!   that drips its request or its read of the response is cut off [`DELIVERY_GRACE`] later, which
+//!   is what the `408` needs to get out.
+//! - **Connections.** At most [`Timeouts::max_connections`] are served at once; at the cap the loop
+//!   stops accepting, so a new client waits in the kernel's accept queue instead of being accepted
+//!   and dropped.
+//! - **Idle.** A connection with no byte read or written for [`Timeouts::idle`] is closed: an idle
+//!   keep-alive, or a peer that has stopped.
 
+use std::convert::Infallible;
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use axum::body::{Body, Bytes};
 use axum::extract::ConnectInfo;
+use axum::http::{Response, StatusCode};
+use axum::response::IntoResponse;
+use hyper::body::Frame;
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tokio::time::{Instant, Sleep};
 use tower::ServiceExt;
 
-/// The connection-level bounds, from `[limits]`.
+/// How long after the exchange limit a connection is still let write: the
+/// time a `408` has to leave.
+const DELIVERY_GRACE: Duration = Duration::from_secs(1);
+
+/// The listener's bounds, from `[limits]`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Timeouts {
     pub(crate) header_read: Duration,
+    pub(crate) request: Duration,
     pub(crate) idle: Duration,
+    pub(crate) max_connections: usize,
 }
 
-/// A stream that fails a read with `TimedOut` once nothing has been read or
-/// written for `idle`.
-struct IdleStream {
+/// Where one connection's current exchange stands, shared between its
+/// stream and its service.
+#[derive(Default)]
+struct Exchange {
+    /// When the first byte of the request that is being served arrived.
+    started: Mutex<Option<Instant>>,
+    /// Set when the response body has been handed over in full.
+    finished: AtomicBool,
+}
+
+impl Exchange {
+    fn started(&self) -> Option<Instant> {
+        *self.started.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn set_started(&self, at: Option<Instant>) {
+        *self.started.lock().unwrap_or_else(|p| p.into_inner()) = at;
+    }
+}
+
+/// A stream that fails with `TimedOut` once nothing has moved for `idle`, or
+/// once the exchange it is in has run past its limit and the grace.
+struct BoundedStream {
     inner: TcpStream,
     idle: Duration,
+    request: Duration,
     deadline: Pin<Box<Sleep>>,
+    exchange: Arc<Exchange>,
+    hard: Option<Pin<Box<Sleep>>>,
 }
 
-impl IdleStream {
-    fn new(inner: TcpStream, idle: Duration) -> Self {
+impl BoundedStream {
+    fn new(inner: TcpStream, idle: Duration, request: Duration, exchange: Arc<Exchange>) -> Self {
         Self {
             inner,
             idle,
+            request,
             deadline: Box::pin(tokio::time::sleep(idle)),
+            exchange,
+            hard: None,
         }
     }
 
     fn touch(&mut self) {
         self.deadline.as_mut().reset(Instant::now() + self.idle);
     }
-}
 
-impl AsyncRead for IdleStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        match Pin::new(&mut self.inner).poll_read(cx, buf) {
-            Poll::Ready(result) => {
-                self.touch();
-                Poll::Ready(result)
-            },
-            Poll::Pending => match self.deadline.as_mut().poll(cx) {
-                Poll::Ready(()) => Poll::Ready(Err(io::ErrorKind::TimedOut.into())),
-                Poll::Pending => Poll::Pending,
-            },
+    /// Refuse to go on with an exchange past its limit.
+    fn check_exchange(&mut self, cx: &mut Context<'_>) -> Poll<io::Error> {
+        if let Some(hard) = self.hard.as_mut()
+            && hard.as_mut().poll(cx).is_ready()
+        {
+            // Reset, not a graceful close: a close would still deliver
+            // every byte already queued to the slow reader. A zero linger
+            // never blocks the drop; the deprecation is about a non-zero one.
+            #[allow(deprecated)]
+            let _ = self.inner.set_linger(Some(Duration::ZERO));
+            return Poll::Ready(io::ErrorKind::TimedOut.into());
+        }
+        Poll::Pending
+    }
+
+    /// Note the first byte of a request: the exchange's clock starts.
+    fn begin_exchange(&mut self) {
+        if self.hard.is_none() {
+            let now = Instant::now();
+            self.exchange.set_started(Some(now));
+            self.hard = Some(Box::pin(tokio::time::sleep_until(
+                now + self.request + DELIVERY_GRACE,
+            )));
         }
     }
-}
 
-impl IdleStream {
-    /// The write side of the idle bound: a write the peer is not draining
-    /// (a client that does not read its response, or drips it) fails with
-    /// `TimedOut` once `idle` passes with no progress, as a silent read does.
+    /// Fail a pending operation once the idle deadline has passed.
     fn bounded<T>(
         &mut self,
         cx: &mut Context<'_>,
@@ -96,18 +144,51 @@ impl IdleStream {
     }
 }
 
-impl AsyncWrite for IdleStream {
+impl AsyncRead for BoundedStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if let Poll::Ready(err) = self.check_exchange(cx) {
+            return Poll::Ready(Err(err));
+        }
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(polled, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            self.begin_exchange();
+        }
+        self.bounded(cx, polled)
+    }
+}
+
+impl AsyncWrite for BoundedStream {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        if let Poll::Ready(err) = self.check_exchange(cx) {
+            return Poll::Ready(Err(err));
+        }
         let polled = Pin::new(&mut self.inner).poll_write(cx, buf);
         self.bounded(cx, polled)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Poll::Ready(err) = self.check_exchange(cx) {
+            return Poll::Ready(Err(err));
+        }
         let polled = Pin::new(&mut self.inner).poll_flush(cx);
+        // hyper flushes only once its write buffer is empty, so a flush that
+        // completes after the body was handed over is the response's last
+        // byte delivered: the exchange is over.
+        if matches!(polled, Poll::Ready(Ok(())))
+            && self.exchange.finished.swap(false, Ordering::SeqCst)
+        {
+            self.hard = None;
+            self.exchange.set_started(None);
+        }
         self.bounded(cx, polled)
     }
 
@@ -116,8 +197,48 @@ impl AsyncWrite for IdleStream {
     }
 }
 
+/// A response body that tells its connection when it has been handed over
+/// in full; the exchange ends when the connection has also flushed it.
+struct EndingBody {
+    inner: Body,
+    exchange: Arc<Exchange>,
+}
+
+impl EndingBody {
+    fn new(inner: Body, exchange: Arc<Exchange>) -> Self {
+        if hyper::body::Body::is_end_stream(&inner) {
+            exchange.finished.store(true, Ordering::SeqCst);
+        }
+        Self { inner, exchange }
+    }
+}
+
+impl hyper::body::Body for EndingBody {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
+        let polled = Pin::new(&mut self.inner).poll_frame(cx);
+        if matches!(polled, Poll::Ready(None | Some(Err(_)))) {
+            self.exchange.finished.store(true, Ordering::SeqCst);
+        }
+        polled
+    }
+
+    fn is_end_stream(&self) -> bool {
+        hyper::body::Body::is_end_stream(&self.inner)
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        hyper::body::Body::size_hint(&self.inner)
+    }
+}
+
 /// Serve `app` on `listener` until `shutdown` resolves, then let the
-/// connections in flight finish (each is bounded by the idle timeout).
+/// connections in flight finish (each is bounded by the limits above).
 ///
 /// Every request carries the peer's [`ConnectInfo`], which the per-IP fence
 /// keys on.
@@ -128,8 +249,18 @@ pub(crate) async fn serve(
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
     let graceful = GracefulShutdown::new();
+    let slots = Arc::new(Semaphore::new(timeouts.max_connections));
     tokio::pin!(shutdown);
     loop {
+        // A slot is taken before accepting: at the cap the loop waits here,
+        // and a new client waits in the kernel's accept queue.
+        let slot = tokio::select! {
+            slot = slots.clone().acquire_owned() => match slot {
+                Ok(slot) => slot,
+                Err(_) => break,
+            },
+            () = &mut shutdown => break,
+        };
         let (stream, peer): (TcpStream, SocketAddr) = tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok(accepted) => accepted,
@@ -144,14 +275,36 @@ pub(crate) async fn serve(
             },
             () = &mut shutdown => break,
         };
+        let exchange = Arc::new(Exchange::default());
         let service = app.clone().layer(axum::Extension(ConnectInfo(peer)));
-        let hyper_service =
-            hyper::service::service_fn(move |request| service.clone().oneshot(request));
+        let service_exchange = exchange.clone();
+        let request_limit = timeouts.request;
+        let hyper_service = hyper::service::service_fn(move |request| {
+            let service = service.clone();
+            let exchange = service_exchange.clone();
+            async move {
+                let deadline = exchange.started().unwrap_or_else(Instant::now) + request_limit;
+                let response =
+                    match tokio::time::timeout_at(deadline, service.oneshot(request)).await {
+                        Ok(Ok(response)) => response.map(Body::new),
+                        Ok(Err(never)) => match never {},
+                        Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+                    };
+                Ok::<Response<EndingBody>, Infallible>(
+                    response.map(|body| EndingBody::new(body, exchange)),
+                )
+            }
+        });
         let connection = http1::Builder::new()
             .timer(TokioTimer::new())
             .header_read_timeout(timeouts.header_read)
             .serve_connection(
-                TokioIo::new(IdleStream::new(stream, timeouts.idle)),
+                TokioIo::new(BoundedStream::new(
+                    stream,
+                    timeouts.idle,
+                    timeouts.request,
+                    exchange,
+                )),
                 hyper_service,
             );
         let connection = graceful.watch(connection);
@@ -159,8 +312,119 @@ pub(crate) async fn serve(
             if let Err(err) = connection.await {
                 tracing::debug!(%err, %peer, "connection ended with an error");
             }
+            drop(slot);
         });
     }
     graceful.shutdown().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant as StdInstant;
+
+    use axum::routing::get;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    const BIG: usize = 96 * 1024 * 1024;
+
+    fn limits(request: u64, max_connections: usize) -> Timeouts {
+        Timeouts {
+            header_read: Duration::from_secs(10),
+            request: Duration::from_secs(request),
+            idle: Duration::from_secs(120),
+            max_connections,
+        }
+    }
+
+    /// A listener over a router with `/big` (a body far past the socket
+    /// buffers) and `/ok`, and its address.
+    async fn start(timeouts: Timeouts) -> SocketAddr {
+        let app = axum::Router::new()
+            .route("/big", get(|| async { vec![7u8; BIG] }))
+            .route("/ok", get(|| async { "ok" }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(serve(listener, app, timeouts, std::future::pending()));
+        addr
+    }
+
+    /// Claim: a client that reads a large response slowly is cut off at the
+    /// exchange deadline, long before the idle timeout (120 s here), and the
+    /// response is not delivered whole. Turns red if the limit bounds only the
+    /// handler, so a dripping reader keeps the connection.
+    /// End-to-end scenario: yes (a real listener and a real socket).
+    #[tokio::test]
+    async fn a_client_that_drips_its_read_is_cut_off_at_the_deadline() {
+        let addr = start(limits(1, 16)).await;
+        let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+        socket.set_recv_buffer_size(4096).expect("rcvbuf");
+        let mut client = socket.connect(addr).await.expect("connect");
+        client
+            .write_all(b"GET /big HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .expect("request");
+        let started = StdInstant::now();
+        let mut received = 0usize;
+        let mut buf = [0u8; 1024];
+        loop {
+            match client.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => received += n,
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "still connected after {:?}",
+                started.elapsed()
+            );
+        }
+        assert!(received < BIG, "the response was delivered whole");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "cut off late: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Claim: at the connection cap the listener stops accepting, so a
+    /// further client waits in the kernel's queue (its request is unanswered,
+    /// and the connection is neither refused nor closed) and is served once a
+    /// slot frees. Turns red if it accepts and drops, or serves past the cap.
+    /// End-to-end scenario: yes (a real listener and real sockets).
+    #[tokio::test]
+    async fn at_the_cap_new_connections_wait_to_be_accepted() {
+        let addr = start(limits(60, 2)).await;
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let mut conn = TcpStream::connect(addr).await.expect("connect");
+            conn.write_all(b"GET /ok HTTP/1.1\r\nHost: x\r\n\r\n")
+                .await
+                .expect("request");
+            let mut buf = [0u8; 256];
+            let n = conn.read(&mut buf).await.expect("answer");
+            assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+            held.push(conn);
+        }
+
+        let mut waiting = TcpStream::connect(addr)
+            .await
+            .expect("the kernel queues it");
+        waiting
+            .write_all(b"GET /ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("request");
+        let mut buf = [0u8; 256];
+        let early = tokio::time::timeout(Duration::from_millis(1500), waiting.read(&mut buf)).await;
+        assert!(early.is_err(), "answered at the cap: {early:?}");
+
+        drop(held.pop());
+        let n = tokio::time::timeout(Duration::from_secs(5), waiting.read(&mut buf))
+            .await
+            .expect("served once a slot frees")
+            .expect("answer");
+        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+    }
 }

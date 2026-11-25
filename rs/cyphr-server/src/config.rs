@@ -417,13 +417,34 @@ pub struct LimitsConfig {
     /// connection is dropped.
     pub header_read_timeout_secs: NonZeroU64,
 
-    /// Seconds a whole request may take, body included, before it is
-    /// answered `408`.
+    /// Seconds a whole exchange may take, from the request's first byte to
+    /// the response's last byte delivered. A handler still running at the
+    /// limit is answered `408`; a client that drips its request or its read
+    /// of the response is cut off a second later.
     pub request_timeout_secs: NonZeroU64,
 
     /// Seconds a connection may sit with no byte read or written, a
     /// keep-alive between requests included, before it is closed.
     pub idle_timeout_secs: NonZeroU64,
+
+    /// The most connections served at once. At the cap the server stops
+    /// accepting, so a new client waits in the kernel's accept queue until
+    /// a connection ends. Unset, it is the cores available times 512, as
+    /// nginx's `worker_processes auto` times its 512 `worker_connections`.
+    #[serde(default)]
+    pub max_connections: Option<NonZeroU64>,
+}
+
+impl LimitsConfig {
+    /// The connection cap in force: the configured one, else the cores
+    /// available times 512.
+    #[must_use]
+    pub fn max_connections(&self) -> usize {
+        self.max_connections.map_or_else(
+            || std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get) * 512,
+            |n| usize::try_from(n.get()).unwrap_or(usize::MAX),
+        )
+    }
 }
 
 /// A token-bucket rate: `per_second` cells replenished each second, up to a
@@ -475,6 +496,7 @@ impl Default for LimitsConfig {
             header_read_timeout_secs: NonZeroU64::new(10).expect(NONZERO),
             request_timeout_secs: NonZeroU64::new(60).expect(NONZERO),
             idle_timeout_secs: NonZeroU64::new(120).expect(NONZERO),
+            max_connections: None,
         }
     }
 }
