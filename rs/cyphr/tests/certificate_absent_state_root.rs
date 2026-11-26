@@ -37,8 +37,10 @@ async fn a_nonce_in_cell_one_is_not_the_commit_root() {
         (v, sig, czd)
     };
     // A coz that is never committed; its transaction root is its czd.
-    let (fv, fsig, fczd) = sign(json!({"alg": alg, "now": T + 5, "tmb": b64(owner.tmb.as_bytes()),
-        "typ": "cyphr.me/fabricated/claim", "msg": "this was never committed"}));
+    let (fv, fsig, fczd) = sign(
+        json!({"alg": alg, "now": T + 5, "tmb": b64(owner.tmb.as_bytes()),
+        "typ": "cyphr.me/fabricated/claim", "msg": "this was never committed"}),
+    );
     let fake_blob = serde_json::to_vec(&json!({
         "pay": serde_json::from_slice::<Value>(&fv).expect("pay"), "sig": b64(&fsig)
     }))
@@ -46,22 +48,39 @@ async fn a_nonce_in_cell_one_is_not_the_commit_root() {
     let sib = vec![7u8; 32];
     let nonce = MaltHasher::new(HashAlg::Sha256).node(&[&sib, fczd.as_bytes()]);
 
-    let mut p = cyphr::Principal::implicit(key_of(&owner)).await.expect("open");
-    p.commit_genesis(&signer(&owner), &[], T, AUTHORITY).await.expect("genesis");
+    let mut p = cyphr::Principal::implicit(key_of(&owner))
+        .await
+        .expect("open");
+    p.commit_genesis(&signer(&owner), &[], T, AUTHORITY)
+        .await
+        .expect("genesis");
     commit_nonce(&mut p, &owner, Level::Pr, &nonce, T + 10).await;
-    let (v, sig, czd) = sign(json!({"alg": alg, "id": b64(owner.tmb.as_bytes()), "now": T + 20,
-        "tmb": b64(owner.tmb.as_bytes()), "typ": "cyphr.me/cyphr/key/delete"}));
+    let (v, sig, czd) = sign(
+        json!({"alg": alg, "id": b64(owner.tmb.as_bytes()), "now": T + 20,
+        "tmb": b64(owner.tmb.as_bytes()), "typ": "cyphr.me/cyphr/key/delete"}),
+    );
     let mut scope = p.begin_commit();
-    scope.verify_and_apply(&v, &sig, czd, None).expect("self-delete");
+    scope
+        .verify_and_apply(&v, &sig, czd, None)
+        .expect("self-delete");
     scope
         .finalize_with_software(&signer(&owner), T + 21, AUTHORITY)
         .await
         .expect("commit");
     let n = p.commit_count() as u64;
-    assert!(p.sr().is_none(), "setup: no key and no data leave no State Root");
+    assert!(
+        p.sr().is_none(),
+        "setup: no key and no data leave no State Root"
+    );
 
     let cell = |b: &[u8]| b64(&serde_json::to_vec(&json!({"1": b})).expect("cell"));
-    let cr = p.cr().expect("cr").as_multihash().get(HashAlg::Sha256).expect("sha256").to_vec();
+    let cr = p
+        .cr()
+        .expect("cr")
+        .as_multihash()
+        .get(HashAlg::Sha256)
+        .expect("sha256")
+        .to_vec();
     let anchor = Anchor::pin(p.root_at(n).expect("root"));
     // Every index and sibling side of the hand-built path.
     for (index, pos) in [(2u64, 1u64), (2, 0), (1, 1), (0, 1)] {
@@ -71,7 +90,11 @@ async fn a_nonce_in_cell_one_is_not_the_commit_root() {
         let forged: Certificate = serde_json::from_value(wire).expect("parses");
         let claim = Claim::Member {
             index,
-            commit: WireBundle { actions: vec![], txs: vec![vec![fake_blob.clone()]], keys: vec![] },
+            commit: WireBundle {
+                actions: vec![],
+                txs: vec![vec![fake_blob.clone()]],
+                keys: vec![],
+            },
         };
         assert!(
             verify(&anchor, &forged, n, &claim).is_err(),

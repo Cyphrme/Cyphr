@@ -201,9 +201,20 @@ pub async fn world(spec: &Spec) -> World {
     for k in &keys[1..] {
         commit_key(&mut p, owner, k, tick()).await;
     }
-    for (level, n) in [(Level::Kt, spec.kt), (Level::At, spec.at), (Level::Pr, spec.pr)] {
+    for (level, n) in [
+        (Level::Kt, spec.kt),
+        (Level::At, spec.at),
+        (Level::Pr, spec.pr),
+    ] {
         for i in 0..n {
-            commit_nonce(&mut p, owner, level, &nonce_bytes(spec.seed, level, i), tick()).await;
+            commit_nonce(
+                &mut p,
+                owner,
+                level,
+                &nonce_bytes(spec.seed, level, i),
+                tick(),
+            )
+            .await;
         }
     }
     if spec.data {

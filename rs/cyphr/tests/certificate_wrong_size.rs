@@ -24,8 +24,12 @@ use serde_json::{Value, json};
 #[tokio::test]
 async fn a_lying_log_size_is_refused() {
     let owner = kp(coz::Alg::ES256);
-    let mut p = cyphr::Principal::implicit(key_of(&owner)).await.expect("open");
-    p.commit_genesis(&signer(&owner), &[], T, AUTHORITY).await.expect("genesis");
+    let mut p = cyphr::Principal::implicit(key_of(&owner))
+        .await
+        .expect("open");
+    p.commit_genesis(&signer(&owner), &[], T, AUTHORITY)
+        .await
+        .expect("genesis");
     for i in 1..4 {
         commit_key(&mut p, &owner, &kp(coz::Alg::ES256), T + 10 * i).await;
     }
@@ -34,7 +38,10 @@ async fn a_lying_log_size_is_refused() {
     let real = p.root_at(n).expect("root");
     let bundle = |i| WireBundle::of_commit(p.commit_at(i).expect("commit")).expect("bundle");
     let (c0, c1) = (bundle(0), bundle(1));
-    let honest = Claim::Member { index: 0, commit: c0.clone() };
+    let honest = Claim::Member {
+        index: 0,
+        commit: c0.clone(),
+    };
     let cert = p.prove(n, &honest).await.expect("prove");
     assert_eq!(
         verify(&Anchor::pin(real.clone()), &cert, n, &honest),
@@ -46,13 +53,23 @@ async fn a_lying_log_size_is_refused() {
     let flat = |b: &WireBundle| -> Vec<Vec<u8>> { b.txs.iter().flatten().cloned().collect() };
     let forged_claim = Claim::Member {
         index: 0,
-        commit: WireBundle { actions: vec![], txs: vec![flat(&c0), flat(&c1)], keys: vec![] },
+        commit: WireBundle {
+            actions: vec![],
+            txs: vec![flat(&c0), flat(&c1)],
+            keys: vec![],
+        },
     };
     let mut wire: Value = serde_json::to_value(&cert).expect("wire");
-    wire["terminal"]["steps"].as_array_mut().expect("steps").remove(0);
+    wire["terminal"]["steps"]
+        .as_array_mut()
+        .expect("steps")
+        .remove(0);
     wire["terminal"]["size"] = json!(2);
     let forged: Certificate = serde_json::from_value(wire).expect("parses");
-    let lie = Anchor::pin(Root { size: 2, pr: real.pr });
+    let lie = Anchor::pin(Root {
+        size: 2,
+        pr: real.pr,
+    });
     assert!(
         verify(&lie, &forged, 2, &forged_claim).is_err(),
         "a regrouping of commits 0 and 1 was accepted as commit 0 of a 2-commit log"
