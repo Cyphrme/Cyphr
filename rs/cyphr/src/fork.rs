@@ -91,13 +91,38 @@ pub struct Held {
 }
 
 impl Held {
+    /// The `(position, pre)` slot this commit occupies: commits sharing
+    /// one are rivals (SPEC 15.7.1).
+    fn slot(&self) -> (u64, Option<&str>) {
+        (self.sequence, self.pre.as_deref())
+    }
+
+    /// The `(position, Principal Root)` of the commit this one sits on,
+    /// `None` for a commit with no `pre` or at position 0. Every parent
+    /// lookup in this module derives from it.
+    fn parent_slot(&self) -> Option<(u64, &str)> {
+        Some((self.sequence.checked_sub(1)?, self.pre.as_deref()?))
+    }
+
+    /// The `(position, pre)` slot of this commit's children, `None` at the
+    /// last representable position. It is [`Self::parent_slot`] read from
+    /// the other side.
+    fn child_slot(&self) -> Option<(u64, Option<&str>)> {
+        Some((self.sequence.checked_add(1)?, Some(self.pr.as_str())))
+    }
+
+    /// The `(position, Principal Root)` this commit is looked up by as
+    /// somebody's parent.
+    fn pr_slot(&self) -> (u64, &str) {
+        (self.sequence, self.pr.as_str())
+    }
+
     /// Whether this commit directly extends `parent`: it sits one position
     /// above and names `parent`'s Principal Root as its `pre`. A commit
     /// with no `pre` extends nothing. The one parent-link test.
     #[must_use]
     pub fn extends(&self, parent: &Held) -> bool {
-        parent.sequence.checked_add(1) == Some(self.sequence)
-            && self.pre.as_deref() == Some(parent.pr.as_str())
+        self.parent_slot() == Some(parent.pr_slot())
     }
 }
 
@@ -171,25 +196,23 @@ pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
     type Over<'a> = (u64, Option<&'a str>);
     let mut over: BTreeMap<Over<'_>, BTreeMap<&str, &Held>> = BTreeMap::new();
     for h in held {
-        over.entry((h.sequence, h.pre.as_deref()))
+        over.entry(h.slot())
             .or_default()
             .entry(h.id.as_str())
             .or_insert(h);
     }
-    let children_of = |sequence: u64, pre: Option<&str>| -> Vec<&Held> {
-        over.get(&(sequence, pre))
+    let children_in = |slot: Option<(u64, Option<&str>)>| -> Vec<&Held> {
+        slot.and_then(|slot| over.get(&slot))
             .map(|c| c.values().copied().collect())
             .unwrap_or_default()
     };
-    let extended = |c: &Held| over.contains_key(&(c.sequence + 1, Some(c.pr.as_str())));
+    let children_of = |c: &Held| children_in(c.child_slot());
+    let extended = |c: &Held| c.child_slot().is_some_and(|slot| over.contains_key(&slot));
 
     // The held commits whose subtree holds an asserted commit (the
     // commit itself included): each asserted commit and its held
     // ancestors. Asserted PRs naming nothing held select nothing.
-    let by_pr: HashMap<(u64, &str), &Held> = held
-        .iter()
-        .map(|h| ((h.sequence, h.pr.as_str()), h))
-        .collect();
+    let by_pr: HashMap<(u64, &str), &Held> = held.iter().map(|h| (h.pr_slot(), h)).collect();
     let asserted: HashSet<&str> = asserted.iter().map(String::as_str).collect();
     let mut asserts: HashSet<&str> = HashSet::new();
     for h in held.iter().filter(|h| asserted.contains(h.pr.as_str())) {
@@ -198,11 +221,7 @@ pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
             if !asserts.insert(c.id.as_str()) {
                 break;
             }
-            cur = c
-                .pre
-                .as_deref()
-                .zip(c.sequence.checked_sub(1))
-                .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
+            cur = c.parent_slot().and_then(|slot| by_pr.get(&slot).copied());
         }
     }
 
@@ -210,19 +229,14 @@ pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
     // precedes, at the lowest position that has one. A whole record has
     // only genesis commits there; the engine's window starts at one
     // canonical commit.
-    let held_prs: HashSet<(u64, &str)> = held.iter().map(|h| (h.sequence, h.pr.as_str())).collect();
+    let held_prs: HashSet<(u64, &str)> = held.iter().map(Held::pr_slot).collect();
     let root_at = held
         .iter()
-        .filter(|h| {
-            h.pre
-                .as_deref()
-                .zip(h.sequence.checked_sub(1))
-                .is_none_or(|(pre, below)| !held_prs.contains(&(below, pre)))
-        })
+        .filter(|h| h.parent_slot().is_none_or(|slot| !held_prs.contains(&slot)))
         .min_by_key(|h| h.sequence);
     let mut at: Option<&Held> = None;
     let mut children: Vec<&Held> = root_at
-        .map(|r| children_of(r.sequence, r.pre.as_deref()))
+        .map(|r| children_in(Some(r.slot())))
         .unwrap_or_default();
     let mut walked: HashSet<&str> = HashSet::new();
     let mut stopped: Option<(u64, Option<String>, Vec<&Held>)> = None;
@@ -253,7 +267,7 @@ pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
         };
         walked.insert(next.id.as_str());
         at = Some(next);
-        children = children_of(next.sequence + 1, Some(next.pr.as_str()));
+        children = children_of(next);
     }
 
     // The held leaves at or above `start`, each once.
@@ -265,7 +279,7 @@ pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
             if !seen.insert(c.id.as_str()) {
                 continue;
             }
-            let below = children_of(c.sequence + 1, Some(c.pr.as_str()));
+            let below = children_of(c);
             if below.is_empty() {
                 leaves.insert(c.id.clone());
             }
