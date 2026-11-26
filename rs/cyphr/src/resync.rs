@@ -100,8 +100,13 @@ pub fn verify_resync(envelope: &Value, key: &Key) -> Result<Resync, ResyncFailur
     let sig = Base64UrlUnpadded::decode_vec(text(envelope.get("sig"), "no sig")?)
         .map_err(|_| ResyncFailure::Malformed("sig is not base64url"))?;
     let pay_bytes = serde_json::to_vec(pay).map_err(|_| ResyncFailure::Malformed("pay"))?;
-    if coz::verify_json(&pay_bytes, &sig, key.alg(), key.pub_key()) != Some(true) {
-        return Err(ResyncFailure::BadSignature);
-    }
+    crate::parsed_coz::verify_signed(&pay_bytes, &sig, key)
+        .map(drop)
+        .map_err(|e| match e {
+            crate::error::Error::AlgMismatch | crate::error::Error::UnknownKey => {
+                ResyncFailure::KeyMismatch
+            },
+            _ => ResyncFailure::BadSignature,
+        })?;
     Ok(resync)
 }

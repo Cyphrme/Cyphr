@@ -20,6 +20,10 @@ use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use serde_json::Value;
 
+use crate::error::Error;
+use crate::key::Key;
+use crate::parsed_coz::verify_signed;
+
 /// The instant a revoke takes a key out: the key is dead from here on
 /// (SPEC 6.4). The one place the comparison is made, so no consumer
 /// decides "revoked at `now`" or "which of two revokes stands" itself.
@@ -131,11 +135,18 @@ pub fn verify_naked_revoke(envelope: &Value) -> Result<NakedRevoke, RevokeFailur
         .map(Thumbprint::from_bytes)
         .map_err(|_| RevokeFailure::Malformed("tmb is not base64url"))?;
 
-    if coz::compute_thumbprint_for_alg(alg, &public).as_ref() != Some(&tmb) {
+    let key = Key::from_pub_key(alg, public).map_err(|_| RevokeFailure::KeyMismatch)?;
+    if key.tmb() != &tmb {
         return Err(RevokeFailure::KeyMismatch);
     }
-    if coz::verify_json(&pay_bytes, &sig, alg, &public) != Some(true) {
-        return Err(RevokeFailure::BadSignature);
-    }
+    verify_signed(&pay_bytes, &sig, &key)
+        .map(drop)
+        .map_err(|e| match e {
+            Error::MalformedPayload => RevokeFailure::Malformed("pay has no alg"),
+            Error::AlgMismatch | Error::UnknownKey | Error::UnsupportedAlgorithm(_) => {
+                RevokeFailure::KeyMismatch
+            },
+            _ => RevokeFailure::BadSignature,
+        })?;
     Ok(NakedRevoke { tmb, rvk })
 }

@@ -431,25 +431,12 @@ impl PrincipalState {
             Arrival::Held => self.held_signer(&signer_tmb, now)?,
         };
 
-        // The signed pay must name the key that actually verifies it.
-        // An absent `alg` is malformed (SPEC 2.3.1), as `verify_coz` rules.
-        let alg = pay_value["alg"].as_str().ok_or(Error::MalformedPayload)?;
-        if alg != signer_key.alg() {
-            return Err(Error::AlgMismatch);
-        }
-
+        // The signed pay must name the key that actually verifies it, and
+        // the czd identifies the action: derived from the signed bytes,
+        // never trusted from the caller.
         #[cfg(any(test, feature = "test-utils"))]
         crate::probe::signature_checked();
-        let valid = coz::verify_json(pay_json, sig, signer_key.alg(), signer_key.pub_key())
-            .unwrap_or(false);
-        if !valid {
-            return Err(Error::InvalidSignature);
-        }
-
-        // The czd identifies the action; it is derived from the signed
-        // bytes, never trusted from the caller.
-        let computed = crate::parsed_coz::compute_czd(pay_json, sig, signer_key.alg())
-            .ok_or_else(|| Error::UnsupportedAlgorithm(signer_key.alg().to_owned()))?;
+        let computed = crate::parsed_coz::verify_signed(pay_json, sig, signer_key)?;
         if computed.as_bytes() != czd.as_bytes() {
             return Err(Error::CzdMismatch);
         }
