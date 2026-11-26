@@ -116,8 +116,8 @@ impl KeyTimeline {
     /// revoke's cutoff, no earlier than it began, if it would run past it.
     fn effective(&self, p: &Period, cut: bool) -> (Option<i64>, bool) {
         match self.revoked_from.get(&p.key.tmb().to_b64()) {
-            Some(&Cutoff(cutoff)) if cut && p.until.is_none_or(|u| u > cutoff) => {
-                (Some(cutoff.max(p.from)), true)
+            Some(&cutoff) if cut && cutoff.runs_past(p.until) => {
+                (Some(cutoff.end_of_period_from(p.from)), true)
             },
             _ => (p.until, p.revoked),
         }

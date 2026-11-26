@@ -38,6 +38,21 @@ impl Cutoff {
         now.is_none_or(|n| n >= self.0)
     }
 
+    /// Whether a period of a key's life that ends at `until` (`None`: still
+    /// open) runs past this cutoff and so is cut short by it. A period
+    /// ending exactly at the cutoff is not.
+    #[must_use]
+    pub fn runs_past(self, until: Option<i64>) -> bool {
+        until.is_none_or(|u| u > self.0)
+    }
+
+    /// Where a period that began at `from` ends when this cutoff cuts it:
+    /// at the cutoff, but no earlier than the period began.
+    #[must_use]
+    pub fn end_of_period_from(self, from: i64) -> i64 {
+        self.0.max(from)
+    }
+
     /// The cutoff that stands when two revokes of one key are known: the
     /// earlier, whichever arrived first.
     #[must_use]
