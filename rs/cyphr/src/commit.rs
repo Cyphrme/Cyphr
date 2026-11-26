@@ -794,9 +794,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             .ok_or(crate::error::Error::MalformedPayload)?;
 
         Ok(PreparedCommit {
-            alg: alg.to_string(),
-            pub_key: stored.pub_key().to_vec(),
-            signer_hash_alg,
+            key: stored.clone(),
             pay_obj,
             pay_vec,
             cad,
@@ -819,32 +817,18 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         prepared: PreparedCommit,
         sig: Vec<u8>,
     ) -> crate::error::Result<&'a Commit> {
-        use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
-
         let PreparedCommit {
-            alg,
-            pub_key,
-            signer_hash_alg,
-            pay_obj,
+            key,
+            pay_obj: _,
             pay_vec,
             cad,
         } = prepared;
 
-        if coz::verify_json(&pay_vec, &sig, &alg, &pub_key) != Some(true) {
-            return Err(crate::error::Error::InvalidSignature);
-        }
-        let czd =
-            coz::czd_for_alg(&cad, &sig, &alg).ok_or(crate::error::Error::MalformedPayload)?;
-
-        let raw = coz::CozJson {
-            pay: pay_obj.clone(),
-            sig,
-        };
-        let parsed_pay: coz::Pay =
-            serde_json::from_value(pay_obj).map_err(|_| crate::error::Error::MalformedPayload)?;
-
-        let arrow_tx = ParsedCoz::from_pay(&parsed_pay, czd, signer_hash_alg, raw)?;
-        let arrow_vtx = VerifiedCoz::from_parts(arrow_tx, None);
+        // The czd is derived from the commit's own canonical hash and the
+        // signature; `verify_coz` checks it again against the signed bytes.
+        let czd = coz::czd_for_alg(&cad, &sig, key.alg())
+            .ok_or(crate::error::Error::MalformedPayload)?;
+        let arrow_vtx = crate::parsed_coz::verify_coz(&pay_vec, &sig, &key, czd, None)?;
 
         // Push commit marker and finalize
         self.pending
@@ -1136,9 +1120,7 @@ impl PreparedCoz {
 /// payload awaiting a signature over [`cad`](Self::cad).
 #[derive(Debug)]
 pub struct PreparedCommit {
-    alg: String,
-    pub_key: Vec<u8>,
-    signer_hash_alg: crate::state::HashAlg,
+    key: crate::key::Key,
     pay_obj: serde_json::Value,
     pay_vec: Vec<u8>,
     cad: coz::Cad,

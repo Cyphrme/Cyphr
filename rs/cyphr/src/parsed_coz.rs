@@ -611,24 +611,15 @@ impl VerifiedCoz {
         self.new_key.as_ref()
     }
 
-    /// Create a VerifiedCoz from its constituent parts.
-    ///
-    /// This is used by the creation path (`CommitScope::finalize_with_commit`)
-    /// where the coz is signed internally by the builder.
-    /// The caller is responsible for ensuring the coz is valid.
-    pub(crate) fn from_parts(cz: ParsedCoz, new_key: Option<Key>) -> Self {
-        Self { cz, new_key }
-    }
-
     /// Create a VerifiedCoz without signature verification.
     ///
     /// # Safety
     ///
     /// This method bypasses signature verification and should ONLY be used
-    /// for testing. Production code should use [`verify`] or [`from_parts`].
+    /// for testing. Production code should use [`verify_coz`].
     #[cfg(test)]
     pub(crate) fn from_transaction_unsafe(cz: ParsedCoz, new_key: Option<Key>) -> Self {
-        Self::from_parts(cz, new_key)
+        Self { cz, new_key }
     }
 }
 
