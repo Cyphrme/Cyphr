@@ -39,11 +39,12 @@ TESTS=(':(exclude,glob)**/tests/**' ':(exclude,glob)**/tests.rs'
   ':(exclude)rs/test-fixtures' ':(exclude)rs/fuzz')
 
 # drop_inline_tests: stdin is `git grep -n` output; drop hits that follow
-# their file's first `^#[cfg(test)]`.
+# their file's first `^#[cfg(test)]` that is directly followed by a `mod`
+# line (a `#[cfg(test)]` on a lone `use` or fn hides nothing after it).
 drop_inline_tests() {
   while IFS= read -r hit; do
     f=${hit%%:*}; rest=${hit#*:}; n=${rest%%:*}
-    cut=$(grep -n '^#\[cfg(test)\]' "$f" 2>/dev/null | head -1 | cut -d: -f1)
+    cut=$(awk '/^#\[cfg\(test\)\]/ {a=NR; next} a && NR==a+1 && /^(pub(\([a-z]+\))? )?mod / {print a; exit} {a=0}' "$f" 2>/dev/null)
     if [ -z "$cut" ] || [ "$n" -lt "$cut" ]; then printf '%s\n' "$hit"; fi
   done
 }
