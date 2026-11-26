@@ -67,25 +67,6 @@ pub fn derive_lifecycle_state(
     }
 }
 
-impl crate::principal::Principal {
-    /// The one lifecycle gate: `Ok` exactly when the principal is
-    /// [`LifecycleState::Active`].
-    ///
-    /// # Errors
-    ///
-    /// `AlreadyDeleted` when deleted or nuked, `Frozen` when frozen,
-    /// `NoActiveKeys` when dead or a zombie.
-    pub fn require_active(&self) -> crate::error::Result<()> {
-        use crate::error::Error;
-        match self.lifecycle_state() {
-            LifecycleState::Active => Ok(()),
-            LifecycleState::Deleted | LifecycleState::Nuked => Err(Error::AlreadyDeleted),
-            LifecycleState::Frozen => Err(Error::Frozen),
-            LifecycleState::Dead | LifecycleState::Zombie => Err(Error::NoActiveKeys),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

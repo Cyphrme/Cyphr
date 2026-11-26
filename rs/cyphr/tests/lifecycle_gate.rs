@@ -115,3 +115,28 @@ async fn the_gate_is_open_exactly_while_active() {
         Err(Error::AlreadyDeleted)
     ));
 }
+
+/// Regression: `require_active` once sat on `impl Principal` (default
+/// storage only), so a caller generic over `Principal<S>` could not call
+/// it. This must compile for any storage.
+fn gate<S: eml::Storage>(p: &Principal<S>) -> Result<(), Error> {
+    p.require_active()
+}
+
+#[tokio::test]
+async fn the_gate_is_callable_for_any_storage() {
+    let pool = pool();
+    let golden = pool.get("golden").expect("golden");
+    let mut p = Principal::implicit(golden.key().expect("key"))
+        .await
+        .expect("open");
+    p.commit_genesis(
+        &golden.software_signer().expect("signer"),
+        &[],
+        T,
+        "cyphr.me",
+    )
+    .await
+    .expect("genesis commit");
+    assert!(gate(&p).is_ok());
+}
