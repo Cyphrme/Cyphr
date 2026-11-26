@@ -10,14 +10,21 @@
 //!   and a label that names no algorithm (the guess a bare normalizer makes from the width must
 //!   never be made by the parser).
 //!
-//! The text of the refusal ("shows the labelled form") is not pinned: the
-//! frame gives no wording.
+//! The architect's exact contracts (FIX-FRAME 2.2) add:
+//! - a string with no `:` is refused with exactly `MalformedDigest("unlabelled principal id:
+//!   ...")`, before any decoding;
+//! - `Display` of a value holding several variants prints the first in `HashAlg` order (SHA-256,
+//!   SHA-384, SHA-512);
+//! - equality across spellings is `MultihashDigest::matches`: a value printed and parsed back
+//!   matches the original, and a different digest does not.
 //!
 //! Red before K1: `PrincipalGenesis` has neither `FromStr` nor `Display`.
 
+use std::collections::BTreeMap;
+
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::PrincipalGenesis;
 use cyphr::state::{HASH_ALGS, HashAlg};
+use cyphr::{Error, MultihashDigest, PrincipalGenesis};
 use proptest::prelude::*;
 
 fn digest(alg: HashAlg) -> impl Strategy<Value = Vec<u8>> {
@@ -53,6 +60,56 @@ proptest! {
         if other.digest_size() != alg.digest_size() {
             let wrong_width = format!("{other}:{b64}");
             prop_assert!(wrong_width.parse::<PrincipalGenesis>().is_err());
+        }
+    }
+}
+
+const UNLABELLED: &str =
+    "unlabelled principal id: expected ALG:digest, for example SHA-256:<base64url>";
+
+proptest! {
+    #[test]
+    fn an_unlabelled_id_is_refused_with_the_labelled_form(
+        (alg, bytes) in algs().prop_flat_map(|a| (Just(a), digest(a)))
+    ) {
+        let bare = Base64UrlUnpadded::encode_string(&bytes);
+        let _ = alg;
+        let err = bare.parse::<PrincipalGenesis>().expect_err("bare id parsed");
+        prop_assert!(matches!(err, Error::MalformedDigest(m) if m == UNLABELLED), "{err:?}");
+    }
+
+    /// A value holding SHA-256 and SHA-512 variants prints the SHA-256
+    /// one; one holding SHA-384 and SHA-512 prints SHA-384. Parsing the
+    /// printed form gives a value that matches the original, and flipping
+    /// one byte of the printed digest does not.
+    #[test]
+    fn display_prints_the_first_variant_and_matches_across_spellings(
+        d256 in digest(HashAlg::Sha256),
+        d384 in digest(HashAlg::Sha384),
+        d512 in digest(HashAlg::Sha512),
+    ) {
+        let multi = |a: (HashAlg, &Vec<u8>), b: (HashAlg, &Vec<u8>)| {
+            let map: BTreeMap<HashAlg, Box<[u8]>> = [a, b]
+                .into_iter()
+                .map(|(alg, d)| (alg, d.clone().into_boxed_slice()))
+                .collect();
+            PrincipalGenesis(MultihashDigest::new(map).expect("variants"))
+        };
+        for (pg, first, first_bytes) in [
+            (multi((HashAlg::Sha256, &d256), (HashAlg::Sha512, &d512)), HashAlg::Sha256, &d256),
+            (multi((HashAlg::Sha384, &d384), (HashAlg::Sha512, &d512)), HashAlg::Sha384, &d384),
+        ] {
+            let text = pg.to_string();
+            prop_assert_eq!(
+                &text,
+                &format!("{}:{}", first, Base64UrlUnpadded::encode_string(first_bytes))
+            );
+            let parsed = text.parse::<PrincipalGenesis>().expect("parses");
+            prop_assert!(parsed.0.matches(&pg.0));
+            let mut other = first_bytes.clone();
+            other[0] ^= 1;
+            let other = PrincipalGenesis::from_digest(first, other).expect("width");
+            prop_assert!(!other.0.matches(&pg.0));
         }
     }
 }
