@@ -24,10 +24,12 @@
 #   unsigned-claims  none            K3, K4
 #   crate-name       none            ID
 #   in-memory-state  none            K2
-#   portable-verifiers  P            (cyphr only)
 #   labelled-digests    P            (cyphr only)
 #   core-cuts           P            (cyphr only)
 #   no-panic-sites      P            (cyphr only)
+#   verifier-shape      P.1          (cyphr only)
+#   node-path           P.1          (cyphr only)
+#   hop-builders        P.1          (cyphr, cyphr-server tests)
 #
 # Excluded everywhere: tests/, tests.rs, benches/, cyphr-scenarios,
 # test-fixtures, fuzz, and any hit after a line-start `#[cfg(test)]` in
@@ -73,10 +75,6 @@ rule_crate_name()    { git grep -nE 'cyphr-client|cyphr_client' -- rs packaging 
 rule_in_memory_state() { git grep -nE 'Mutex<HashMap<String, Vec<Retained>>>|struct Revoked\(HashMap|struct Resyncs\(HashMap' -- rs/cyphr-storage/src; }
 
 # Node P. Each is one grep over rs/cyphr/src that must print nothing.
-# D1: the two free verifiers are not public, neither re-exported at the
-# crate root nor `pub` in `inclusion` (which is a `pub mod`); portable
-# verification is the certificate path and the `Principal` methods.
-rule_portable_verifiers() { git grep -nE 'verify_(transaction|key)_inclusion|pub fn verify_(transaction|key)_inclusion' -- rs/cyphr/src/lib.rs; git grep -nE 'pub fn verify_(transaction|key)_inclusion' -- rs/cyphr/src/inclusion.rs; }
 # Every hash is labelled; a bare digest is refused, never matched to a
 # family by its width.
 rule_labelled_digests() { git grep -nE 'alg_of_width|width\(a\) == czd' -- rs/cyphr/src "${TESTS[@]}"; }
@@ -86,10 +84,18 @@ rule_core_cuts() { git grep -nE 'fn into_transactions|fn to_cad|pub fn runs_past
 # guard `DuplicatePrincipal` made dead.
 rule_no_panic_sites() { git grep -nE '\.last\(\)\.unwrap\(\)' -- rs/cyphr/src/commit.rs; git grep -n 'already established' -- rs/cyphr/src/principal/genesis.rs; }
 
+# Node P.1: the portable verifiers recompute every level from disclosed
+# children, so no proof type, tree size, arity or skeleton is read from the
+# proof (`inclusion.rs` is rewritten, `principal/proofs.rs` stops building
+# hop proofs); the hop path types and the hop builders are gone.
+rule_verifier_shape() { git grep -nE 'LeafProof|tree_size|arity|rebalanced_skeleton' -- rs/cyphr/src/inclusion.rs rs/cyphr/src/principal/proofs.rs; }
+rule_node_path() { git grep -n 'NodePath' -- "$SRC"; }
+rule_hop_builders() { git grep -nE 'TransactionHop[12]' -- ':(glob)rs/**'; }
+
 RULES=(signature key_authority revoke_cutoff lifecycle parent_walk
   wire_decoding czd error_names wall_clock id_spelling unsigned_claims
-  crate_name in_memory_state portable_verifiers labelled_digests core_cuts
-  no_panic_sites)
+  crate_name in_memory_state labelled_digests core_cuts
+  no_panic_sites verifier_shape node_path hop_builders)
 
 crate=''; list=0; sel=()
 while [ $# -gt 0 ]; do
@@ -100,7 +106,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ ${#sel[@]} -eq 0 ] && sel=("${RULES[@]}")
-if [ $list -eq 1 ]; then sed -n '/^# Which node/,/^#   no-panic-sites/p' "$0"; exit 0; fi
+if [ $list -eq 1 ]; then sed -n '/^# Which node/,/^#   hop-builders/p' "$0"; exit 0; fi
 
 fail=0
 for r in "${sel[@]}"; do
