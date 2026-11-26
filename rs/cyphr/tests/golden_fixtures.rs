@@ -62,36 +62,6 @@ fn try_pool_key_to_domain(pk: &PoolKey) -> Result<Key, cyphr::error::Error> {
     Key::new(pk.alg.clone(), tmb, pub_bytes)
 }
 
-fn error_name(e: &cyphr::error::Error) -> &'static str {
-    use cyphr::error::Error;
-    match e {
-        Error::UnknownKey => "UnknownKey",
-        Error::UnknownAlg => "UnknownAlg",
-        Error::KeyRevoked => "KeyRevoked",
-        Error::NoActiveKeys => "NoActiveKeys",
-        Error::DuplicateKey => "DuplicateKey",
-        Error::CozReuse => "CozReuse",
-        Error::TimestampPast => "TimestampPast",
-        Error::TimestampFuture => "TimestampFuture",
-        Error::InvalidSignature => "InvalidSignature",
-        Error::MalformedPayload => "MalformedPayload",
-        Error::UnsupportedAlgorithm(_) => "UnsupportedAlgorithm",
-        Error::AlreadyDeleted => "AlreadyDeleted",
-        Error::AlreadyFrozen => "AlreadyFrozen",
-        Error::NotFrozen => "NotFrozen",
-        Error::EmbeddedErrored => "EmbeddedErrored",
-        Error::DuplicateNonce => "DuplicateNonce",
-        Error::UnknownNonce => "UnknownNonce",
-        Error::GenesisIncomplete => "GenesisIncomplete",
-        Error::StateMismatch => "StateMismatch",
-        Error::MixedTransactionTyp => "MixedTransactionTyp",
-        Error::LoneGroupedTransaction => "LoneGroupedTransaction",
-        Error::EmptyCommit => "EmptyCommit",
-        Error::EmptyMultihash => "EmptyMultihash",
-        _ => "UnknownError",
-    }
-}
-
 fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: &str) {
     // SPEC 3.7.5 / 4.6.3 `txs_order`: the TX of each transaction of the
     // last commit, TX = MR(czd0, czd1?, ...), in the stated algorithm.
@@ -425,7 +395,7 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         Err(e) => {
             // Genesis failed (e.g. unsupported algorithm)
             if let Some(expected) = expected_error
-                && expected == error_name(&e)
+                && expected == e.name()
             {
                 println!("  ✓ {} (expected error: {})", fixture.name, expected);
                 return;
@@ -446,7 +416,7 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         let root = cyphr::semantic_tree::KeyTree::build_tree(&[], &sha256)
             .and_then(|kt| kt.root(&sha256).map(|_| ()));
         match (root, expected_error) {
-            (Err(e), Some(expected)) if error_name(&e) == expected => {
+            (Err(e), Some(expected)) if e.name() == expected => {
                 println!("  ✓ {} (expected error: {})", fixture.name, expected);
                 return;
             },
@@ -468,7 +438,7 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     let mut principal = match principal_res {
         Ok(p) => p,
         Err(e) => {
-            let err_str = error_name(&e);
+            let err_str = e.name();
             if let Some(expected) = expected_error
                 && expected == err_str
             {
@@ -540,7 +510,7 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                 match expected_error {
                     Some(expected) => {
                         assert_eq!(
-                            error_name(&e),
+                            e.name(),
                             expected,
                             "{}: wrong error at line {}: {e:?}",
                             fixture.name,
