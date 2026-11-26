@@ -5,7 +5,7 @@
 //! pinned to the skeleton by Cyphr itself.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::proof::{Anchor, Certificate, Claim, verify};
+use cyphr::proof::{Anchor, Cause, Certificate, Claim, ProofError, verify};
 use cyphr::replay::{StoredCoz, WireBundle};
 use cyphr::signer::SoftwareSigner;
 use cyphr::{Key, Principal};
@@ -123,6 +123,13 @@ async fn prefix_steps_do_not_prove_a_bundle_never_committed() {
     let rb = verify(&anchor, &forge(0, &czd_c), 2, &only_mut);
     println!("forgery B (bundle [[key/create]] at index 1): {rb:?}");
 
-    assert!(ra.is_err(), "forgery A accepted: {ra:?}");
-    assert!(rb.is_err(), "forgery B accepted: {rb:?}");
+    // Refused for the reason the regression is about: the claimed bundle
+    // is not the leaf at that index. Any other refusal (a framing or
+    // arrow failure) would mean the prefix steps were stopped by luck.
+    for (name, r) in [("A", ra), ("B", rb)] {
+        match r {
+            Err(e @ ProofError::Refuted(_)) if matches!(e.cause(), Cause::Mismatch(_)) => {},
+            other => panic!("forgery {name} not refused as a leaf mismatch: {other:?}"),
+        }
+    }
 }
