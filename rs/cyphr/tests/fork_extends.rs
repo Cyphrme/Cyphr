@@ -8,9 +8,8 @@
 //! or changing its `pre`, severs the link; a genesis commit (no `pre`)
 //! extends nothing.
 //!
-//! Red before K1: `Held::extends` does not exist. The other three fork
-//! functions of FIX-FRAME 2.1 (`parent_of`, `first_divergence`, `binds`)
-//! have no exact signature in the frame and are not pinned here.
+//! Red before K1: `Held::extends` does not exist. `parent_of` and
+//! `first_divergence` are in `fork_walk.rs`; `binds` left K1.
 
 use cyphr::fork::Held;
 use proptest::prelude::*;
