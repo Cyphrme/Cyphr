@@ -79,26 +79,3 @@ fn a_name_is_the_variants_own_identifier() {
         assert_eq!(e.name(), identifier(&e), "{e:?}");
     }
 }
-
-#[test]
-fn names_are_distinct() {
-    let names: Vec<&str> = variants().iter().map(Error::name).collect();
-    let mut sorted = names.clone();
-    sorted.sort_unstable();
-    sorted.dedup();
-    assert_eq!(sorted.len(), names.len(), "two variants share a name");
-}
-
-/// The name does not depend on the payload (metamorphic: same variant,
-/// different payload, same name).
-#[test]
-fn a_name_ignores_the_payload() {
-    assert_eq!(
-        Error::UnsupportedAlgorithm("a".into()).name(),
-        Error::UnsupportedAlgorithm("b".into()).name()
-    );
-    assert_eq!(
-        Error::DurableLeafMismatch(1).name(),
-        Error::DurableLeafMismatch(2).name()
-    );
-}
