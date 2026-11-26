@@ -139,6 +139,44 @@ impl PrincipalGenesis {
     }
 }
 
+impl std::str::FromStr for PrincipalGenesis {
+    type Err = crate::error::Error;
+
+    /// The one parser of a principal id: the labelled spelling
+    /// `ALG:digest`, one variant. A string with no `:` is refused before
+    /// any decoding, because core cannot know which algorithm a bare
+    /// digest came from; every other failure is [`TaggedDigest`]'s.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if !s.contains(':') {
+            return Err(crate::error::Error::MalformedDigest(
+                "unlabelled principal id: expected ALG:digest, for example SHA-256:<base64url>",
+            ));
+        }
+        let tagged: TaggedDigest = s.parse()?;
+        Self::from_digest(tagged.alg(), tagged.as_bytes().to_vec())
+    }
+}
+
+impl std::fmt::Display for PrincipalGenesis {
+    /// The one canonical spelling: a single `ALG:digest`. A value holding
+    /// several variants prints the first in [`HASH_ALGS`] order, so the
+    /// spelling is deterministic; equality across spellings is
+    /// [`MultihashDigest::matches`], not string comparison.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        let variants = self.0.variants();
+        match HASH_ALGS
+            .into_iter()
+            .find_map(|alg| variants.get(&alg).map(|d| (alg, d)))
+        {
+            Some((alg, digest)) => {
+                write!(f, "{alg}:{}", Base64UrlUnpadded::encode_string(digest))
+            },
+            None => Ok(()),
+        }
+    }
+}
+
 impl StateDigest for PrincipalGenesis {
     fn as_multihash(&self) -> &MultihashDigest {
         &self.0
