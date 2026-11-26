@@ -7,6 +7,8 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use crate::state::TaggedDigest;
+
 /// A principal's consensus state (SPEC 15.5), as far as forks decide it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Consensus {
@@ -86,6 +88,35 @@ pub struct Held {
     /// The thumbprints that signed the commit's cozies, in coz order: who
     /// settled a fork ([`Contest::by`]).
     pub signed: Vec<String>,
+}
+
+impl Held {
+    /// Whether this commit directly extends `parent`: it sits one position
+    /// above and names `parent`'s Principal Root as its `pre`. A commit
+    /// with no `pre` extends nothing. The one parent-link test.
+    #[must_use]
+    pub fn extends(&self, parent: &Held) -> bool {
+        parent.sequence.checked_add(1) == Some(self.sequence)
+            && self.pre.as_deref() == Some(parent.pr.as_str())
+    }
+}
+
+/// The held commit `child` extends. Where several qualify, the one with
+/// the smallest `id`, so the answer does not depend on the order of
+/// `held` (as [`assessment`]'s does not).
+#[must_use]
+pub fn parent_of<'a>(held: &'a [Held], child: &Held) -> Option<&'a Held> {
+    held.iter()
+        .filter(|p| child.extends(p))
+        .min_by(|a, b| a.id.cmp(&b.id))
+}
+
+/// The smallest index below both lengths at which two chains of commit
+/// ids (from `Bundle::commit_id`, under one algorithm) differ. `None`
+/// when one is a prefix of the other, equal chains included.
+#[must_use]
+pub fn first_divergence(ours: &[TaggedDigest], theirs: &[TaggedDigest]) -> Option<usize> {
+    ours.iter().zip(theirs).position(|(a, b)| a != b)
 }
 
 /// The forks of a principal as the protocol reads them (SPEC 15.5-15.8).
@@ -295,9 +326,7 @@ pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
 fn settled_by_extension(held: &[Held], kept: &Held, walked: &HashSet<&str>) -> Option<String> {
     held.iter()
         .find(|c| {
-            walked.contains(c.id.as_str())
-                && c.sequence == kept.sequence + 1
-                && c.pre.as_deref() == Some(kept.pr.as_str())
+            walked.contains(c.id.as_str()) && c.extends(kept)
         })
         .and_then(|c| c.signed.first().cloned())
 }
