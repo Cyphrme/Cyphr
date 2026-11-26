@@ -325,9 +325,7 @@ pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
 /// the walked commit whose `pre` is `kept`'s PR.
 fn settled_by_extension(held: &[Held], kept: &Held, walked: &HashSet<&str>) -> Option<String> {
     held.iter()
-        .find(|c| {
-            walked.contains(c.id.as_str()) && c.extends(kept)
-        })
+        .find(|c| walked.contains(c.id.as_str()) && c.extends(kept))
         .and_then(|c| c.signed.first().cloned())
 }
 

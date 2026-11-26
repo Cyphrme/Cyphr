@@ -826,8 +826,8 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         // The czd is derived from the commit's own canonical hash and the
         // signature; `verify_coz` checks it again against the signed bytes.
-        let czd = coz::czd_for_alg(&cad, &sig, key.alg())
-            .ok_or(crate::error::Error::MalformedPayload)?;
+        let czd =
+            coz::czd_for_alg(&cad, &sig, key.alg()).ok_or(crate::error::Error::MalformedPayload)?;
         let arrow_vtx = crate::parsed_coz::verify_coz(&pay_vec, &sig, &key, czd, None)?;
 
         // Push commit marker and finalize
