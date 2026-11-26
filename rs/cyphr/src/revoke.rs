@@ -20,6 +20,28 @@ use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use serde_json::Value;
 
+/// The instant a revoke takes a key out: the key is dead from here on
+/// (SPEC 6.4). The one place the comparison is made, so no consumer
+/// decides "revoked at `now`" or "which of two revokes stands" itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Cutoff(pub i64);
+
+impl Cutoff {
+    /// Whether a statement dated `now` is stopped by this cutoff: always
+    /// when it carries no date, otherwise from the cutoff on.
+    #[must_use]
+    pub fn stops(self, now: Option<i64>) -> bool {
+        now.is_none_or(|n| n >= self.0)
+    }
+
+    /// The cutoff that stands when two revokes of one key are known: the
+    /// earlier, whichever arrived first.
+    #[must_use]
+    pub fn earliest(self, other: Cutoff) -> Cutoff {
+        self.min(other)
+    }
+}
+
 /// A naked revoke whose self-signature verified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NakedRevoke {

@@ -10,6 +10,7 @@ use indexmap::IndexMap;
 
 use crate::error::{Error, Result};
 use crate::key::Key;
+use crate::revoke::Cutoff;
 
 /// Every key's active periods (SPEC 6.2: a key may have several). A
 /// period opens at the commit that leaves the key in KT and closes at the
@@ -26,7 +27,7 @@ pub(crate) struct KeyTimeline {
     periods: Vec<Period>,
     /// Naked revokes by key: each takes effect from the cutoff it was
     /// noted with.
-    revoked_from: BTreeMap<String, i64>,
+    revoked_from: BTreeMap<String, Cutoff>,
     /// The spans the principal was frozen (SPEC 14.9), by commit `now`.
     frozen: Vec<(i64, Option<i64>)>,
     /// The `now` of the commit that deleted the principal (SPEC 11.4).
@@ -104,15 +105,18 @@ impl KeyTimeline {
     /// the caller's choice, a witness's receipt time): every period of the
     /// key ends at `cutoff` at the latest.
     pub(crate) fn revoke(&mut self, tmb: &Thumbprint, cutoff: i64) {
-        let at = self.revoked_from.entry(tmb.to_b64()).or_insert(cutoff);
-        *at = (*at).min(cutoff);
+        let at = self
+            .revoked_from
+            .entry(tmb.to_b64())
+            .or_insert(Cutoff(cutoff));
+        *at = at.earliest(Cutoff(cutoff));
     }
 
     /// `p` as a naked revoke leaves it, if `cut` applies them: ended at the
     /// revoke's cutoff, no earlier than it began, if it would run past it.
     fn effective(&self, p: &Period, cut: bool) -> (Option<i64>, bool) {
         match self.revoked_from.get(&p.key.tmb().to_b64()) {
-            Some(&cutoff) if cut && p.until.is_none_or(|u| u > cutoff) => {
+            Some(&Cutoff(cutoff)) if cut && p.until.is_none_or(|u| u > cutoff) => {
                 (Some(cutoff.max(p.from)), true)
             },
             _ => (p.until, p.revoked),
@@ -151,7 +155,7 @@ impl KeyTimeline {
             if p.from <= now && until.is_none_or(|u| now < u) {
                 return Some(Ok(&p.key));
             }
-            if revoked && until.is_some_and(|u| u <= now) {
+            if revoked && until.is_some_and(|u| Cutoff(u).stops(Some(now))) {
                 refusal = Error::KeyRevoked;
             }
         }
