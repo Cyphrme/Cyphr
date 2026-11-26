@@ -783,10 +783,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         pay.insert("typ".to_string(), json!(commit_typ));
 
         let mut pay_obj = serde_json::Value::Object(pay);
-        // Ensure deterministic order
-        if let Some(obj) = pay_obj.as_object_mut() {
-            obj.sort_keys();
-        }
+        crate::replay::canonicalize(&mut pay_obj);
 
         let pay_vec =
             serde_json::to_vec(&pay_obj).map_err(|_| crate::error::Error::MalformedPayload)?;
@@ -1089,9 +1086,7 @@ impl PreparedCoz {
         alg: &str,
         key: Option<crate::key::Key>,
     ) -> crate::error::Result<Self> {
-        if let Some(obj) = pay.as_object_mut() {
-            obj.sort_keys();
-        }
+        crate::replay::canonicalize(&mut pay);
         let pay_vec =
             serde_json::to_vec(&pay).map_err(|_| crate::error::Error::MalformedPayload)?;
         let cad = coz::canonical_hash_for_alg(&pay_vec, alg, None)
