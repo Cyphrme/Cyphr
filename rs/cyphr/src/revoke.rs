@@ -136,16 +136,17 @@ pub fn verify_naked_revoke(envelope: &Value) -> Result<NakedRevoke, RevokeFailur
         .map_err(|_| RevokeFailure::Malformed("tmb is not base64url"))?;
 
     let key = Key::from_pub_key(alg, public).map_err(|_| RevokeFailure::KeyMismatch)?;
-    if key.tmb() != &tmb {
-        return Err(RevokeFailure::KeyMismatch);
-    }
     verify_signed(&pay_bytes, &sig, &key)
         .map(drop)
         .map_err(|e| match e {
+            // The fields `verify_signed` reads were checked above except
+            // `alg`, so this is a pay with none (SPEC 2.3.1).
             Error::MalformedPayload => RevokeFailure::Malformed("pay has no alg"),
             Error::AlgMismatch | Error::UnknownKey | Error::UnsupportedAlgorithm(_) => {
                 RevokeFailure::KeyMismatch
             },
+            Error::InvalidSignature => RevokeFailure::BadSignature,
+            // `verify_signed` returns no other variant; fail closed.
             _ => RevokeFailure::BadSignature,
         })?;
     Ok(NakedRevoke { tmb, rvk })
