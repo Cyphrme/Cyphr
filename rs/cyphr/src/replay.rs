@@ -270,7 +270,10 @@ impl StoredCoz {
     }
 }
 
-fn canonicalize(value: &mut Value) {
+/// Put `value` in canonical form: every object's keys sorted, at every
+/// depth, arrays left in order. The one canonicalization, for every
+/// consumer that needs the form a coz is hashed in.
+pub fn canonicalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
             map.sort_keys();
