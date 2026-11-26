@@ -277,6 +277,24 @@ impl PrincipalState {
         )
     }
 
+    /// The one lifecycle gate: `Ok` exactly when the principal is
+    /// [`LifecycleState::Active`](crate::lifecycle::LifecycleState::Active).
+    ///
+    /// # Errors
+    ///
+    /// `AlreadyDeleted` when deleted or nuked, `Frozen` when frozen,
+    /// `NoActiveKeys` when dead or a zombie.
+    pub fn require_active(&self) -> crate::error::Result<()> {
+        use crate::error::Error;
+        use crate::lifecycle::LifecycleState;
+        match self.lifecycle_state() {
+            LifecycleState::Active => Ok(()),
+            LifecycleState::Deleted | LifecycleState::Nuked => Err(Error::AlreadyDeleted),
+            LifecycleState::Frozen => Err(Error::Frozen),
+            LifecycleState::Dead | LifecycleState::Zombie => Err(Error::NoActiveKeys),
+        }
+    }
+
     /// Bound a coz or action `now` (SPEC 6.4, 14.1, 15.9) for every entry
     /// path, commit, action and push alike. Replay needs no exemption: a
     /// chain's past timestamps are below the clock, so only a message from

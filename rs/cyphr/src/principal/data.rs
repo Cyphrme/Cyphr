@@ -235,6 +235,21 @@ impl PrincipalState {
         self.embedded_signer(tmb, now)
     }
 
+    /// The key that authorizes a message of `tmb` dated `now`, or why none
+    /// does: the one answer to "may this key sign now", for every consumer.
+    /// It is [`Self::judge`] for a submission, so the lifecycle gates
+    /// (deleted, frozen) and the revoke cutoff apply; held history is
+    /// judged only by core's own replay.
+    ///
+    /// # Errors
+    ///
+    /// `GenesisIncomplete` before the genesis commit; `AlreadyDeleted` or
+    /// `Frozen` by the principal's state now; `KeyRevoked`,
+    /// `EmbeddedErrored` or `UnknownKey` as for the key at `now`.
+    pub fn authorize(&self, tmb: &coz::Thumbprint, now: i64) -> Result<&crate::key::Key> {
+        self.judge(tmb, now, Arrival::Submitted)
+    }
+
     /// The key of an embedded principal that signs for `tmb` at `now`.
     fn embedded_signer(&self, tmb: &coz::Thumbprint, now: i64) -> Result<&crate::key::Key> {
         self.embedded
@@ -416,25 +431,12 @@ impl PrincipalState {
             Arrival::Held => self.held_signer(&signer_tmb, now)?,
         };
 
-        // The signed pay must name the key that actually verifies it.
-        // An absent `alg` is malformed (SPEC 2.3.1), as `verify_coz` rules.
-        let alg = pay_value["alg"].as_str().ok_or(Error::MalformedPayload)?;
-        if alg != signer_key.alg() {
-            return Err(Error::AlgMismatch);
-        }
-
+        // The signed pay must name the key that actually verifies it, and
+        // the czd identifies the action: derived from the signed bytes,
+        // never trusted from the caller.
         #[cfg(any(test, feature = "test-utils"))]
         crate::probe::signature_checked();
-        let valid = coz::verify_json(pay_json, sig, signer_key.alg(), signer_key.pub_key())
-            .unwrap_or(false);
-        if !valid {
-            return Err(Error::InvalidSignature);
-        }
-
-        // The czd identifies the action; it is derived from the signed
-        // bytes, never trusted from the caller.
-        let computed = crate::parsed_coz::compute_czd(pay_json, sig, signer_key.alg())
-            .ok_or_else(|| Error::UnsupportedAlgorithm(signer_key.alg().to_owned()))?;
+        let computed = crate::parsed_coz::verify_signed(pay_json, sig, signer_key)?;
         if computed.as_bytes() != czd.as_bytes() {
             return Err(Error::CzdMismatch);
         }

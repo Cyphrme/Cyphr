@@ -20,6 +20,47 @@ use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use serde_json::Value;
 
+use crate::error::Error;
+use crate::key::Key;
+use crate::parsed_coz::verify_signed;
+
+/// The instant a revoke takes a key out: the key is dead from here on
+/// (SPEC 6.4). The one place the comparison is made, so no consumer
+/// decides "revoked at `now`" or "which of two revokes stands" itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Cutoff(pub i64);
+
+impl Cutoff {
+    /// Whether a statement dated `now` is stopped by this cutoff: always
+    /// when it carries no date, otherwise from the cutoff on.
+    #[must_use]
+    pub fn stops(self, now: Option<i64>) -> bool {
+        now.is_none_or(|n| n >= self.0)
+    }
+
+    /// Whether a period of a key's life that ends at `until` (`None`: still
+    /// open) runs past this cutoff and so is cut short by it. A period
+    /// ending exactly at the cutoff is not.
+    #[must_use]
+    pub fn runs_past(self, until: Option<i64>) -> bool {
+        until.is_none_or(|u| u > self.0)
+    }
+
+    /// Where a period that began at `from` ends when this cutoff cuts it:
+    /// at the cutoff, but no earlier than the period began.
+    #[must_use]
+    pub fn end_of_period_from(self, from: i64) -> i64 {
+        self.0.max(from)
+    }
+
+    /// The cutoff that stands when two revokes of one key are known: the
+    /// earlier, whichever arrived first.
+    #[must_use]
+    pub fn earliest(self, other: Cutoff) -> Cutoff {
+        self.min(other)
+    }
+}
+
 /// A naked revoke whose self-signature verified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NakedRevoke {
@@ -109,11 +150,19 @@ pub fn verify_naked_revoke(envelope: &Value) -> Result<NakedRevoke, RevokeFailur
         .map(Thumbprint::from_bytes)
         .map_err(|_| RevokeFailure::Malformed("tmb is not base64url"))?;
 
-    if coz::compute_thumbprint_for_alg(alg, &public).as_ref() != Some(&tmb) {
-        return Err(RevokeFailure::KeyMismatch);
-    }
-    if coz::verify_json(&pay_bytes, &sig, alg, &public) != Some(true) {
-        return Err(RevokeFailure::BadSignature);
-    }
+    let key = Key::from_pub_key(alg, public).map_err(|_| RevokeFailure::KeyMismatch)?;
+    verify_signed(&pay_bytes, &sig, &key)
+        .map(drop)
+        .map_err(|e| match e {
+            // The fields `verify_signed` reads were checked above except
+            // `alg`, so this is a pay with none (SPEC 2.3.1).
+            Error::MalformedPayload => RevokeFailure::Malformed("pay has no alg"),
+            Error::AlgMismatch | Error::UnknownKey | Error::UnsupportedAlgorithm(_) => {
+                RevokeFailure::KeyMismatch
+            },
+            Error::InvalidSignature => RevokeFailure::BadSignature,
+            // `verify_signed` returns no other variant; fail closed.
+            _ => RevokeFailure::BadSignature,
+        })?;
     Ok(NakedRevoke { tmb, rvk })
 }

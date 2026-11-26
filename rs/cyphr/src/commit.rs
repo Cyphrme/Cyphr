@@ -783,10 +783,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         pay.insert("typ".to_string(), json!(commit_typ));
 
         let mut pay_obj = serde_json::Value::Object(pay);
-        // Ensure deterministic order
-        if let Some(obj) = pay_obj.as_object_mut() {
-            obj.sort_keys();
-        }
+        crate::replay::canonicalize(&mut pay_obj);
 
         let pay_vec =
             serde_json::to_vec(&pay_obj).map_err(|_| crate::error::Error::MalformedPayload)?;
@@ -794,9 +791,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             .ok_or(crate::error::Error::MalformedPayload)?;
 
         Ok(PreparedCommit {
-            alg: alg.to_string(),
-            pub_key: stored.pub_key().to_vec(),
-            signer_hash_alg,
+            key: stored.clone(),
             pay_obj,
             pay_vec,
             cad,
@@ -819,32 +814,18 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         prepared: PreparedCommit,
         sig: Vec<u8>,
     ) -> crate::error::Result<&'a Commit> {
-        use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
-
         let PreparedCommit {
-            alg,
-            pub_key,
-            signer_hash_alg,
-            pay_obj,
+            key,
+            pay_obj: _,
             pay_vec,
             cad,
         } = prepared;
 
-        if coz::verify_json(&pay_vec, &sig, &alg, &pub_key) != Some(true) {
-            return Err(crate::error::Error::InvalidSignature);
-        }
+        // The czd is derived from the commit's own canonical hash and the
+        // signature; `verify_coz` checks it again against the signed bytes.
         let czd =
-            coz::czd_for_alg(&cad, &sig, &alg).ok_or(crate::error::Error::MalformedPayload)?;
-
-        let raw = coz::CozJson {
-            pay: pay_obj.clone(),
-            sig,
-        };
-        let parsed_pay: coz::Pay =
-            serde_json::from_value(pay_obj).map_err(|_| crate::error::Error::MalformedPayload)?;
-
-        let arrow_tx = ParsedCoz::from_pay(&parsed_pay, czd, signer_hash_alg, raw)?;
-        let arrow_vtx = VerifiedCoz::from_parts(arrow_tx, None);
+            coz::czd_for_alg(&cad, &sig, key.alg()).ok_or(crate::error::Error::MalformedPayload)?;
+        let arrow_vtx = crate::parsed_coz::verify_coz(&pay_vec, &sig, &key, czd, None)?;
 
         // Push commit marker and finalize
         self.pending
@@ -1105,9 +1086,7 @@ impl PreparedCoz {
         alg: &str,
         key: Option<crate::key::Key>,
     ) -> crate::error::Result<Self> {
-        if let Some(obj) = pay.as_object_mut() {
-            obj.sort_keys();
-        }
+        crate::replay::canonicalize(&mut pay);
         let pay_vec =
             serde_json::to_vec(&pay).map_err(|_| crate::error::Error::MalformedPayload)?;
         let cad = coz::canonical_hash_for_alg(&pay_vec, alg, None)
@@ -1136,9 +1115,7 @@ impl PreparedCoz {
 /// payload awaiting a signature over [`cad`](Self::cad).
 #[derive(Debug)]
 pub struct PreparedCommit {
-    alg: String,
-    pub_key: Vec<u8>,
-    signer_hash_alg: crate::state::HashAlg,
+    key: crate::key::Key,
     pay_obj: serde_json::Value,
     pay_vec: Vec<u8>,
     cad: coz::Cad,

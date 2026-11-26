@@ -611,24 +611,15 @@ impl VerifiedCoz {
         self.new_key.as_ref()
     }
 
-    /// Create a VerifiedCoz from its constituent parts.
-    ///
-    /// This is used by the creation path (`CommitScope::finalize_with_commit`)
-    /// where the coz is signed internally by the builder.
-    /// The caller is responsible for ensuring the coz is valid.
-    pub(crate) fn from_parts(cz: ParsedCoz, new_key: Option<Key>) -> Self {
-        Self { cz, new_key }
-    }
-
     /// Create a VerifiedCoz without signature verification.
     ///
     /// # Safety
     ///
     /// This method bypasses signature verification and should ONLY be used
-    /// for testing. Production code should use [`verify`] or [`from_parts`].
+    /// for testing. Production code should use [`verify_coz`].
     #[cfg(test)]
     pub(crate) fn from_transaction_unsafe(cz: ParsedCoz, new_key: Option<Key>) -> Self {
-        Self::from_parts(cz, new_key)
+        Self { cz, new_key }
     }
 }
 
@@ -650,6 +641,53 @@ impl std::ops::Deref for VerifiedCoz {
 pub fn compute_czd(pay_json: &[u8], sig: &[u8], alg: &str) -> Option<Czd> {
     let cad = coz::canonical_hash_for_alg(pay_json, alg, None)?;
     coz::czd_for_alg(&cad, sig, alg)
+}
+
+/// The one signature check, and the only caller of `coz::verify_json`:
+/// `pay_json` names `key` (`pay.alg` is its algorithm, `pay.tmb` its
+/// thumbprint) and `sig` verifies over it. Returns the `czd` of
+/// (`pay_json`, `sig`) computed under the key's algorithm.
+///
+/// It reads no other field, so cozies that are not chain cozies (data
+/// actions, resync proofs, naked revokes, statements) use it directly;
+/// [`verify_coz`] adds the typed chain coz on top.
+///
+/// # Errors
+///
+/// - `MalformedPayload`: `pay` is not a JSON object, has no `alg`, or its `tmb` is not base64url
+/// - `AlgMismatch`: `pay.alg` differs from `key.alg`
+/// - `UnknownKey`: `pay.tmb` is absent or differs from `key.tmb`
+/// - `InvalidSignature`: the signature does not verify
+/// - `UnsupportedAlgorithm`: no `czd` can be computed for the key's algorithm
+pub fn verify_signed(pay_json: &[u8], sig: &[u8], key: &Key) -> Result<Czd> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let pay: serde_json::Value =
+        serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
+    // SPEC 2.3.1: `alg` is a required field, so its absence is a malformed
+    // payload; a present `alg` naming another algorithm is a mismatch.
+    if pay
+        .get("alg")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(Error::MalformedPayload)?
+        != key.alg()
+    {
+        return Err(Error::AlgMismatch);
+    }
+    let tmb = pay
+        .get("tmb")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(Error::UnknownKey)?;
+    let tmb = Base64UrlUnpadded::decode_vec(tmb).map_err(|_| Error::MalformedPayload)?;
+    if tmb != key.tmb().as_bytes() {
+        return Err(Error::UnknownKey);
+    }
+
+    if coz::verify_json(pay_json, sig, key.alg(), key.pub_key()) != Some(true) {
+        return Err(Error::InvalidSignature);
+    }
+    compute_czd(pay_json, sig, key.alg())
+        .ok_or_else(|| Error::UnsupportedAlgorithm(key.alg().to_owned()))
 }
 
 /// Verify a coz signature and return a VerifiedCoz.
@@ -675,23 +713,7 @@ pub fn verify_coz(
     new_key: Option<Key>,
 ) -> Result<VerifiedCoz> {
     let pay: Pay = serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
-    // SPEC 2.3.1: `alg` is a required field, so its absence is a malformed
-    // payload; a present `alg` naming another algorithm is a mismatch.
-    if pay.alg.as_deref().ok_or(Error::MalformedPayload)? != key.alg() {
-        return Err(Error::AlgMismatch);
-    }
-    if pay.tmb.as_ref() != Some(key.tmb()) {
-        return Err(Error::UnknownKey);
-    }
-
-    // Verify the signature
-    let valid = coz::verify_json(pay_json, sig, key.alg(), key.pub_key()).unwrap_or(false);
-    if !valid {
-        return Err(Error::InvalidSignature);
-    }
-
-    let computed = compute_czd(pay_json, sig, key.alg())
-        .ok_or_else(|| Error::UnsupportedAlgorithm(key.alg().to_owned()))?;
+    let computed = verify_signed(pay_json, sig, key)?;
     if computed.as_bytes() != czd.as_bytes() {
         return Err(Error::CzdMismatch);
     }

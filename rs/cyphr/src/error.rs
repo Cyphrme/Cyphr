@@ -223,4 +223,52 @@ impl Error {
             Self::UnknownKey | Self::KeyRevoked | Self::EmbeddedErrored
         )
     }
+
+    /// The variant's own identifier, payload ignored. This is the one
+    /// vocabulary for refusal names (golden corpus, fixture generator,
+    /// storage tables). The `match` has no wildcard arm so that a new
+    /// variant does not compile until it is named.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Signer(..) => "Signer",
+            Self::InvalidSignature => "InvalidSignature",
+            Self::UnknownKey => "UnknownKey",
+            Self::UnknownAlg => "UnknownAlg",
+            Self::TimestampPast => "TimestampPast",
+            Self::TimestampFuture => "TimestampFuture",
+            Self::KeyRevoked => "KeyRevoked",
+            Self::MalformedPayload => "MalformedPayload",
+            Self::TmbMismatch => "TmbMismatch",
+            Self::AlgMismatch => "AlgMismatch",
+            Self::CzdMismatch => "CzdMismatch",
+            Self::DuplicateKey => "DuplicateKey",
+            Self::DuplicatePrincipal => "DuplicatePrincipal",
+            Self::DuplicateNonce => "DuplicateNonce",
+            Self::UnknownNonce => "UnknownNonce",
+            Self::CozReuse => "CozReuse",
+            Self::StateMismatch => "StateMismatch",
+            Self::EmptyMultihash => "EmptyMultihash",
+            Self::MissingVariant(..) => "MissingVariant",
+            Self::NoActiveKeys => "NoActiveKeys",
+            Self::AlreadyDeleted => "AlreadyDeleted",
+            Self::AlreadyFrozen => "AlreadyFrozen",
+            Self::NotFrozen => "NotFrozen",
+            Self::Frozen => "Frozen",
+            Self::EmbeddedErrored => "EmbeddedErrored",
+            Self::MixedTransactionTyp => "MixedTransactionTyp",
+            Self::LoneGroupedTransaction => "LoneGroupedTransaction",
+            Self::UnsupportedAlgorithm(..) => "UnsupportedAlgorithm",
+            Self::Storage(..) => "Storage",
+            Self::EmptyCommit => "EmptyCommit",
+            Self::GenesisIncomplete => "GenesisIncomplete",
+            Self::CommitNotLast => "CommitNotLast",
+            Self::MissingCommit => "MissingCommit",
+            Self::CommitMismatch => "CommitMismatch",
+            Self::DurableLeafMismatch(..) => "DurableLeafMismatch",
+            Self::MalformedDigest(..) => "MalformedDigest",
+            Self::DigestLengthMismatch { .. } => "DigestLengthMismatch",
+            Self::Coz(..) => "Coz",
+        }
+    }
 }

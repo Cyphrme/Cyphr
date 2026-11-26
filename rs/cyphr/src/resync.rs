@@ -94,14 +94,25 @@ pub fn parse_resync(envelope: &Value) -> Result<Resync, ResyncFailure> {
 pub fn verify_resync(envelope: &Value, key: &Key) -> Result<Resync, ResyncFailure> {
     let resync = parse_resync(envelope)?;
     let pay = &envelope["pay"];
-    if key.tmb() != &resync.tmb || pay.get("alg").and_then(Value::as_str) != Some(key.alg()) {
-        return Err(ResyncFailure::KeyMismatch);
-    }
     let sig = Base64UrlUnpadded::decode_vec(text(envelope.get("sig"), "no sig")?)
         .map_err(|_| ResyncFailure::Malformed("sig is not base64url"))?;
     let pay_bytes = serde_json::to_vec(pay).map_err(|_| ResyncFailure::Malformed("pay"))?;
-    if coz::verify_json(&pay_bytes, &sig, key.alg(), key.pub_key()) != Some(true) {
-        return Err(ResyncFailure::BadSignature);
-    }
+    crate::parsed_coz::verify_signed(&pay_bytes, &sig, key)
+        .map(drop)
+        .map_err(|e| {
+            use crate::error::Error;
+            match e {
+                // The pay does not name this key: no `alg` (SPEC 2.3.1), another
+                // `alg`, or another `tmb`.
+                Error::MalformedPayload | Error::AlgMismatch | Error::UnknownKey => {
+                    ResyncFailure::KeyMismatch
+                },
+                Error::InvalidSignature | Error::UnsupportedAlgorithm(_) => {
+                    ResyncFailure::BadSignature
+                },
+                // `verify_signed` returns no other variant; fail closed.
+                _ => ResyncFailure::BadSignature,
+            }
+        })?;
     Ok(resync)
 }
