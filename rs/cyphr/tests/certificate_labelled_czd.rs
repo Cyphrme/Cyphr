@@ -114,8 +114,18 @@ const WIDTHS: [(&str, usize); 3] = [("SHA-256", 32), ("SHA-384", 48), ("SHA-512"
 /// path to it.
 fn czds(cert: &Value) -> Vec<(usize, usize, usize)> {
     let mut at = vec![];
-    for (s, st) in cert["stitches"].as_array().expect("stitches").iter().enumerate() {
-        for (t, tx) in st["opening"]["txs"].as_array().expect("txs").iter().enumerate() {
+    for (s, st) in cert["stitches"]
+        .as_array()
+        .expect("stitches")
+        .iter()
+        .enumerate()
+    {
+        for (t, tx) in st["opening"]["txs"]
+            .as_array()
+            .expect("txs")
+            .iter()
+            .enumerate()
+        {
             for c in 0..tx.as_array().expect("tx").len() {
                 at.push((s, t, c));
             }
@@ -142,7 +152,12 @@ async fn certified() -> ((), Anchor<'static>, Claim, Value) {
     };
     let anchor = Anchor::pin(p.root_at(2).expect("pinned root"));
     let cert = p.prove(n, &claim).await.expect("prove");
-    ((), anchor, claim, serde_json::to_value(&cert).expect("wire"))
+    (
+        (),
+        anchor,
+        claim,
+        serde_json::to_value(&cert).expect("wire"),
+    )
 }
 
 #[tokio::test]
@@ -176,7 +191,9 @@ async fn a_bare_czd_is_refused_not_matched_by_width() {
         let mut bare = wire.clone();
         let slot = &mut bare["stitches"][s]["opening"]["txs"][t][c];
         let labelled = slot.as_str().expect("string").to_owned();
-        let digest = labelled.split_once(':').map_or(labelled.as_str(), |(_, d)| d);
+        let digest = labelled
+            .split_once(':')
+            .map_or(labelled.as_str(), |(_, d)| d);
         *slot = json!(digest);
         let accepted = serde_json::from_value::<Certificate>(bare)
             .ok()
@@ -191,7 +208,11 @@ async fn a_label_that_disagrees_with_the_digest_width_is_refused() {
     let (s, t, c) = czds(&wire)[0];
     let mut forged = wire.clone();
     let slot = &mut forged["stitches"][s]["opening"]["txs"][t][c];
-    let digest = slot.as_str().expect("string").split_once(':').map(|(_, d)| d.to_owned());
+    let digest = slot
+        .as_str()
+        .expect("string")
+        .split_once(':')
+        .map(|(_, d)| d.to_owned());
     let Some(digest) = digest else {
         panic!("czd is not labelled: {slot}");
     };
@@ -200,5 +221,8 @@ async fn a_label_that_disagrees_with_the_digest_width_is_refused() {
     let accepted = serde_json::from_value::<Certificate>(forged)
         .ok()
         .is_some_and(|cert| verify(&anchor, &cert, N, &claim).is_ok());
-    assert!(!accepted, "a SHA-512 label over a 32-byte digest was accepted");
+    assert!(
+        !accepted,
+        "a SHA-512 label over a 32-byte digest was accepted"
+    );
 }
