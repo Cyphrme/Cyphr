@@ -129,6 +129,7 @@ proptest! {
         let (mut o, mut t) = (ours.clone(), theirs.clone());
         o.extend(&suffix);
         t.extend(&suffix);
-        prop_assert_eq!(first_divergence(&ids(&o), &ids(&t)), first_divergence(&ids(&ours), &ids(&theirs)));
+        let with_suffix = first_divergence(&ids(&o), &ids(&t));
+        prop_assert_eq!(with_suffix, first_divergence(&ids(&ours), &ids(&theirs)));
     }
 }
