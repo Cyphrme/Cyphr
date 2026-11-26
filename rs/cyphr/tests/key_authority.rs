@@ -3,15 +3,13 @@
 //!
 //! Scenario: `golden` creates `key_a` at genesis (time `T`) and deletes it
 //! in a later commit at `T + 10`. Properties:
-//! - a key is authorized exactly from the commit that added it up to the
-//!   commit that removed it; a message dated at the removal is judged
-//!   after it (`principal/timeline.rs` `authorize` doc), and one dated
-//!   before genesis finds no key;
+//! - a key is authorized exactly from the commit that added it up to the commit that removed it; a
+//!   message dated at the removal is judged after it (`principal/timeline.rs` `authorize` doc), and
+//!   one dated before genesis finds no key;
 //! - a thumbprint the principal never held is `UnknownKey`;
 //! - the key returned is the key asked for;
-//! - metamorphic against the existing predicate: at a `now` after every
-//!   commit, `authorize` succeeds exactly when `is_key_active` says so,
-//!   for every key of the pool.
+//! - metamorphic against the existing predicate: at a `now` after every commit, `authorize`
+//!   succeeds exactly when `is_key_active` says so, for every key of the pool.
 //!
 //! Red before K1: `Principal::authorize` is not public, so the storage,
 //! client and server copies of this rule had nothing to call.
@@ -63,7 +61,11 @@ async fn principal(pool: &test_fixtures::Pool) -> Principal {
         .verify_and_apply(&pay, &sig, czd, None)
         .expect("key/delete applies");
     scope
-        .finalize_with_software(&golden.software_signer().expect("signer"), T + 10, "cyphr.me")
+        .finalize_with_software(
+            &golden.software_signer().expect("signer"),
+            T + 10,
+            "cyphr.me",
+        )
         .await
         .expect("commit");
     p
@@ -73,7 +75,11 @@ async fn principal(pool: &test_fixtures::Pool) -> Principal {
 async fn a_key_is_authorized_from_its_commit_to_its_removal() {
     let pool = pool();
     let p = principal(&pool).await;
-    let tmb = pool.get("key_a").expect("key_a").compute_tmb().expect("tmb");
+    let tmb = pool
+        .get("key_a")
+        .expect("key_a")
+        .compute_tmb()
+        .expect("tmb");
 
     assert!(p.authorize(&tmb, T - 1).is_err(), "before genesis");
     for now in [T, T + 5, T + 9] {
@@ -92,7 +98,11 @@ async fn a_key_is_authorized_from_its_commit_to_its_removal() {
 async fn a_key_the_principal_never_held_is_unknown() {
     let pool = pool();
     let p = principal(&pool).await;
-    let tmb = pool.get("alice").expect("alice").compute_tmb().expect("tmb");
+    let tmb = pool
+        .get("alice")
+        .expect("alice")
+        .compute_tmb()
+        .expect("tmb");
     assert!(matches!(p.authorize(&tmb, T + 5), Err(Error::UnknownKey)));
 }
 

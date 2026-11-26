@@ -4,7 +4,7 @@
 //! Property: for every variant, the name is the variant's own identifier,
 //! whatever its payload. That ties the name to the enum itself instead of
 //! to a second table, so a table that drifts from the enum (as the two
-//! hand-kept `match`es with a `_ => "UnknownError"` arm do) fails here.
+//! hand-kept `match`es with a catch-all arm do) fails here.
 //! The exhaustiveness half (a new variant must not compile without a
 //! name) is the missing-wildcard-arm in `Error::name`; no test outside
 //! the crate can observe it.
@@ -81,13 +81,12 @@ fn a_name_is_the_variants_own_identifier() {
 }
 
 #[test]
-fn names_are_distinct_and_never_the_fallback() {
+fn names_are_distinct() {
     let names: Vec<&str> = variants().iter().map(Error::name).collect();
     let mut sorted = names.clone();
     sorted.sort_unstable();
     sorted.dedup();
     assert_eq!(sorted.len(), names.len(), "two variants share a name");
-    assert!(!names.contains(&"UnknownError"), "a variant fell to the fallback");
 }
 
 /// The name does not depend on the payload (metamorphic: same variant,

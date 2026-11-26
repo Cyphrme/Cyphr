@@ -3,15 +3,13 @@
 //! stands", and `Principal::authorize` answers the same way.
 //!
 //! Properties:
-//! - `stops(None)` (an undated statement) is always true; `stops(Some(n))`
-//!   is `n >= cutoff` (SPEC 6.4: the key is dead from the cutoff on).
-//! - `earliest` is a lower bound that stops whatever either input stops
-//!   (metamorphic: an earlier cutoff never stops less), and is
-//!   commutative and idempotent.
-//! - Agreement: for a key revoked at cutoff `c`, `Principal::authorize`
-//!   refuses at `now` with `KeyRevoked` exactly when `Cutoff(c)` stops
-//!   `Some(now)`, across a grid that straddles the boundary; and two
-//!   revokes in either order leave the verdict of `earliest`.
+//! - `stops(None)` (an undated statement) is always true; `stops(Some(n))` is `n >= cutoff` (SPEC
+//!   6.4: the key is dead from the cutoff on).
+//! - `earliest` is a lower bound that stops whatever either input stops (metamorphic: an earlier
+//!   cutoff never stops less), and is commutative and idempotent.
+//! - Agreement: for a key revoked at cutoff `c`, `Principal::authorize` refuses at `now` with
+//!   `KeyRevoked` exactly when `Cutoff(c)` stops `Some(now)`, across a grid that straddles the
+//!   boundary; and two revokes in either order leave the verdict of `earliest`.
 //!
 //! Red before K1: neither `Cutoff` nor `Principal::authorize` is public.
 //! The frame (FIX-FRAME 2.1) gives `Cutoff(i64)`, `stops(self,
@@ -30,6 +28,13 @@ proptest! {
     fn stops_is_the_boundary_comparison(c in any::<i64>(), n in any::<i64>()) {
         prop_assert!(Cutoff(c).stops(None));
         prop_assert_eq!(Cutoff(c).stops(Some(n)), n >= c);
+    }
+
+    /// Random pairs almost never meet at the boundary; this one lives there.
+    #[test]
+    fn the_boundary_itself_stops(c in any::<i32>(), d in -2i64..=2) {
+        let c = i64::from(c);
+        prop_assert_eq!(Cutoff(c).stops(Some(c + d)), d >= 0);
     }
 
     #[test]

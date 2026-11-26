@@ -11,8 +11,8 @@
 //! Red before K1: `require_active` does not exist.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::lifecycle::LifecycleState;
 use cyphr::Principal;
+use cyphr::lifecycle::LifecycleState;
 
 const T: i64 = 1_700_000_000;
 
@@ -49,7 +49,11 @@ async fn lifecycle(p: &mut Principal, golden: &test_fixtures::PoolKey, suffix: &
 }
 
 fn assert_gate_matches_state(p: &Principal, want: LifecycleState) {
-    assert_eq!(p.lifecycle_state(), want, "premise: the walk reached {want:?}");
+    assert_eq!(
+        p.lifecycle_state(),
+        want,
+        "premise: the walk reached {want:?}"
+    );
     assert_eq!(
         p.require_active().is_ok(),
         want == LifecycleState::Active,
@@ -64,9 +68,14 @@ async fn the_gate_is_open_exactly_while_active() {
     let mut p = Principal::implicit(golden.key().expect("key"))
         .await
         .expect("open");
-    p.commit_genesis(&golden.software_signer().expect("signer"), &[], T, "cyphr.me")
-        .await
-        .expect("genesis commit");
+    p.commit_genesis(
+        &golden.software_signer().expect("signer"),
+        &[],
+        T,
+        "cyphr.me",
+    )
+    .await
+    .expect("genesis commit");
     assert_gate_matches_state(&p, LifecycleState::Active);
 
     lifecycle(&mut p, golden, "freeze/create", T + 10).await;

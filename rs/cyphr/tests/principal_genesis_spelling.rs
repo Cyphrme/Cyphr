@@ -4,13 +4,11 @@
 //!
 //! Properties, for every supported hash algorithm and arbitrary digest
 //! bytes of its width:
-//! - print then parse is the identity, and the printed form is the label,
-//!   a colon and the unpadded base64url digest, computed here without the
-//!   code under test;
-//! - the same digest without its label is refused, as is a label the
-//!   digest's width does not match and a label that names no algorithm
-//!   (the guess a bare normalizer makes from the width must never be made
-//!   by the parser).
+//! - print then parse is the identity, and the printed form is the label, a colon and the unpadded
+//!   base64url digest, computed here without the code under test;
+//! - the same digest without its label is refused, as is a label the digest's width does not match
+//!   and a label that names no algorithm (the guess a bare normalizer makes from the width must
+//!   never be made by the parser).
 //!
 //! The text of the refusal ("shows the labelled form") is not pinned: the
 //! frame gives no wording.
@@ -18,8 +16,8 @@
 //! Red before K1: `PrincipalGenesis` has neither `FromStr` nor `Display`.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::state::{HASH_ALGS, HashAlg};
 use cyphr::PrincipalGenesis;
+use cyphr::state::{HASH_ALGS, HashAlg};
 use proptest::prelude::*;
 
 fn digest(alg: HashAlg) -> impl Strategy<Value = Vec<u8>> {
