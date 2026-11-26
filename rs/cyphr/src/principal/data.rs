@@ -235,6 +235,21 @@ impl PrincipalState {
         self.embedded_signer(tmb, now)
     }
 
+    /// The key that authorizes a message of `tmb` dated `now`, or why none
+    /// does: the one answer to "may this key sign now", for every consumer.
+    /// It is [`Self::judge`] for a submission, so the lifecycle gates
+    /// (deleted, frozen) and the revoke cutoff apply; held history is
+    /// judged only by core's own replay.
+    ///
+    /// # Errors
+    ///
+    /// `GenesisIncomplete` before the genesis commit; `AlreadyDeleted` or
+    /// `Frozen` by the principal's state now; `KeyRevoked`,
+    /// `EmbeddedErrored` or `UnknownKey` as for the key at `now`.
+    pub fn authorize(&self, tmb: &coz::Thumbprint, now: i64) -> Result<&crate::key::Key> {
+        self.judge(tmb, now, Arrival::Submitted)
+    }
+
     /// The key of an embedded principal that signs for `tmb` at `now`.
     fn embedded_signer(&self, tmb: &coz::Thumbprint, now: i64) -> Result<&crate::key::Key> {
         self.embedded
