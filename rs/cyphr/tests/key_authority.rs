@@ -81,7 +81,10 @@ async fn a_key_is_authorized_from_its_commit_to_its_removal() {
         .compute_tmb()
         .expect("tmb");
 
-    assert!(p.authorize(&tmb, T - 1).is_err(), "before genesis");
+    assert!(
+        matches!(p.authorize(&tmb, T - 1), Err(Error::UnknownKey)),
+        "dated before the key's commit"
+    );
     for now in [T, T + 5, T + 9] {
         let key = p.authorize(&tmb, now).expect("held");
         assert_eq!(key.tmb(), &tmb, "the key returned is the key asked for");
