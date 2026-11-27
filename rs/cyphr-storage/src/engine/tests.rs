@@ -16,13 +16,35 @@ fn test_engine() -> StorageEngine<MemoryBlobStore, MemoryIndexer> {
     StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new())
 }
 
-/// Build test metadata for a commit.
-fn make_meta(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
+/// A valid principal id for a test principal `name`. The digest bytes
+/// follow the names' alphabetical order, so id order is name order where a
+/// test depends on it (the canonical order of a contested alias).
+pub(super) fn pid(name: &str) -> PrincipalGenesis {
+    let byte = match name {
+        "alice" => 1,
+        "bob" => 2,
+        "orphan" => 3,
+        "nonexistent" => 4,
+        "unrelated" => 5,
+        other => panic!("no test principal id named {other}"),
+    };
+    PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![byte; 32]).expect("test id")
+}
+
+/// The one PG alias the contest tests have two principals claim: a valid
+/// labelled digest, held by neither as an id.
+pub(super) fn contested_pg() -> PrincipalGenesis {
+    PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![9; 32]).expect("test pg")
+}
+
+/// Build test metadata for a commit of the test principal `principal`.
+fn make_meta(principal: &str, seq: u64, timestamp: i64) -> IndexableCommit {
+    let principal_id = principal;
     let dummy_hash = crate::blob::Blake3Hash::from_bytes([0; 32]);
     IndexableCommit {
         pg: Vec::new(),
         manifest: None,
-        principal_id: principal_id.to_string(),
+        principal_id: pid(principal_id),
         commit_ids: vec![format!("SHA-256:commit-{principal_id}-{seq}")],
         sequence: seq,
         pre: if seq == 0 {
@@ -70,11 +92,11 @@ async fn ingest_two_then_get_patch_full() {
         .expect("second ingest");
 
     let patch = engine
-        .get_patch("alice", None, None)
+        .get_patch(&pid("alice"), None, None)
         .await
         .expect("get_patch failed");
 
-    assert_eq!(patch.principal_id, "alice");
+    assert_eq!(patch.principal_id, pid("alice"));
     assert_eq!(patch.entries.len(), 2);
 
     // Verify blob content is fetched correctly.
@@ -113,7 +135,7 @@ async fn get_patch_with_range() {
     }
 
     let patch = engine
-        .get_patch("alice", Some(&anchor), Some(3))
+        .get_patch(&pid("alice"), Some(&anchor), Some(3))
         .await
         .expect("get_patch");
     assert_eq!(patch.entries.len(), 3);
@@ -137,7 +159,7 @@ async fn get_patch_unknown_anchor_is_not_found() {
         .expect("parse anchor digest");
 
     let err = engine
-        .get_patch("alice", Some(&unknown), None)
+        .get_patch(&pid("alice"), Some(&unknown), None)
         .await
         .expect_err("an unrecognized anchor must be refused, not silently resolved");
     assert!(
@@ -208,7 +230,7 @@ async fn load_principal_unknown_returns_genesis() {
 
     // Load from a principal_id with no indexed commits.
     let principal = engine
-        .load_principal("nonexistent", genesis)
+        .load_principal(&pid("nonexistent"), genesis)
         .await
         .expect("load should succeed with no commits");
 
@@ -237,7 +259,7 @@ async fn submit_commit_bad_signature_rejected() {
 
     let engine = test_engine();
     let principal_id = genesis_principal_id(&make_genesis(genesis_keys)).unwrap();
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
 
     // Build blobs from the first commit but tamper with the signature.
     let first_commit = &commits[0];
@@ -312,7 +334,8 @@ async fn rebuild_from_scratch_drops_entries_no_manifest_backs() {
     let mut principal = cyphr::Principal::implicit(pool_key_to_domain(golden))
         .await
         .unwrap();
-    let alice = principal.pr_tagged().unwrap();
+    let alice =
+        genesis_principal_id(&crate::Genesis::Implicit(pool_key_to_domain(golden))).unwrap();
     let blobs = test_fixtures::bundle::genesis_bundle(&mut principal, golden, &[], 1000)
         .await
         .unwrap();
@@ -328,7 +351,14 @@ async fn rebuild_from_scratch_drops_entries_no_manifest_backs() {
         .index_commit(&make_meta("orphan", 0, 1000), &DeriveToken::new())
         .await
         .expect("index orphan");
-    assert!(engine.indexer().get_tip("orphan").await.unwrap().is_some());
+    assert!(
+        engine
+            .indexer()
+            .get_tip(&pid("orphan"))
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     let rebuilt = engine
         .rebuild_index_from_scratch()
@@ -337,7 +367,12 @@ async fn rebuild_from_scratch_drops_entries_no_manifest_backs() {
 
     assert_eq!(rebuilt, 1, "count must equal the manifests replayed");
     assert!(
-        engine.indexer().get_tip("orphan").await.unwrap().is_none(),
+        engine
+            .indexer()
+            .get_tip(&pid("orphan"))
+            .await
+            .unwrap()
+            .is_none(),
         "an entry with no backing manifest must not survive a from-scratch rebuild"
     );
     assert!(
@@ -381,21 +416,21 @@ async fn submit_commit_refuses_id_not_derived_from_genesis() {
     let commits = fixture["commits"].as_array().unwrap();
     let genesis = make_genesis(genesis_keys);
     let derived = genesis_principal_id(&genesis).unwrap();
-    let wrong = "unrelated-principal-id";
+    let wrong = pid("unrelated");
     assert_ne!(wrong, derived);
 
     let bundle = build_bundle(&commits[0]);
     let engine = test_engine();
 
     let refused = engine
-        .submit_commit(wrong, Some(genesis.clone()), &bundle)
+        .submit_commit(&wrong, Some(genesis.clone()), &bundle)
         .await;
     assert!(
         matches!(refused, Err(EngineError::InvalidInput(_))),
         "an id not derived from the genesis must be refused as InvalidInput, got {refused:?}"
     );
     assert!(
-        engine.get_tip(wrong).await.unwrap().is_none(),
+        engine.get_tip(&wrong).await.unwrap().is_none(),
         "refused submit must leave no commit chain under the wrong id"
     );
     assert!(
@@ -421,7 +456,7 @@ async fn submit_commit_refuses_id_not_derived_from_genesis() {
 async fn alias_conflict_is_refused_before_anything_is_written() {
     let blobs = MemoryBlobStore::new();
     let engine = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
-    let pg = vec!["SHA-256:contested-pg".to_string()];
+    let pg = vec![contested_pg()];
 
     let a0: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":1}}"];
     engine
@@ -466,11 +501,11 @@ async fn alias_conflict_is_refused_before_anything_is_written() {
     let reopened = StorageEngine::new(blobs, MemoryIndexer::new());
     for who in ["alice", "bob"] {
         let tip = reopened
-            .get_tip(who)
+            .get_tip(&pid(who))
             .await
             .expect("a fresh engine heals")
             .expect("served");
-        assert_eq!(tip.principal_id, who);
+        assert_eq!(tip.principal_id, pid(who));
     }
 }
 
@@ -484,7 +519,7 @@ async fn alias_conflict_is_refused_before_anything_is_written() {
 #[tokio::test]
 async fn rebuild_quarantines_a_contested_pg_alias() {
     use super::{QuarantineReason, QuarantinedManifest};
-    let pg = vec!["SHA-256:contested-pg".to_string()];
+    let pg = vec![contested_pg()];
     let mut reports = Vec::new();
     for order in [["alice", "bob"], ["bob", "alice"]] {
         let engine = test_engine();
@@ -504,18 +539,18 @@ async fn rebuild_quarantines_a_contested_pg_alias() {
         assert_eq!(report.indexed, 1);
         let q: Vec<&QuarantinedManifest> = report.quarantined.iter().collect();
         assert_eq!(q.len(), 1, "{report:?}");
-        assert_eq!(q[0].principal_id.as_deref(), Some("bob"));
+        assert_eq!(q[0].principal_id, Some(pid("bob")));
         assert!(matches!(q[0].reason, QuarantineReason::Conflict(_)));
         reports.push(
             engine
                 .indexer()
-                .get_tip("SHA-256:contested-pg")
+                .get_tip(&contested_pg())
                 .await
                 .unwrap()
                 .map(|t| t.principal_id),
         );
     }
-    assert_eq!(reports[0], Some("alice".to_string()));
+    assert_eq!(reports[0], Some(pid("alice")));
     assert_eq!(
         reports[0], reports[1],
         "the alias winner depends on write order"
@@ -570,7 +605,7 @@ async fn rebuild_indexes_a_gapless_prefix_when_a_manifest_is_unsupported() {
         .expect("rebuild survives");
     let chain = engine
         .indexer()
-        .get_commit_chain("alice", None, None)
+        .get_commit_chain(&pid("alice"), None, None)
         .await
         .unwrap();
     let seqs: Vec<u64> = chain.iter().map(|c| c.sequence).collect();
@@ -626,7 +661,7 @@ async fn rebuild_keeps_a_rival_manifest_at_one_position_as_a_branch() {
     assert_eq!(report.quarantined, [], "{report:?}");
     let chain = engine
         .indexer()
-        .get_commit_chain("alice", None, None)
+        .get_commit_chain(&pid("alice"), None, None)
         .await
         .unwrap();
     let ids: Vec<&str> = chain.iter().map(|c| c.commit_id.as_str()).collect();
@@ -640,7 +675,7 @@ async fn rebuild_keeps_a_rival_manifest_at_one_position_as_a_branch() {
     );
     let rivals: Vec<String> = engine
         .branches
-        .retained("alice")
+        .retained(&pid("alice"))
         .into_iter()
         .map(|r| r.tip.tip)
         .collect();
@@ -673,7 +708,7 @@ async fn rebuild_with_rivals(rivals: Vec<IndexableCommit>) -> (super::RebuildRep
     let report = engine.rebuild_index_with_report().await.expect("rebuild");
     let chain = engine
         .indexer()
-        .get_commit_chain("alice", None, None)
+        .get_commit_chain(&pid("alice"), None, None)
         .await
         .unwrap();
     (report, chain.into_iter().map(|c| c.commit_id).collect())

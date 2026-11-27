@@ -12,6 +12,7 @@
 //! it; the others characterise behaviour that must survive retention.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
@@ -141,7 +142,7 @@ async fn genesis_of(keys: &[&Kp], now: i64) -> cyphr::Principal {
 /// their common `pre` (the Principal Root after commit 0).
 struct Fork {
     genesis: Genesis,
-    id: String,
+    id: PrincipalGenesis,
     pre: String,
     /// Commit 0, shared by every branch.
     first: WireBundle,
@@ -647,7 +648,10 @@ mod retained {
     use super::*;
 
     /// Order-independent view of a principal's branches.
-    async fn branches(e: &Engine, id: &str) -> Vec<(String, Option<String>, u64, bool)> {
+    async fn branches(
+        e: &Engine,
+        id: &PrincipalGenesis,
+    ) -> Vec<(String, Option<String>, u64, bool)> {
         let mut v: Vec<_> = e
             .list_branches(id)
             .await

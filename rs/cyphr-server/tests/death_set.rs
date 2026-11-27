@@ -159,7 +159,7 @@ async fn intro_commit(
         .collect()
 }
 
-fn body(pid: &str, blobs: &[Vec<u8>]) -> String {
+fn body(pid: &cyphr::PrincipalGenesis, blobs: &[Vec<u8>]) -> String {
     common::push_blobs(pid, blobs)
 }
 
@@ -182,7 +182,7 @@ async fn genesis_push(
     genesis: &str,
     target: &str,
     typ: &str,
-) -> (String, String, cyphr::Principal) {
+) -> (String, cyphr::PrincipalGenesis, cyphr::Principal) {
     let g = pool.get(genesis).expect("genesis key");
     let t = pool.get(target).expect("target key");
     let wire = |cozies: Vec<serde_json::Value>| -> Vec<Vec<u8>> {
@@ -281,7 +281,7 @@ fn assert_dead_key_refusal(status: StatusCode, said: &str) {
 async fn assert_refused_and_unwritten(
     state: &Arc<AppState>,
     refusal: (StatusCode, String),
-    pid: &str,
+    pid: &cyphr::PrincipalGenesis,
 ) {
     assert_dead_key_refusal(refusal.0, &refusal.1);
     assert!(
@@ -296,7 +296,7 @@ async fn assert_refused_and_unwritten(
 async fn assert_dead_key_cannot_sign(
     state: &Arc<AppState>,
     pool: &Pool,
-    pid: &str,
+    pid: &cyphr::PrincipalGenesis,
     mut principal: cyphr::Principal,
 ) {
     let before = state.engine.get_tip(pid).await.unwrap().expect("tip");

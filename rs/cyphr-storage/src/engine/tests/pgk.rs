@@ -179,10 +179,10 @@ async fn holders_patch_anchor_held_only_by_another_principal_is_refused() {
         .expect("ingest bob");
     let anchor: cyphr::state::TaggedDigest = DIGEST_A.parse().expect("digest");
     engine
-        .get_patch("bob", Some(&anchor), None)
+        .get_patch(&pid("bob"), Some(&anchor), None)
         .await
         .expect("control: the anchor resolves on its own principal");
-    let foreign = engine.get_patch("alice", Some(&anchor), None).await;
+    let foreign = engine.get_patch(&pid("alice"), Some(&anchor), None).await;
     assert!(
         foreign.is_err(),
         "bob's anchor bounded alice's chain: {:?}",
@@ -257,7 +257,7 @@ impl BlobStore for GatedBlobs {
 
 fn meta_claiming_pg(id: &str) -> IndexableCommit {
     let mut m = make_meta(id, 0, 1000);
-    m.pg = vec!["SHA-256:contested-pg".to_string()];
+    m.pg = vec![contested_pg()];
     m
 }
 
@@ -391,7 +391,7 @@ fn wire_blobs(p: &cyphr::Principal, i: usize) -> WireBundle {
 /// 5.1: `g` creates itself, then the principal), its wire blobs and its PR
 /// after that commit. Its PG, and so its key, is the bare-tmb id whatever
 /// `now` is; distinct `now` values give distinct commits at position 0.
-async fn genesis_commit(g: &Kp, now: i64) -> (cyphr::Principal, WireBundle, String) {
+async fn genesis_commit(g: &Kp, now: i64) -> (cyphr::Principal, WireBundle, PrincipalGenesis) {
     let mut p = cyphr::Principal::implicit(key_of(g))
         .await
         .expect("genesis");
@@ -399,7 +399,7 @@ async fn genesis_commit(g: &Kp, now: i64) -> (cyphr::Principal, WireBundle, Stri
         .await
         .expect("genesis commit");
     let blobs = wire_blobs(&p, 0);
-    let pr = p.pr_tagged().expect("pr");
+    let pr = PrincipalGenesis::from_initial(p.pr()).expect("pr as an id");
     (p, blobs, pr)
 }
 
@@ -412,7 +412,11 @@ async fn genesis_commit(g: &Kp, now: i64) -> (cyphr::Principal, WireBundle, Stri
 /// PG includes the nonce), followed by `later` commits each inserting one
 /// more nonce. Returns it with its key (the PR after the genesis commit)
 /// and its PG.
-async fn nonce_principal(g: &Kp, nonce: u8, later: u8) -> (cyphr::Principal, String, String) {
+async fn nonce_principal(
+    g: &Kp,
+    nonce: u8,
+    later: u8,
+) -> (cyphr::Principal, PrincipalGenesis, PrincipalGenesis) {
     let nonce_pay = |n: u8, now: i64| {
         serde_json::json!({
             "alg": g.alg,
@@ -441,7 +445,7 @@ async fn nonce_principal(g: &Kp, nonce: u8, later: u8) -> (cyphr::Principal, Str
         .finalize_with_software(&soft(g), NOW, "cyphr.me")
         .await
         .expect("finalize genesis");
-    let post_genesis = p.pr_tagged().expect("pr");
+    let post_genesis = PrincipalGenesis::from_initial(p.pr()).expect("pr as an id");
     for n in 1..=later {
         let now = NOW + i64::from(n);
         let (pay, sig, czd) = signed(g, nonce_pay(nonce.wrapping_add(n), now));
@@ -505,8 +509,8 @@ async fn rekey_nonce_siblings_stay_distinct_through_a_reindex() {
 /// Canonical id and commit count of each of `pgs`, as the engine serves them.
 async fn resolve_all(
     engine: &StorageEngine<MemoryBlobStore, MemoryIndexer>,
-    pgs: &[String],
-) -> Vec<(String, Option<u64>)> {
+    pgs: &[PrincipalGenesis],
+) -> Vec<(PrincipalGenesis, Option<u64>)> {
     let mut out = Vec::new();
     for pg in pgs {
         let id = engine.canonical_principal_id(pg).await.expect("resolve");
@@ -529,57 +533,44 @@ async fn resolve_all(
 /// genesis is the one its genesis commit discloses.
 async fn submit<B: BlobStore>(
     engine: &StorageEngine<B, MemoryIndexer, cyphr::eml::MemoryStorage>,
-    claim: &str,
+    claim: &PrincipalGenesis,
     blobs: &WireBundle,
 ) -> Result<IngestResult, EngineError> {
     engine.submit_commit(claim, None, blobs).await
 }
 
 /// Claim: a principal with no nonce is stored under its genesis PR (its PG:
-/// the tmb, for an implicit genesis), whatever spelling the push used
-/// (labelled or bare), so it gets the same key on every server, reports
-/// that key as its id, and a reindex from the blobs reproduces it. Turns
-/// red when the key follows the claim or is the PR after commit 0 (a rev-2
-/// keying), or when the report names anything but the key.
+/// the tmb, for an implicit genesis), so it gets the same key on every
+/// server, reports that key as its id, and a reindex from the blobs
+/// reproduces it. Turns red when the key follows the claim or is the PR
+/// after commit 0 (a rev-2 keying), or when the report names anything but
+/// the key.
 #[tokio::test]
-async fn rekey_no_nonce_principal_is_keyed_by_its_genesis_pr_under_any_spelling() {
+async fn rekey_no_nonce_principal_is_keyed_by_its_genesis_pr() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
-    let bare = bare_digest(&tmb).to_string();
     let (_, blobs, pr) = genesis_commit(&g, NOW).await;
-    assert_ne!(pr, tmb, "premise: commit 0 moves the PR off the bare tmb");
-    let (by_tmb, by_bare) = (test_engine(), test_engine());
-    let reported = [
-        submit(&by_tmb, &tmb, &blobs).await.expect("under tmb"),
-        submit(&by_bare, &bare, &blobs)
-            .await
-            .expect("under bare tmb"),
-    ]
-    .map(|r| r.principal_id);
-    assert_eq!(reported, [tmb.clone(), tmb.clone()], "report is the key");
-    for e in [&by_tmb, &by_bare] {
-        assert_eq!(resolve_one(e, &tmb).await, tmb);
-        assert_eq!(resolve_one(e, &bare).await, tmb);
-        assert_eq!(
-            e.get_tip(&bare)
-                .await
-                .expect("tip")
-                .expect("stored")
-                .principal_id,
-            tmb
-        );
-        assert!(
-            e.get_tip(&pr).await.expect("tip").is_none(),
-            "the PR after commit 0 is no key"
-        );
-        e.rebuild_index_from_scratch().await.expect("reindex");
-        assert_eq!(resolve_one(e, &tmb).await, tmb);
-        assert_eq!(resolve_one(e, &bare).await, tmb);
-    }
+    assert_ne!(pr, tmb, "premise: commit 0 moves the PR off the tmb");
+    let e = test_engine();
+    let reported = submit(&e, &tmb, &blobs)
+        .await
+        .expect("under tmb")
+        .principal_id;
+    assert_eq!(reported, tmb, "report is the key");
+    assert_eq!(resolve_one(&e, &tmb).await, tmb);
+    assert!(
+        e.get_tip(&pr).await.expect("tip").is_none(),
+        "the PR after commit 0 is no key"
+    );
+    e.rebuild_index_from_scratch().await.expect("reindex");
+    assert_eq!(resolve_one(&e, &tmb).await, tmb);
 }
 
-async fn resolve_one(engine: &StorageEngine<MemoryBlobStore, MemoryIndexer>, id: &str) -> String {
+async fn resolve_one(
+    engine: &StorageEngine<MemoryBlobStore, MemoryIndexer>,
+    id: &PrincipalGenesis,
+) -> PrincipalGenesis {
     engine.canonical_principal_id(id).await.expect("resolve")
 }
 

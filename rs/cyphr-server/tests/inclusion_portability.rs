@@ -43,9 +43,9 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 /// A push body: `principal_id` and `bundle` in the wire form (SPEC 4.6.2).
-fn push_body(principal_id: &str, bundle: &cyphr::replay::WireBundle) -> String {
+fn push_body(principal_id: &cyphr::PrincipalGenesis, bundle: &cyphr::replay::WireBundle) -> String {
     let mut body = serde_json::to_value(bundle).expect("bundle serializes");
-    body["principal_id"] = principal_id.into();
+    body["principal_id"] = principal_id.to_string().into();
     body.to_string()
 }
 
@@ -145,7 +145,7 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
 async fn build_foreign_principal_and_push_body(
     pool: &test_fixtures::Pool,
     now: i64,
-) -> (cyphr::Principal, String, String) {
+) -> (cyphr::Principal, cyphr::PrincipalGenesis, String) {
     let key = |name: &str| {
         pool.get(name)
             .expect("key in pool")
@@ -263,7 +263,7 @@ async fn build_fixture() -> PortabilityFixture {
     // ---- PROVER: materialize the foreign principal and push it ----
     let (foreign_principal, principal_id, push_body) =
         build_foreign_principal_and_push_body(&pool, now).await;
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
 
@@ -323,7 +323,11 @@ async fn build_fixture() -> PortabilityFixture {
     //      signing key is active there ----
     let (_, discovery_envelope) = get_json(app.clone(), "/server").await;
     let discovery = &discovery_envelope["payload"];
-    let pinned_server_pg = discovery["pg"].as_str().expect("attestor pg").to_string();
+    let pinned_server_pg: cyphr::PrincipalGenesis = discovery["pg"]
+        .as_str()
+        .expect("attestor pg")
+        .parse()
+        .expect("a labelled attestor pg");
     let genesis = &discovery["genesis"];
     let genesis_key = cyphr::Key::new(
         genesis["alg"].as_str().expect("genesis alg").to_string(),
@@ -340,9 +344,7 @@ async fn build_fixture() -> PortabilityFixture {
     let client = cyphr::Principal::implicit(genesis_key.clone())
         .await
         .expect("the published genesis key reconstructs the genesis");
-    let derived_server_pg = client
-        .pr_tagged()
-        .expect("pr_tagged for the reconstructed genesis");
+    let derived_server_pg = client.pr_id().expect("pr_id for the reconstructed genesis");
     assert_eq!(
         derived_server_pg, pinned_server_pg,
         "the server's genesis key must derive its own pinned PG"

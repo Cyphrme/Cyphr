@@ -29,9 +29,9 @@ pub fn path_for(store: &Path) -> PathBuf {
 pub struct VerifierState {
     #[serde(default)]
     v: u64,
-    /// By the principal's wire id (bare digest).
+    /// By the principal's id.
     #[serde(default)]
-    pub principals: BTreeMap<String, PrincipalState>,
+    pub principals: BTreeMap<cyphr::PrincipalGenesis, PrincipalState>,
 }
 
 /// How one peer last stood, on the verifier's own clock.

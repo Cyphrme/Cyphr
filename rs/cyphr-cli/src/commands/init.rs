@@ -1,6 +1,6 @@
 //! Identity initialization command.
 
-use cyphr::{Principal, StateDigest};
+use cyphr::{Principal, PrincipalGenesis};
 
 use super::common::{
     block_on, current_timestamp, generate_key, load_key_from_keystore, parse_store,
@@ -44,12 +44,12 @@ pub(crate) fn require_genesis_commit<S: cyphr::eml::Storage>(
 }
 
 /// Run `cyphr upgrade`: the genesis commit of a Level 1 identity.
-pub fn upgrade(cli: &Cli, identity: &str) -> crate::Result<()> {
+pub fn upgrade(cli: &Cli, identity: &PrincipalGenesis) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
     let mut principal = super::common::load_principal_from_engine(&store, &keystore, identity)?;
     if principal.pg().is_some() {
-        return Err(Error::AlreadyCommitted(identity.to_owned()));
+        return Err(Error::AlreadyCommitted(identity.to_string()));
     }
     commit_genesis(&mut principal, &keystore, &[], &cli.authority)?;
     save_principal_to_engine(&store, &keystore, &principal)?;
@@ -57,7 +57,7 @@ pub fn upgrade(cli: &Cli, identity: &str) -> crate::Result<()> {
         .into_iter()
         .rfind(|l| !l.commit_id.is_empty())
         .map(|l| l.commit_id)
-        .ok_or_else(|| Error::EmptyHistory(identity.to_owned()))?;
+        .ok_or_else(|| Error::EmptyHistory(identity.to_string()))?;
     match cli.format {
         OutputFormat::Json => println!(
             "{}",
@@ -131,19 +131,9 @@ pub fn run(
 
     // The identity printed: PG once established; before genesis (L1/L2) the
     // genesis identifier is the PR.
-    let identity_str = {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        if let Some(pg) = principal.pg() {
-            pg.as_multihash()
-                .first_variant()
-                .map(Base64UrlUnpadded::encode_string)?
-        } else {
-            principal
-                .pr()
-                .as_multihash()
-                .first_variant()
-                .map(Base64UrlUnpadded::encode_string)?
-        }
+    let identity = match principal.pg() {
+        Some(pg) => pg.clone(),
+        None => principal.pr_id()?,
     };
 
     // Store the identity
@@ -155,14 +145,14 @@ pub fn run(
         OutputFormat::Json => {
             let keys: Vec<_> = principal.active_keys().map(|k| k.tmb().to_b64()).collect();
             let output = serde_json::json!({
-                "pg": identity_str,
+                "pg": identity,
                 "keys": keys,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         },
         OutputFormat::Table => {
             println!("Created identity");
-            println!("  pg: {identity_str}");
+            println!("  pg: {identity}");
             println!("  keys:");
             for key in principal.active_keys() {
                 let tag_str = key.tag().unwrap_or("-");

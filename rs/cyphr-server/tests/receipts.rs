@@ -26,8 +26,9 @@ use cyphr_server::build_router;
 mod common;
 
 use common::{
-    attestor_server, build_genesis_push_body, envelope_payload, get_json, golden_principal_id,
-    keyed_appstate, load_pool, post_json, write_signing_key,
+    attestor_server, build_genesis_push_body, build_genesis_push_body_with, envelope_payload,
+    genesis_push_id, get_json, golden_principal_id, keyed_appstate, load_pool, post_json,
+    write_signing_key,
 };
 
 /// Assert `body` carries a signed statement stamped `expected_typ`, whose
@@ -88,7 +89,7 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
 
     let pool = load_pool();
     let principal_id_owned = golden_principal_id(&pool).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
@@ -101,12 +102,8 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     // Cross-check the claims against the push response's OWN payload,
     // claim-by-claim -- the payload now carries the accepted commit's
     // facts directly, so no follow-up read is needed to verify them.
-    // The receipt names the principal in its default wire spelling, the
-    // bare digest (SPEC 2.2.3); the pushed id is the engine's labelled PG.
-    assert_eq!(
-        claims["pg"],
-        serde_json::json!(cyphr_storage::engine::bare_digest(principal_id))
-    );
+    // The receipt names the principal by its labelled id.
+    assert_eq!(claims["pg"], serde_json::json!(principal_id.to_string()));
     assert_eq!(claims["sequence"], payload["sequence"]);
     assert_eq!(claims["commit_id"], payload["commit_id"]);
     assert_eq!(claims["roots"]["pr"], payload["roots"]["pr"]);
@@ -124,7 +121,7 @@ async fn attestor_tip_response_carries_signed_tip_report() {
 
     let pool = load_pool();
     let principal_id_owned = golden_principal_id(&pool).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_100;
     let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
@@ -137,12 +134,8 @@ async fn attestor_tip_response_carries_signed_tip_report() {
     let (payload, claims) =
         assert_signed_envelope_claims(&tip_envelope, "cyphr-server/receipt/tip", &identity);
 
-    // The receipt names the principal in its default wire spelling, the
-    // bare digest (SPEC 2.2.3); the pushed id is the engine's labelled PG.
-    assert_eq!(
-        claims["pg"],
-        serde_json::json!(cyphr_storage::engine::bare_digest(principal_id))
-    );
+    // The receipt names the principal by its labelled id.
+    assert_eq!(claims["pg"], serde_json::json!(principal_id.to_string()));
     assert_eq!(
         claims["sequence"],
         serde_json::json!(payload["commit_count"].as_u64().unwrap() - 1)
@@ -219,7 +212,7 @@ async fn commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_str
     let coz = cyphr_server::receipt::commit_receipt(
         &identity,
         1_700_000_000,
-        VECTOR_PR,
+        &vector_pr(),
         0,
         VECTOR_COMMIT_ID,
         &roots,
@@ -267,7 +260,7 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
 
     let pool = load_pool();
     let principal_id_owned = golden_principal_id(&pool).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_300;
     let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
@@ -336,7 +329,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
 
     let pool = load_pool();
     let principal_id_owned = golden_principal_id(&pool).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_400;
     let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
@@ -351,7 +344,11 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     // Step 1: pin the PG and the genesis-key hint from discovery.
     let (_, discovery_envelope) = get_json(app.clone(), "/server").await;
     let discovery = &discovery_envelope["payload"];
-    let pinned_pg = discovery["pg"].as_str().expect("attestor pg").to_string();
+    let pinned_pg: cyphr::PrincipalGenesis = discovery["pg"]
+        .as_str()
+        .expect("attestor pg")
+        .parse()
+        .expect("a labelled attestor pg");
     let genesis = &discovery["genesis"];
     let genesis_key = cyphr::Key::new(
         genesis["alg"].as_str().expect("genesis alg").to_string(),
@@ -370,9 +367,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     let client = cyphr::Principal::implicit(genesis_key.clone())
         .await
         .expect("the published genesis key reconstructs the genesis");
-    let derived_pg = client
-        .pr_tagged()
-        .expect("pr_tagged for the reconstructed genesis");
+    let derived_pg = client.pr_id().expect("pr_id for the reconstructed genesis");
     assert_eq!(
         derived_pg, pinned_pg,
         "the genesis key must derive the pinned PG"
@@ -451,14 +446,13 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
 // Golden vectors: byte-exact receipt payloads (ac-vectors)
 // ========================================================================
 
-/// A fixed principal genesis id, reused from the token/envelope vectors
-/// for a stable, recognizable payload -- the same bytes (0x01..0x20),
-/// BARE: a receipt's top-level `pr` is the attested principal's genesis
-/// identifier, SPEC §2.2.3's DEFAULT (untagged) identifier form, not the
-/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption --
-/// the SAME untagged form `token.rs`/`envelope_vectors.rs`'s
-/// `pr`/`principal_id` claims already use.
-const VECTOR_PR: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+/// A fixed principal genesis id (digest bytes 0x01..0x20), reused from the
+/// token/envelope vectors for a stable, recognizable payload. Signed in
+/// its labelled `SHA-256:<digest>` spelling.
+fn vector_pr() -> cyphr::PrincipalGenesis {
+    cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, (1u8..=32).collect())
+        .expect("32 bytes is SHA-256's digest length")
+}
 
 const VECTOR_COMMIT_ID: &str = "SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao";
 
@@ -514,7 +508,7 @@ async fn commit_receipt_matches_golden_vector() {
     let coz = cyphr_server::receipt::commit_receipt(
         &identity,
         1_700_000_000,
-        VECTOR_PR,
+        &vector_pr(),
         0,
         VECTOR_COMMIT_ID,
         &vector_roots(),
@@ -541,7 +535,7 @@ async fn tip_report_matches_golden_vector() {
     let coz = cyphr_server::receipt::tip_report(
         &identity,
         1_700_000_000,
-        VECTOR_PR,
+        &vector_pr(),
         0,
         VECTOR_COMMIT_ID,
         &vector_roots(),
@@ -560,4 +554,34 @@ async fn tip_report_matches_golden_vector() {
         Some(true),
         "the golden tip report must itself verify against its fixed key"
     );
+}
+
+/// Every id the push edge accepts gets its receipt signed after the commit
+/// lands, whatever hash family the id is in. The attestor's key is Ed25519
+/// (SHA-512); a principal on an ES256 key has a SHA-256 id, not in the
+/// server key's family, and so has one whose keys span both families. The receipt's
+/// `pg` is the labelled id, so no width has to match the signer's.
+#[tokio::test]
+async fn receipt_is_signed_for_an_id_of_any_hash_family() {
+    let pool = load_pool();
+    for (genesis, second, family) in [
+        ("golden", "key_a", "SHA-256"),
+        // Keys of two families: the PG holds both variants, the id is the
+        // first, and the server key's own family (SHA-512) is the second.
+        ("eve_ed25519", "key_a", "SHA-256"),
+    ] {
+        let (state, identity, _dir) = attestor_server().await;
+        let app = build_router(state);
+        let id = genesis_push_id(&pool, genesis, second).await;
+        assert!(
+            id.to_string().starts_with(&format!("{family}:")),
+            "premise: {genesis}'s id is in {family}: {id}"
+        );
+        let body = build_genesis_push_body_with(&pool, genesis, second, &id, 1_700_000_000).await;
+        let (status, envelope) = post_json(app, "/push", body).await;
+        assert_eq!(status, StatusCode::CREATED, "{genesis}: {envelope:?}");
+        let (_, claims) =
+            assert_signed_envelope_claims(&envelope, "cyphr-server/receipt/commit", &identity);
+        assert_eq!(claims["pg"], serde_json::json!(id.to_string()), "{genesis}");
+    }
 }

@@ -12,8 +12,8 @@
 //! Run: `cd rs && cargo test -p cyphr-server --test transport`
 //!
 //! APIs assumed (the implement brief provides them):
-//! - `cyphr_client::transport::{NoiseConnector, TransportError}`; `NoiseConnector::connect(addr,
-//!   &mut PeerChain, &impl Signer, &str)` is async; `peer()` gives `AuthenticatedPeer { pg, tmb,
+//! - `cyphr_net::transport::{NoiseConnector, TransportError}`; `NoiseConnector::connect(addr, &mut
+//!   PeerChain, &impl Signer, &str)` is async; `peer()` gives `AuthenticatedPeer { pg, tmb,
 //!   verified_at, anchor }`.
 //! - `cyphr_server::transport::serve_noise(listener, Arc<AppState>)`, and
 //!   `serve_noise_with(listener, state, router)`, which is `serve_noise` with the dispatch router
@@ -28,10 +28,10 @@ use axum::Router;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::signer::{Signer, SoftwareSigner};
-use cyphr_client::transport::{
+use cyphr_net::transport::{
     Channel, NoiseConnector, Role, TransportError, assemble_statement, decode_ack, statement_pay,
 };
-use cyphr_client::{
+use cyphr_net::{
     BindingKind, BindingPolicy, ChannelBinding, ConnectError, Connector, PatchFailure,
     PatchRequest, PeerChain, Request, fetch_patch,
 };
@@ -77,7 +77,7 @@ impl Connector for RouterConnector {
 }
 
 /// The pin material `/server` publishes: the server PG and genesis key.
-async fn discover(app: &Router) -> (String, cyphr::Key) {
+async fn discover(app: &Router) -> (cyphr::PrincipalGenesis, cyphr::Key) {
     let (_, discovery) = get_json(app.clone(), "/server").await;
     let d = &discovery["payload"];
     let g = &d["genesis"];
@@ -90,11 +90,18 @@ async fn discover(app: &Router) -> (String, cyphr::Key) {
     )
     .expect("key binds its tmb")
     .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
-    (d["pg"].as_str().expect("pg").to_string(), key)
+    (
+        d["pg"]
+            .as_str()
+            .expect("pg")
+            .parse()
+            .expect("a labelled /server pg"),
+        key,
+    )
 }
 
 /// Pin the server and follow its chain over the in-process router.
-async fn pinned_and_followed(app: &Router) -> (PeerChain, String, cyphr::Key) {
+async fn pinned_and_followed(app: &Router) -> (PeerChain, cyphr::PrincipalGenesis, cyphr::Key) {
     let (pg, genesis) = discover(app).await;
     let mut held = PeerChain::pin(&pg, genesis.clone()).await;
     held.follow(&RouterConnector(app.clone()))
@@ -104,7 +111,7 @@ async fn pinned_and_followed(app: &Router) -> (PeerChain, String, cyphr::Key) {
 }
 
 /// Push the `golden` principal (the client's own principal) to the server.
-async fn push_client_principal(app: &Router) -> String {
+async fn push_client_principal(app: &Router) -> cyphr::PrincipalGenesis {
     let pool = load_pool();
     let pr = golden_principal_id(&pool).await;
     let body = build_genesis_push_body(&pool, &pr, 1_700_000_000).await;
@@ -623,7 +630,11 @@ async fn serve_starts_the_transport_only_for_a_keyed_server() {
     )
     .expect("key binds its tmb")
     .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
-    let mut held = PeerChain::pin(d["pg"].as_str().expect("pg"), genesis).await;
+    let mut held = PeerChain::pin(
+        &d["pg"].as_str().expect("pg").parse().expect("labelled pg"),
+        genesis,
+    )
+    .await;
     let pool = load_pool();
     let pr = golden_principal_id(&pool).await;
     let pushed = http
@@ -667,7 +678,7 @@ struct Claim<'a> {
     signer: &'a coz::KeyPair,
     /// The thumbprint and principal the pay claims.
     tmb: &'a coz::Thumbprint,
-    pg: &'a str,
+    pg: &'a cyphr::PrincipalGenesis,
     /// The `key` sidecar: algorithm, public key, claimed thumbprint.
     sidecar: Option<(&'a str, &'a [u8], &'a coz::Thumbprint)>,
 }
@@ -685,6 +696,17 @@ async fn initiate_with(addr: SocketAddr, claim: Claim<'_>) -> Result<(), Transpo
         .send_one(&assemble_statement(&pay, &sig, claim.sidecar)?)
         .await?;
     decode_ack(&channel.recv_one().await?)
+}
+
+/// The labelled id of the Level 1 principal whose key thumbprints to `tmb`
+/// (SPEC 3.1: its PR is that thumbprint), by the thumbprint's width.
+fn level_one_id(tmb: &coz::Thumbprint) -> cyphr::PrincipalGenesis {
+    let alg = match tmb.as_bytes().len() {
+        32 => cyphr::HashAlg::Sha256,
+        48 => cyphr::HashAlg::Sha384,
+        _ => cyphr::HashAlg::Sha512,
+    };
+    cyphr::PrincipalGenesis::from_digest(alg, tmb.as_bytes().to_vec()).expect("a digest width")
 }
 
 fn fresh_key() -> (coz::KeyPair, coz::Thumbprint) {
@@ -719,7 +741,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     // Positive: through the shipped connector, which always sends the sidecar.
     let (kp, tmb) = fresh_key();
     let signer = SoftwareSigner::new(kp.alg.name(), &kp.prv_bytes, &kp.pub_bytes, &tmb);
-    let conn = NoiseConnector::connect(addr, &mut held, &signer, &tmb.to_b64())
+    let conn = NoiseConnector::connect(addr, &mut held, &signer, &level_one_id(&tmb))
         .await
         .expect("a Level 1 principal authenticates by its sidecar");
     conn.exchange(&Request::get("/server"))
@@ -731,7 +753,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let honest = Claim {
         signer: &kp,
         tmb: &tmb,
-        pg: &tmb.to_b64(),
+        pg: &level_one_id(&tmb),
         sidecar: Some((kp.alg.name(), &kp.pub_bytes, &tmb)),
     };
     initiate_with(addr, honest)
@@ -744,7 +766,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let lying = Claim {
         signer: &kp,
         tmb: &false_tmb,
-        pg: &false_tmb.to_b64(),
+        pg: &level_one_id(&false_tmb),
         sidecar: Some((kp.alg.name(), &kp.pub_bytes, &false_tmb)),
     };
     refused(
@@ -758,7 +780,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let mislabelled = Claim {
         signer: &kp,
         tmb: &tmb,
-        pg: &tmb.to_b64(),
+        pg: &level_one_id(&tmb),
         sidecar: Some((kp.alg.name(), &kp.pub_bytes, &false_tmb)),
     };
     refused(
@@ -772,7 +794,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let swapped = Claim {
         signer: &kp,
         tmb: &tmb,
-        pg: &tmb.to_b64(),
+        pg: &level_one_id(&tmb),
         sidecar: Some((other.alg.name(), &other.pub_bytes, &other_tmb)),
     };
     refused(
@@ -785,7 +807,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let borrowed = Claim {
         signer: &kp,
         tmb: &tmb,
-        pg: &other_tmb.to_b64(),
+        pg: &level_one_id(&other_tmb),
         sidecar: Some((kp.alg.name(), &kp.pub_bytes, &tmb)),
     };
     refused(
@@ -797,7 +819,7 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
     let bare = Claim {
         signer: &kp,
         tmb: &tmb,
-        pg: &tmb.to_b64(),
+        pg: &level_one_id(&tmb),
         sidecar: None,
     };
     refused(initiate_with(addr, bare).await, "no chain and no sidecar");
@@ -934,7 +956,7 @@ async fn a_never_pushed_level_one_key_can_be_naked_revoked() {
 
     let (kp, tmb) = fresh_key();
     let signer = SoftwareSigner::new(kp.alg.name(), &kp.prv_bytes, &kp.pub_bytes, &tmb);
-    NoiseConnector::connect(addr, &mut held, &signer, &tmb.to_b64())
+    NoiseConnector::connect(addr, &mut held, &signer, &level_one_id(&tmb))
         .await
         .expect("control: the Level 1 key opens a session before the revoke");
 
@@ -948,7 +970,7 @@ async fn a_never_pushed_level_one_key_can_be_naked_revoked() {
         StatusCode::BAD_REQUEST,
         "a disclosed key that does not thumbprint to tmb: {resp:?}"
     );
-    NoiseConnector::connect(addr, &mut held, &signer, &tmb.to_b64())
+    NoiseConnector::connect(addr, &mut held, &signer, &level_one_id(&tmb))
         .await
         .expect("the refused forgery revoked nothing");
 
@@ -957,7 +979,7 @@ async fn a_never_pushed_level_one_key_can_be_naked_revoked() {
         status.is_success(),
         "a never-pushed key's own revoke is accepted: {status} {resp:?}"
     );
-    let err = NoiseConnector::connect(addr, &mut held, &signer, &tmb.to_b64())
+    let err = NoiseConnector::connect(addr, &mut held, &signer, &level_one_id(&tmb))
         .await
         .err()
         .expect("the naked-revoked Level 1 key is locked out");
@@ -997,7 +1019,7 @@ async fn level_one_session(addr: SocketAddr, held: &mut PeerChain) -> NoiseConne
     let kp = coz::Alg::Ed25519.generate_keypair();
     let tmb = kp.alg.compute_thumbprint(&kp.pub_bytes).expect("tmb");
     let signer = SoftwareSigner::new(kp.alg.name(), &kp.prv_bytes, &kp.pub_bytes, &tmb);
-    NoiseConnector::connect(addr, held, &signer, &tmb.to_b64())
+    NoiseConnector::connect(addr, held, &signer, &level_one_id(&tmb))
         .await
         .expect("a Level 1 session")
 }
@@ -1148,8 +1170,15 @@ where
     let h = channel.handshake_hash().to_vec();
     channel.recv_one().await.expect("the responder statement");
     let alg = kp.alg.name();
-    let pay =
-        statement_pay(alg, &tmb, &tmb.to_b64(), Role::Initiator, &h, 1_700_000_000).expect("pay");
+    let pay = statement_pay(
+        alg,
+        &tmb,
+        &level_one_id(&tmb),
+        Role::Initiator,
+        &h,
+        1_700_000_000,
+    )
+    .expect("pay");
     let (sig, _) = coz::sign_json(&pay, alg, &kp.prv_bytes, &kp.pub_bytes).expect("sign");
     let sidecar = Some((alg, kp.pub_bytes.as_slice(), &tmb));
     channel
@@ -1207,11 +1236,11 @@ async fn a_peer_that_never_reads_is_cut_off() {
     let stream = tokio::net::TcpStream::from_std(socket.into()).expect("tokio stream");
     let mut channel = raw_session_over(stream).await;
 
-    let request = cyphr_client::transport::encode_request(&Request::get("/")).expect("request");
+    let request = cyphr_net::transport::encode_request(&Request::get("/")).expect("request");
     channel.send_message(&request).await.expect("ask");
     tokio::time::sleep(std::time::Duration::from_secs(14)).await;
     let late = channel
-        .recv_message(cyphr_client::transport::MAX_MESSAGE)
+        .recv_message(cyphr_net::transport::MAX_MESSAGE)
         .await;
     assert!(
         late.is_err(),
@@ -1317,7 +1346,11 @@ async fn the_listener_survives_running_out_of_descriptors() {
     )
     .expect("key binds its tmb")
     .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
-    let mut held = PeerChain::pin(d["pg"].as_str().expect("pg"), genesis).await;
+    let mut held = PeerChain::pin(
+        &d["pg"].as_str().expect("pg").parse().expect("labelled pg"),
+        genesis,
+    )
+    .await;
     level_one_session(transport, &mut held).await;
     drop(guard);
 }
@@ -1369,12 +1402,8 @@ async fn routes_see_the_authenticated_peer_only_over_the_transport() {
     .expect("json");
     let binding = conn.channel_binding().expect("a binding");
     assert_eq!(over_noise["present"], true, "{over_noise}");
-    // The peer is named in its default wire spelling, the bare digest
-    // (SPEC 2.2.3); the pushed id is the engine's labelled PG.
-    assert_eq!(
-        over_noise["pg"],
-        cyphr_storage::engine::bare_digest(&own_principal)
-    );
+    // The peer is named by its labelled principal id, as pushed.
+    assert_eq!(over_noise["pg"], own_principal.to_string());
     assert_eq!(
         over_noise["tmb"],
         golden_signer().tmb().to_b64(),

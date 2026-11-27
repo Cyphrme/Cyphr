@@ -12,16 +12,15 @@
 //!   field (`pr`, `commit_id`, `roots.{pr,sr,ar,cr}`) -- non-digest encodings (array-wrap, number,
 //!   null) are rejected loudly, never unwrapped.
 //! - `receipt_rejects_malformed_digest`: receipt construction cannot sign a malformed digest into
-//!   `pr`/`commit_id`/`roots`.
+//!   `commit_id`/`roots`.
 //! - `genesis_commit_root_is_accepted`: a genesis-stage report (no commit root yet) signs and
 //!   parses cleanly -- the empty `cr` sentinel is absence, not a malformed digest.
 //!
-//! **`pr` is a genesis identifier, not a `TaggedDigest`:** the top-level
-//! `pr` is the attested principal's GENESIS IDENTIFIER, SPEC §2.2.3's
-//! DEFAULT (untagged) identifier form -- NOT a `TaggedDigest`, which
-//! remains `commit_id`/`roots`'s labeled exemption. This file's fixtures
-//! use [`principal_digest`] (bare) for `pr` and [`digest_string`] (tagged)
-//! for `commit_id`/`roots`; the two are never interchangeable.
+//! **`pg` is a typed, labelled genesis id:** the top-level `pg` is the attested principal's
+//! `cyphr::PrincipalGenesis`, signed in its labelled `ALG:digest` spelling. This file's fixtures
+//! build it with [`principal_digest`] and render `commit_id`/`roots` with [`digest_string`].
+//! The signer takes the typed id, so a malformed `pg` cannot reach it (a compile-time fact);
+//! the parse still refuses every malformed `pg` encoding.
 //!
 //! Design choices this file's fixtures encode, worth stating since
 //! nothing else pins them:
@@ -44,8 +43,8 @@
 //!   empty digest -- `routes.rs`'s handlers perform the empty-string-to-`None` conversion at
 //!   construction.
 
-use cyphr::HashAlg;
 use cyphr::state::TaggedDigest;
+use cyphr::{HashAlg, PrincipalGenesis};
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::receipt::{self, EquivocationVerdict, Roots, TipReport};
 use proptest::prelude::*;
@@ -106,14 +105,12 @@ fn digest_string(bytes: &[u8]) -> String {
         .to_string()
 }
 
-/// Render digest bytes as a receipt's top-level `pr`: a BARE genesis
-/// identifier, SPEC §2.2.3's DEFAULT (untagged) identifier form -- via the
-/// SAME strict `Base64UrlUnpadded` encoder `TaggedDigest::to_string`
-/// uses internally, just without the `ALG:` prefix. Distinct from
-/// [`digest_string`], which tags `commit_id`/`roots`.
-fn principal_digest(bytes: &[u8]) -> String {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    Base64UrlUnpadded::encode_string(bytes)
+/// Build a receipt's top-level `pg`: the typed, labelled genesis id of a
+/// SHA-256 digest. Distinct from [`digest_string`], which renders the tagged
+/// string form of `commit_id`/`roots`.
+fn principal_digest(bytes: &[u8]) -> PrincipalGenesis {
+    PrincipalGenesis::from_digest(HashAlg::Sha256, bytes.to_vec())
+        .expect("32 bytes is SHA-256's digest length")
 }
 
 /// Flip every bit of the first byte -- a digest DERIVED to be genuinely,
@@ -249,7 +246,7 @@ fn null_sr_and_ar_are_absent_roots_but_a_missing_field_is_malformed() {
     let report = block_on(receipt::tip_report(
         &identity,
         1_700_000_000,
-        principal_digest(&[9u8; 32]),
+        &principal_digest(&[9u8; 32]),
         0u64,
         root,
         &roots,
@@ -283,7 +280,7 @@ proptest! {
         let root = digest_string(&[7u8; 32]);
         let roots = Roots { pr: root.clone(), sr: None, ar: None, cr: None };
         let report = block_on(receipt::tip_report(
-            &identity, now, principal_digest(&[9u8; 32]), 0u64, root, &roots, 1, now,
+            &identity, now, &principal_digest(&[9u8; 32]), 0u64, root, &roots, 1, now,
         ))
         .expect("signable");
         prop_assert_eq!(TipReport::parse(&report).expect("parses").now, Some(now));
@@ -291,7 +288,7 @@ proptest! {
         let text = resign_with_field(&identity, report, "now", serde_json::json!("1700000000"));
         prop_assert!(matches!(
             TipReport::parse(&text),
-            Err(cyphr_client::TipReportParseError::Now(_))
+            Err(cyphr_net::TipReportParseError::Now(_))
         ));
     }
 }
@@ -312,7 +309,7 @@ fn a_statement_of_another_typ_is_not_a_tip_report() {
     let report = block_on(receipt::tip_report(
         &identity,
         1_700_000_000,
-        principal_digest(&[9u8; 32]),
+        &principal_digest(&[9u8; 32]),
         0u64,
         root,
         &roots,
@@ -325,7 +322,7 @@ fn a_statement_of_another_typ_is_not_a_tip_report() {
     other.pay["typ"] = serde_json::json!(receipt::HELD_REPORT_TYP);
     assert!(matches!(
         TipReport::parse(&other),
-        Err(cyphr_client::TipReportParseError::WrongTyp)
+        Err(cyphr_net::TipReportParseError::WrongTyp)
     ));
 }
 
@@ -374,7 +371,7 @@ proptest! {
         let roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
         let mut report = block_on(receipt::tip_report(
-            &identity, 1_700_000_000, pr.clone(), seq, commit_id, &roots, seq + 1, 1_700_000_000,
+            &identity, 1_700_000_000, &pr, seq, commit_id, &roots, seq + 1, 1_700_000_000,
         ))
         .expect("compose report");
 
@@ -390,7 +387,7 @@ proptest! {
             if as_string { "string" } else { "number" }
         );
         prop_assert_eq!(
-            parsed.pg.to_string(), pr,
+            parsed.pg, pr,
             "a pr genesis-identifier string MUST parse to the equal identifier"
         );
     }
@@ -436,11 +433,11 @@ proptest! {
         let roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
         let a = block_on(receipt::tip_report(
-            &identity, 1_700_000_000, pr.clone(), 5u64, commit_a, &roots, 6, 1_700_000_000,
+            &identity, 1_700_000_000, &pr, 5u64, commit_a, &roots, 6, 1_700_000_000,
         ))
         .expect("compose report a");
         let b = block_on(receipt::tip_report(
-            &identity, 1_700_000_000, pr.clone(), 5u64, commit_b, &roots, 6, 1_700_000_000,
+            &identity, 1_700_000_000, &pr, 5u64, commit_b, &roots, 6, 1_700_000_000,
         ))
         .expect("compose report b");
 
@@ -512,11 +509,11 @@ proptest! {
         let roots_b = roots_from(&pr_root, &pr_root, &pr_root, &cr_b);
 
         let mut a = block_on(receipt::tip_report(
-            &identity, 1_700_000_000, pr.clone(), seq, commit_a, &roots_a, seq + 1, 1_700_000_000,
+            &identity, 1_700_000_000, &pr, seq, commit_a, &roots_a, seq + 1, 1_700_000_000,
         ))
         .expect("compose report a");
         let mut b = block_on(receipt::tip_report(
-            &identity, 1_700_000_000, pr.clone(), seq, commit_b, &roots_b, seq + 1, 1_700_000_000,
+            &identity, 1_700_000_000, &pr, seq, commit_b, &roots_b, seq + 1, 1_700_000_000,
         ))
         .expect("compose report b");
 
@@ -595,21 +592,21 @@ proptest! {
         let roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
         let a = block_on(receipt::tip_report(
-            &identity, 1_700_000_000, pr.clone(), 5u64, commit_a, &roots, 6, 1_700_000_000,
+            &identity, 1_700_000_000, &pr, 5u64, commit_a, &roots, 6, 1_700_000_000,
         ))
         .expect("compose report a");
         let b = block_on(receipt::tip_report(
-            &identity, 1_700_000_000, pr.clone(), 5u64, commit_b.clone(), &roots, 6, 1_700_000_000,
+            &identity, 1_700_000_000, &pr, 5u64, commit_b.clone(), &roots, 6, 1_700_000_000,
         ))
         .expect("compose report b");
 
         // The value legitimately sitting at `malformed_field` on `b`
         // before corruption -- what an array-unwrap bug would recover.
         let own_value = match malformed_field {
-            "pg" => pr.clone(),
+            "pg" => pr.to_string(),
             "commit_id" => commit_b.clone(),
             "roots.pr" | "roots.sr" | "roots.ar" | "roots.cr" => pr_root.clone(),
-            _ => unreachable!("prop_oneof exhausts exactly these six field names"),
+            _ => unreachable!("prop_oneof exhausts exactly these field names"),
         };
 
         let malformed_value = match &shape {
@@ -651,7 +648,7 @@ proptest! {
         pr_bytes in arb_digest_bytes(),
         commit_bytes in arb_digest_bytes(),
         malformed_field in prop_oneof![
-            Just("pg"), Just("commit_id"),
+            Just("commit_id"),
             Just("roots.pr"), Just("roots.sr"), Just("roots.ar"), Just("roots.cr"),
         ],
         malformed_digest in arb_malformed_digest_string(),
@@ -663,7 +660,6 @@ proptest! {
         let mut roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
         let (arg_pr, arg_commit) = match malformed_field {
-            "pg" => (malformed_digest.clone(), commit_id.clone()),
             "commit_id" => (pr.clone(), malformed_digest.clone()),
             "roots.pr" => {
                 roots.pr = malformed_digest.clone();
@@ -681,11 +677,11 @@ proptest! {
                 roots.cr = Some(malformed_digest.clone());
                 (pr.clone(), commit_id.clone())
             },
-            _ => unreachable!("prop_oneof exhausts exactly these six field names"),
+            _ => unreachable!("prop_oneof exhausts exactly these field names"),
         };
 
         let result = block_on(receipt::tip_report(
-            &identity, 1_700_000_000, arg_pr, 5u64, arg_commit, &roots, 6, 1_700_000_000,
+            &identity, 1_700_000_000, &arg_pr, 5u64, arg_commit, &roots, 6, 1_700_000_000,
         ));
         prop_assert!(
             result.is_err(),
@@ -738,7 +734,7 @@ async fn genesis_commit_root_is_accepted() {
     let coz = receipt::tip_report(
         &identity,
         1_700_000_000,
-        pr.clone(),
+        &pr,
         0u64,
         commit_id,
         &roots,

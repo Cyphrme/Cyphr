@@ -90,16 +90,22 @@ fn known_keys_still_load() {
         .expect("the shipped example config loads");
     assert!(matches!(cfg.admission, AdmissionConfig::Open));
 
+    // A 64-byte (SHA-512 width) digest: the labelled form is width-checked.
+    let pinned = format!("SHA-512:{}", "A".repeat(86));
     let cfg = load_toml(
-        "mode = \"witness\"\n[gossip]\npeers = [\"https://a\", { url = \"https://b\", pg = \
-         \"SHA-512:AAAA\" }]\n[admission]\npolicy = \"invite\"\ntokens_path = \
-         \"/t\"\n[limits]\npush = { per_second = 3, burst = 4 }\n",
+        &"mode = \"witness\"\n[gossip]\npeers = [\"https://a\", { url = \"https://b\", pg = \
+          \"{pinned}\" }]\n[admission]\npolicy = \"invite\"\ntokens_path = \"/t\"\n[limits]\npush \
+          = { per_second = 3, burst = 4 }\n"
+            .replace("{pinned}", &pinned),
     )
     .expect("every valid key loads");
     assert!(matches!(cfg.admission, AdmissionConfig::Invite { .. }));
     assert_eq!(cfg.mode, ServerMode::Witness);
     assert_eq!(cfg.limits.push.burst, 4);
-    assert_eq!(cfg.gossip.peers[1].pg(), Some("SHA-512:AAAA"));
+    assert_eq!(
+        cfg.gossip.peers[1].pg(),
+        Some(&pinned.parse().expect("labelled pg"))
+    );
 }
 
 // ========================================================================
@@ -146,7 +152,7 @@ async fn witness_against(url: &str) -> (axum::Router, tempfile::TempDir) {
 }
 
 /// A well-formed (43-char base64url) principal id nobody has created.
-const WELL_FORMED_UNKNOWN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const WELL_FORMED_UNKNOWN: &str = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 /// Claim: unauthenticated input cannot trigger outbound work. Red if a
 /// witness asks its authority about a `pr` that is not even a digest. Lying

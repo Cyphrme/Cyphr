@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::eml::MemoryStorage;
 use cyphr::state::{HashAlg, TaggedDigest};
-use cyphr::{Key, Principal};
-use cyphr_client::PatchEntry;
-use cyphr_client::evidence::{replay_chain, verify_fork_items, verify_principal_fork};
+use cyphr::{Key, Principal, PrincipalGenesis};
+use cyphr_net::PatchEntry;
+use cyphr_net::evidence::{replay_chain, verify_fork_items, verify_principal_fork};
 use serde_json::Value;
 
 /// Keys known to the verifier, by thumbprint: `tmb -> (alg, public key)`
@@ -62,8 +62,8 @@ pub fn verify_statement(bytes: &[u8], alg: &str, pub_b64: &str, tmb: &str) -> Re
 /// What a served evidence item proves, once verified.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Proven {
-    PrincipalFork { pg: String },
-    PeerEquivocation { pg: String, peer: String },
+    PrincipalFork { pg: PrincipalGenesis },
+    PeerEquivocation { pg: PrincipalGenesis, peer: String },
 }
 
 /// What the verifier holds of a principal's chain, read from a peer's
@@ -123,10 +123,10 @@ impl ChainView {
     /// replay adds the rest. It is only accepted if the replay derives
     /// `pg`. A patch that does not replay, or whose stated roots or
     /// commit ids disagree with the replay, is an error.
-    pub async fn from_patch(body: &[u8], pg: &str) -> Result<Self, String> {
+    pub async fn from_patch(body: &[u8], pg: &PrincipalGenesis) -> Result<Self, String> {
         let body = canonical_line(body)?;
         let body = body.as_slice();
-        let patch = cyphr_client::verify_patch_body(body, pg, None)
+        let patch = cyphr_net::verify_patch_body(body, pg, None)
             .map_err(|e| format!("patch is not a patch: {e}"))?;
         let first = patch
             .entries
@@ -169,10 +169,14 @@ impl ChainView {
     /// from a genesis key the caller already holds (a peer's own chain,
     /// whose genesis its `GET /server` states), with the same checks as
     /// [`ChainView::from_patch`].
-    pub async fn from_patch_with_genesis(body: &[u8], pg: &str, key: Key) -> Result<Self, String> {
+    pub async fn from_patch_with_genesis(
+        body: &[u8],
+        pg: &PrincipalGenesis,
+        key: Key,
+    ) -> Result<Self, String> {
         let body = canonical_line(body)?;
         let body = body.as_slice();
-        let patch = cyphr_client::verify_patch_body(body, pg, None)
+        let patch = cyphr_net::verify_patch_body(body, pg, None)
             .map_err(|e| format!("patch is not a patch: {e}"))?;
         let genesis = Principal::implicit(key)
             .await
@@ -182,11 +186,11 @@ impl ChainView {
 
     async fn replay(
         body: &[u8],
-        pg: &str,
+        pg: &PrincipalGenesis,
         genesis: Principal,
-        patch: cyphr_client::VerifiedPatch,
+        patch: cyphr_net::VerifiedPatch,
     ) -> Result<Self, String> {
-        let cyphr_client::VerifiedPatch {
+        let cyphr_net::VerifiedPatch {
             entries, actions, ..
         } = patch;
         let stated: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
@@ -219,14 +223,12 @@ impl ChainView {
         // A genesis commit names the principal by its PG; a chain with none
         // by its genesis key's PR (SPEC 5.1).
         let derived = match chain.pg() {
-            Some(g) => cyphr::StateDigest::as_multihash(g)
-                .tagged_first()
-                .map(|t| t.to_string())
-                .map_err(|e| e.to_string()),
-            None => genesis.pr_tagged().map_err(|e| e.to_string()),
+            Some(g) => Ok(g.clone()),
+            None => genesis.pr_id().map_err(|e| e.to_string()),
         };
-        let derives =
-            derived.is_ok_and(|g| g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg));
+        let derives = derived.is_ok_and(|g| {
+            cyphr::StateDigest::as_multihash(&g).matches(cyphr::StateDigest::as_multihash(pg))
+        });
         if !derives {
             return Err("the first commit's genesis does not derive the principal".into());
         }
@@ -383,7 +385,7 @@ pub struct VerifiedSet {
 /// the whole set: a peer that serves a forgery vouches for nothing.
 pub async fn verify_evidence_set(
     items: &[Value],
-    requested: &str,
+    requested: &PrincipalGenesis,
     keys: &Keys,
     peers: &BTreeMap<String, String>,
     chain: &ChainView,
@@ -503,13 +505,17 @@ pub async fn verified_resyncs(items: &[Value], chain: &ChainView) -> Vec<(u64, S
 /// one is a prefix, and so no evidence, when both sit on `chain`.
 pub async fn verify_evidence(
     item: &Value,
-    requested: &str,
+    requested: &PrincipalGenesis,
     keys: &Keys,
     peers: &BTreeMap<String, String>,
     chain: &ChainView,
 ) -> Result<Proven, String> {
-    let pg = item["pg"].as_str().ok_or("item has no pg")?.to_owned();
-    if pg != requested {
+    let pg: PrincipalGenesis = item["pg"]
+        .as_str()
+        .ok_or("item has no pg")?
+        .parse()
+        .map_err(|e: cyphr::Error| format!("item pg: {e}"))?;
+    if pg != *requested {
         return Err(format!("item names {pg}, not the requested {requested}"));
     }
     let (a, b) = (&item["a"], &item["b"]);

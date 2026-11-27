@@ -17,13 +17,13 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use cyphr::HashAlg;
+use cyphr::PrincipalGenesis;
 use cyphr::fork::Contest;
 use cyphr::signer::{SignerError, SoftwareSigner};
 use cyphr::state::TaggedDigest;
 // The canonical report parse lives in the client crate; `check_equivocation`
 // consumes it, and this re-export keeps `receipt::TipReport` one type, not two.
-pub use cyphr_client::{COMMIT_RECEIPT_TYP, HELD_REPORT_TYP, TIP_REPORT_TYP, TipReport};
+pub use cyphr_net::{COMMIT_RECEIPT_TYP, HELD_REPORT_TYP, TIP_REPORT_TYP, TipReport};
 use serde_json::Value;
 
 use crate::auth::ServerIdentity;
@@ -153,19 +153,19 @@ impl Roots {
 pub async fn commit_receipt(
     signer: &dyn ReceiptSigner,
     now: i64,
-    pg: impl Into<String>,
+    pg: &PrincipalGenesis,
     sequence: u64,
     commit_id: impl Into<String>,
     roots: &Roots,
 ) -> Result<coz::CozJson, ReceiptError> {
-    let (pg, commit_id) = (pg.into(), commit_id.into());
-    validate(&pg, &commit_id, roots)?;
+    let commit_id = commit_id.into();
+    validate(&commit_id, roots)?;
     sign_statement(
         signer,
         now,
         COMMIT_RECEIPT_TYP,
         [
-            ("pg", Value::String(pg)),
+            ("pg", Value::String(pg.to_string())),
             ("sequence", Value::from(sequence)),
             ("commit_id", Value::String(commit_id)),
             ("roots", roots.to_value()),
@@ -187,21 +187,21 @@ pub async fn commit_receipt(
 pub async fn tip_report(
     signer: &dyn ReceiptSigner,
     now: i64,
-    pg: impl Into<String>,
+    pg: &PrincipalGenesis,
     sequence: u64,
     commit_id: impl Into<String>,
     roots: &Roots,
     commit_count: u64,
     last_updated: i64,
 ) -> Result<coz::CozJson, ReceiptError> {
-    let (pg, commit_id) = (pg.into(), commit_id.into());
-    validate(&pg, &commit_id, roots)?;
+    let commit_id = commit_id.into();
+    validate(&commit_id, roots)?;
     sign_statement(
         signer,
         now,
         TIP_REPORT_TYP,
         [
-            ("pg", Value::String(pg)),
+            ("pg", Value::String(pg.to_string())),
             ("sequence", Value::from(sequence)),
             ("commit_id", Value::String(commit_id)),
             ("roots", roots.to_value()),
@@ -232,18 +232,11 @@ pub struct HeldClaim {
 pub async fn held_report(
     signer: &dyn ReceiptSigner,
     now: i64,
-    pg: impl Into<String>,
+    pg: &PrincipalGenesis,
     fork_height: u64,
     fork_pre: Option<&str>,
     heads: &[HeldClaim],
 ) -> Result<coz::CozJson, ReceiptError> {
-    let pg = pg.into();
-    parse_genesis_id_str(&pg)
-        .map(drop)
-        .map_err(|source| ReceiptError::Field {
-            field: "pg",
-            source,
-        })?;
     let digest = |field: &'static str, s: &str| {
         s.parse::<TaggedDigest>()
             .map(drop)
@@ -260,7 +253,7 @@ pub async fn held_report(
         now,
         HELD_REPORT_TYP,
         [
-            ("pg", Value::String(pg)),
+            ("pg", Value::String(pg.to_string())),
             (
                 "fork_point",
                 serde_json::json!({"height": fork_height, "pre": fork_pre}),
@@ -289,24 +282,14 @@ pub async fn held_report(
 /// is parsed (and discarded) at construction, not just at the wire
 /// boundary, so a value that is not valid never reaches a signature.
 ///
-/// `pg` is the attested principal's GENESIS IDENTIFIER, not a tagged
-/// digest: SPEC §2.2.3's DEFAULT identifier form is bare canonical b64ut --
-/// tagging is the labeled exemption `commit_id`/`roots` use, not this
-/// field. At Level 1/2 a principal's genesis identifier IS its raw
-/// thumbprint via implicit promotion, so requiring a tag here would reject
-/// every Level 1/2 principal's receipt.
-fn validate(pg: &str, commit_id: &str, roots: &Roots) -> Result<(), ReceiptError> {
+/// The id is a [`PrincipalGenesis`], so it is already a well-formed
+/// labelled id; only the roots and the commit id are parsed here.
+fn validate(commit_id: &str, roots: &Roots) -> Result<(), ReceiptError> {
     fn digest(field: &'static str, s: &str) -> Result<(), ReceiptError> {
         s.parse::<TaggedDigest>()
             .map(drop)
             .map_err(|source| ReceiptError::Field { field, source })
     }
-    parse_genesis_id_str(pg)
-        .map(drop)
-        .map_err(|source| ReceiptError::Field {
-            field: "pg",
-            source,
-        })?;
     digest("commit_id", commit_id)?;
     digest("roots.pr", &roots.pr)?;
     // `sr`, `ar` and `cr` may legitimately be absent (a Dead principal has
@@ -359,44 +342,6 @@ async fn sign_statement<const N: usize>(
     }
     let pay = serde_json::to_value(&pay).map_err(|e| ReceiptError::Compose(e.to_string()))?;
     Ok(coz::CozJson { pay, sig })
-}
-
-/// Decode a bare b64ut genesis-identifier string into `coz::Thumbprint`.
-///
-/// Uses the SAME strict canonical decoder `TaggedDigest::from_str` uses
-/// (`Base64UrlUnpadded::decode_vec`, which rejects padding, the standard
-/// alphabet, whitespace/case variants, and any non-canonical encoding of
-/// the same bytes) -- this is load-bearing: a looser check would let two
-/// spellings of one identifier compare unequal, reopening the
-/// equivocation door this canonical decode exists to close. A tagged
-/// `ALG:...` string also fails here, since `:` is outside the b64url
-/// alphabet -- tagging is `commit_id`/`roots`'s exemption, not `pr`'s.
-///
-/// `pub(crate)`: also `routes::push`'s pre-commit canonicality check
-/// (#168) -- refusing a non-canonical `principal_id` before
-/// `submit_commit` runs, rather than discovering the same refusal only
-/// after the write already landed, when this function later refuses to
-/// sign the receipt.
-///
-/// Length is checked against the codebase's supported digest lengths
-/// (32/48/64 -- SHA-256/384/512 via [`TaggedDigest::expected_len`]), NOT
-/// against the receipt's own `alg`: a receipt's `alg` is the WITNESS
-/// SERVER's signing algorithm, independent of the attested principal's
-/// genesis-key algorithm, so binding `pr`'s length to it would reject
-/// every principal whose algorithm differs from the witness's.
-pub(crate) fn parse_genesis_id_str(s: &str) -> Result<coz::Thumbprint, cyphr::error::Error> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    let bytes = Base64UrlUnpadded::decode_vec(s)
-        .map_err(|_| cyphr::error::Error::MalformedDigest("invalid base64"))?;
-    let supported_len = [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512]
-        .iter()
-        .any(|&alg| bytes.len() == TaggedDigest::expected_len(alg));
-    if !supported_len {
-        return Err(cyphr::error::Error::MalformedDigest(
-            "not a supported digest length (32/48/64 bytes)",
-        ));
-    }
-    Ok(coz::Thumbprint::from_bytes(bytes))
 }
 
 /// The outcome of checking two signed tip reports for equivocation

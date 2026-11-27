@@ -3,13 +3,13 @@
 use std::sync::OnceLock;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::{PeerKey, verify_patch_body};
+use cyphr_net::{PeerKey, verify_patch_body};
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
 
 // The witness's whole inbound surface: a peer-supplied `/patch` body,
-// verified by `cyphr_client::verify_patch_body` (envelope signature,
+// verified by `cyphr_net::verify_patch_body` (envelope signature,
 // canonical report parse, principal match, entry blob decoding). The claim
 // is that no body, however hostile, panics the verifier, and that a body
 // accepted with an authority key attests exactly the principal asked for.
@@ -108,8 +108,11 @@ fuzz_target!(|data: &[u8]| {
     let (key, prv) = authority();
 
     if mode % 2 == 0 {
-        let _ = verify_patch_body(rest, "SHA-256:principal", Some(key));
-        let _ = verify_patch_body(rest, "SHA-256:principal", None);
+        let principal =
+            cyphr::PrincipalGenesis::from_digest(cyphr::state::HashAlg::Sha256, vec![7; 32])
+                .expect("a 32-byte digest is a SHA-256 width");
+        let _ = verify_patch_body(rest, &principal, Some(key));
+        let _ = verify_patch_body(rest, &principal, None);
         return;
     }
 
@@ -125,7 +128,7 @@ fuzz_target!(|data: &[u8]| {
     let pay = json!({
         "alg": key.alg,
         "typ": "cyphr-server/receipt/tip",
-        "pr": pr,
+        "pg": format!("SHA-256:{pr}"),
         "sequence": sequence(&mut u),
         "commit_id": digest(&mut u),
         "roots": { "pr": digest(&mut u), "sr": digest(&mut u), "ar": digest(&mut u), "cr": cr },
@@ -154,14 +157,16 @@ fuzz_target!(|data: &[u8]| {
     } else {
         String::arbitrary(&mut u).unwrap_or_default()
     };
+    // An edge refuses an id that is not a labelled one before any fetch.
+    let Ok(asked) = asked.parse::<cyphr::PrincipalGenesis>() else {
+        return;
+    };
     if let Ok(verified) = verify_patch_body(&body, &asked, Some(key)) {
         let report = verified
             .report
             .expect("an authenticated patch carries its report");
-        let bare = asked.split_once(':').map_or(asked.as_str(), |(_, d)| d);
         assert_eq!(
-            report.pg.to_string(),
-            bare,
+            report.pg, asked,
             "accepted a report for a principal that was not asked for"
         );
     }

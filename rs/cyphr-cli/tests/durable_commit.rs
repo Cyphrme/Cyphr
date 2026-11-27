@@ -64,7 +64,10 @@ fn traced(user: &User, args: &[&str]) -> Vec<Call> {
 fn a_cli_commit_is_synced_once_before_it_reports() {
     let user = User::new();
     let id = user.new_identity();
-    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+    let (ident, signer) = (
+        format!("--identity={id}"),
+        format!("--signer={}", common::tmb(&id)),
+    );
     user.setup(&["data", "action", &ident, &signer, "--msg=m"]);
 
     let trace = traced(&user, &["data", "commit", &ident, &signer]);

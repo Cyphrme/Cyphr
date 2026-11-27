@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use axum::Router;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::{ChannelBinding, ConnectError, Connector, PeerChain, PeerFailure, Request};
+use cyphr::PrincipalGenesis;
+use cyphr_net::{ChannelBinding, ConnectError, Connector, PeerChain, PeerFailure, Request};
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::{AppState, build_router};
@@ -77,7 +78,7 @@ impl Connector for RouterConnector {
 /// Push bodies for two successive commits of the standard principal: its
 /// genesis commit (`golden` creates itself and `key_a`, SPEC 5.1), then a
 /// `key/create` of `key_b` signed by `golden` on that genesis state.
-async fn two_commit_bodies(pool: &test_fixtures::Pool, pr: &str) -> (String, String) {
+async fn two_commit_bodies(pool: &test_fixtures::Pool, pr: &PrincipalGenesis) -> (String, String) {
     let genesis_now = 1_700_000_000;
     let first = build_genesis_push_body(pool, pr, genesis_now).await;
     let second = build_second_commit_push_body(pool, pr, genesis_now, 1_700_000_100).await;
@@ -85,7 +86,7 @@ async fn two_commit_bodies(pool: &test_fixtures::Pool, pr: &str) -> (String, Str
 }
 
 /// The pin material `/server` publishes: the server PG and genesis key.
-async fn discover(app: &Router) -> (String, cyphr::Key) {
+async fn discover(app: &Router) -> (PrincipalGenesis, cyphr::Key) {
     let (_, discovery) = get_json(app.clone(), "/server").await;
     let d = &discovery["payload"];
     let g = &d["genesis"];
@@ -98,7 +99,14 @@ async fn discover(app: &Router) -> (String, cyphr::Key) {
     )
     .expect("key binds its tmb")
     .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
-    (d["pg"].as_str().expect("pg").to_string(), key)
+    (
+        d["pg"]
+            .as_str()
+            .expect("pg")
+            .parse()
+            .expect("labelled /server pg"),
+        key,
+    )
 }
 
 /// A bootstrapped attestor that has pushed `golden`'s commits, not yet
@@ -107,7 +115,7 @@ async fn attestor_state() -> (
     Arc<AppState>,
     Arc<ServerIdentity>,
     tempfile::TempDir,
-    String,
+    PrincipalGenesis,
 ) {
     let dir = tempfile::tempdir().expect("tempdir");
     let key_path = write_signing_key(dir.path());
@@ -127,7 +135,7 @@ async fn attestor_state() -> (
     (Arc::new(state), identity, dir, pr)
 }
 
-async fn push_golden(app: &Router, pr: &str) {
+async fn push_golden(app: &Router, pr: &PrincipalGenesis) {
     let pool = load_pool();
     let (first, second) = two_commit_bodies(&pool, pr).await;
     for body in [first, second] {

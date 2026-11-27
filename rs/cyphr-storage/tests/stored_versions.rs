@@ -99,6 +99,11 @@ fn wire_blobs(commit: &serde_json::Value) -> cyphr::replay::WireBundle {
         .expect("bundle")
 }
 
+/// An id no principal owns, whose row stands in for one an old build wrote.
+fn stale_id() -> cyphr::PrincipalGenesis {
+    cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![9; 32]).expect("valid id")
+}
+
 fn open_durable(dir: &std::path::Path) -> Durable {
     let db = Database::builder(dir.join("db")).open().expect("open db");
     let blobs = FjallBlobStore::from_database(db.clone()).expect("blob store");
@@ -129,7 +134,10 @@ fn age_index(index_dir: &std::path::Path, version: Option<u64>) {
         None => meta.remove(b"index-meta").unwrap(),
     }
     open("index_tips")
-        .insert(b"SHA-256:stale", b"written by an older schema")
+        .insert(
+            stale_id().to_string().as_bytes(),
+            b"written by an older schema",
+        )
         .unwrap();
     db.persist(PersistMode::SyncAll).expect("persist");
 }
@@ -166,7 +174,7 @@ async fn legacy_store_index_is_rebuilt_from_blobs() {
         age_index(&dir.path().join("index"), aged);
         {
             let index = FjallIndexer::open(&dir.path().join("index")).expect("opens");
-            let stale = index.get_tip("SHA-256:stale").await;
+            let stale = index.get_tip(&stale_id()).await;
             assert!(
                 matches!(stale, Ok(None)),
                 "version {aged:?}: a row from an old schema was served: {stale:?}"
@@ -210,7 +218,8 @@ fn digest(tag: u8) -> String {
 async fn legacy_store_shared_manifest_is_refused_naming_reingest() {
     let hash = Blake3Hash::from_bytes([7; 32]);
     let commit = IndexableCommit {
-        principal_id: digest(1),
+        principal_id: cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![1; 32])
+            .expect("valid id"),
         commit_ids: vec![digest(2)],
         sequence: 0,
         pre: None,

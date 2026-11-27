@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
@@ -24,7 +25,7 @@ fn pool() -> test_fixtures::Pool {
 }
 
 struct Chain {
-    id: String,
+    id: PrincipalGenesis,
     genesis: Genesis,
     g: WireBundle,
     /// One commit of two nonces, each its own transaction.

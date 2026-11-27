@@ -95,7 +95,7 @@ pub fn commit_id(p: &cyphr::Principal) -> String {
 /// key is active from the state after its commit. `states[i]` is the
 /// principal after commit `i`.
 pub struct Rig {
-    pub id: String,
+    pub id: cyphr::PrincipalGenesis,
     pub genesis: Genesis,
     pub golden: Kp,
     pub keys: Vec<Kp>,

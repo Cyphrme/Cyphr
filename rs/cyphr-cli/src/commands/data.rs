@@ -8,13 +8,13 @@
 //! with the spec author; actions travel as action-only bundles.
 
 use base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::TipAnswer;
+use cyphr::PrincipalGenesis;
+use cyphr_net::TipAnswer;
 use serde_json::{Value, json};
 
 use super::common::{
-    CliPrincipal, block_on, current_timestamp, get_principal_id, get_principal_id_from_principal,
-    load_principal_from_engine, local_genesis, parse_principal_genesis, parse_store,
-    save_principal_to_engine,
+    CliPrincipal, block_on, current_timestamp, get_principal_id_from_principal,
+    load_principal_from_engine, local_genesis, parse_store, save_principal_to_engine,
 };
 use crate::keystore::KeyBackend;
 use crate::net::Peer;
@@ -92,7 +92,7 @@ fn emit(cli: &Cli, value: &Value, table: impl FnOnce()) -> crate::Result<()> {
 /// the local DT and keep it in the store as an action-only bundle.
 fn action(
     cli: &Cli,
-    identity: &str,
+    identity: &PrincipalGenesis,
     signer_tmb: &str,
     msg: &str,
     now: Option<i64>,
@@ -169,7 +169,12 @@ pub(crate) fn apply_ds_create(
 
 /// `cyphr data commit`: sign a `ds/create` whose `id` is MR over the DT
 /// this client holds, finalized as one commit; that `id` becomes DR.
-fn commit(cli: &Cli, identity: &str, signer_tmb: &str, upgrade: bool) -> crate::Result<()> {
+fn commit(
+    cli: &Cli,
+    identity: &PrincipalGenesis,
+    signer_tmb: &str,
+    upgrade: bool,
+) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
     let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
@@ -183,7 +188,7 @@ fn commit(cli: &Cli, identity: &str, signer_tmb: &str, upgrade: bool) -> crate::
         .into_iter()
         .rfind(|l| !l.commit_id.is_empty())
         .map(|l| l.commit_id)
-        .ok_or_else(|| Error::EmptyHistory(identity.to_owned()))?;
+        .ok_or_else(|| Error::EmptyHistory(identity.to_string()))?;
     let out = json!({"identity": identity, "dr": dr, "commit_id": commit_id});
     emit(cli, &out, || {
         println!("Included DR {dr} by ds/create");
@@ -193,18 +198,21 @@ fn commit(cli: &Cli, identity: &str, signer_tmb: &str, upgrade: bool) -> crate::
 
 /// `cyphr data submit`: send one signed action (a coz file, as `data action
 /// --sign-only` prints it) to a peer as an action-only bundle.
-fn submit(cli: &Cli, identity: &str, peer_url: &str, file: &std::path::Path) -> crate::Result<()> {
+fn submit(
+    cli: &Cli,
+    identity: &PrincipalGenesis,
+    peer_url: &str,
+    file: &std::path::Path,
+) -> crate::Result<()> {
     let coz: Value = serde_json::from_slice(&std::fs::read(file)?)?;
     // `data action` prints the whole answer; the coz is its `coz` member.
     let coz = coz.get("coz").unwrap_or(&coz);
     let blob = serde_json::to_vec(coz)?;
-    let pg = parse_principal_genesis(identity)?;
-    let wire = cyphr_storage::engine::bare_digest(&get_principal_id(&pg)?).to_owned();
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
     let tip = block_on(async {
-        peer.push_commit(&wire, &cyphr::replay::WireBundle::actions(vec![blob]))
+        peer.push_commit(identity, &cyphr::replay::WireBundle::actions(vec![blob]))
             .await?;
-        peer.tip(&wire).await
+        peer.tip(identity).await
     })??;
     // Only an Active peer has one tip to report.
     let tip = match tip {

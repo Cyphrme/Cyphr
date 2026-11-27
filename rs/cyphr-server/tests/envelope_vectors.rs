@@ -18,9 +18,9 @@ use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::envelope::{Envelope, Statement};
 
-/// A fixed principal genesis id, reused from the token vector for a stable,
+/// A fixed labelled principal genesis id for a stable,
 /// recognizable payload.
-const PR: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+const PR: &str = "SHA-256:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
 
 /// Read a committed golden vector, trimming a trailing newline so the file
 /// can end in one.

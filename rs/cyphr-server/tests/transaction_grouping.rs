@@ -18,7 +18,7 @@ use axum::Router;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::{Commit, Principal};
-use cyphr_client::{ChannelBinding, ConnectError, Connector, PeerChain, Request};
+use cyphr_net::{ChannelBinding, ConnectError, Connector, PeerChain, Request};
 use cyphr_server::config::ServerConfig;
 use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;
@@ -124,9 +124,9 @@ fn flattened(bundle: &Value) -> Value {
     json!({"txs": txs, "keys": bundle["keys"]})
 }
 
-fn push_body(principal_id: &str, bundle: &Value) -> String {
+fn push_body(principal_id: &cyphr::PrincipalGenesis, bundle: &Value) -> String {
     let mut body = bundle.clone();
-    body["principal_id"] = principal_id.into();
+    body["principal_id"] = principal_id.to_string().into();
     body.to_string()
 }
 
@@ -161,7 +161,7 @@ fn sha256(parts: &[&[u8]]) -> Vec<u8> {
 /// A principal at `golden`'s single-key genesis commit, then a commit
 /// adding `key_a`: the state the SPEC 4 example is signed on. Returns it
 /// with the two commits' push bundles.
-async fn two_key_principal() -> (Principal, String, Vec<Value>) {
+async fn two_key_principal() -> (Principal, cyphr::PrincipalGenesis, Vec<Value>) {
     let golden = pool_key("golden");
     let mut p = Principal::implicit(golden.key().expect("key"))
         .await
@@ -169,10 +169,7 @@ async fn two_key_principal() -> (Principal, String, Vec<Value>) {
     p.commit_genesis(&golden.software_signer().unwrap(), &[], T, AUTHORITY)
         .await
         .expect("genesis commit");
-    let pg = cyphr::StateDigest::as_multihash(p.pg().expect("pg"))
-        .tagged_first()
-        .expect("tagged")
-        .to_string();
+    let pg = p.pg().expect("pg").clone();
     let genesis = wire(p.commits().last().unwrap());
     author(
         &mut p,
@@ -219,7 +216,7 @@ async fn spec_4_example(p: &mut Principal, grouped: bool) {
     author(p, &txs, "alice").await.expect("the example commits");
 }
 
-async fn push_all(app: &Router, pg: &str, bundles: &[Value]) {
+async fn push_all(app: &Router, pg: &cyphr::PrincipalGenesis, bundles: &[Value]) {
     for b in bundles {
         let (status, body) = post_json(app.clone(), "/push", push_body(pg, b)).await;
         assert_eq!(status, StatusCode::CREATED, "setup push refused: {body}");

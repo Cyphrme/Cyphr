@@ -140,7 +140,7 @@ impl Capability {
             Self::PeerBackup => Probe::Server(&["backup", "--help"]),
             Self::PeerRollover => Probe::Server(&["rotate-key", "--help"]),
             Self::RelyingParty => {
-                Probe::WorkspacePath(&["cyphr-client", "examples", "relying_party.rs"])
+                Probe::WorkspacePath(&["cyphr-net", "examples", "relying_party.rs"])
             },
             Self::SessionBinding => Probe::SessionBinding,
             Self::DataCommit => Probe::Cli(&["data", "commit", "--help"], None),

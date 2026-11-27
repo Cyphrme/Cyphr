@@ -18,6 +18,7 @@
 
 #![recursion_limit = "256"]
 
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{Blake3Hash, BlobStore, MemoryBlobStore};
@@ -71,7 +72,7 @@ fn last(p: &cyphr::Principal) -> WireBundle {
 /// at position 1, C at position 2 extending B, and A2 at position 2
 /// extending A. Each is valid on its own.
 struct Scenario {
-    id: String,
+    id: PrincipalGenesis,
     genesis: Genesis,
     g: WireBundle,
     a: WireBundle,
@@ -173,7 +174,7 @@ async fn copy(from: &Engine, to: &Engine, commit: &IngestResult) {
 }
 
 /// The commit id at each position of the served chain.
-async fn chain(e: &Engine, id: &str) -> Vec<String> {
+async fn chain(e: &Engine, id: &PrincipalGenesis) -> Vec<String> {
     e.get_patch(id, None, None)
         .await
         .expect("patch")
@@ -184,7 +185,7 @@ async fn chain(e: &Engine, id: &str) -> Vec<String> {
 }
 
 /// The ids of the retained (non-canonical) branch heads.
-async fn retained(e: &Engine, id: &str) -> Vec<String> {
+async fn retained(e: &Engine, id: &PrincipalGenesis) -> Vec<String> {
     let mut held: Vec<String> = e
         .list_branches(id)
         .await
@@ -300,16 +301,24 @@ mod eml {
     }
 
     impl LogFactory<FjallStorage> for Recorded {
-        fn generation(&self, principal_id: &str) -> Result<u64, String> {
+        fn generation(&self, principal_id: &PrincipalGenesis) -> Result<u64, String> {
             self.logs.generation(principal_id)
         }
 
-        fn open(&self, principal_id: &str, generation: u64) -> Result<FjallStorage, String> {
+        fn open(
+            &self,
+            principal_id: &PrincipalGenesis,
+            generation: u64,
+        ) -> Result<FjallStorage, String> {
             self.opened.lock().expect("lock").push(generation);
             self.logs.open(principal_id, generation)
         }
 
-        fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+        fn retire_below(
+            &self,
+            principal_id: &PrincipalGenesis,
+            generation: u64,
+        ) -> Result<(), String> {
             self.logs.retire_below(principal_id, generation)
         }
     }
@@ -403,7 +412,7 @@ mod eml {
 
     /// Append leaf `from` of `generation`'s log of `id` to the log of
     /// `id` at `into`: a leaf no commit of that position wrote.
-    async fn plant(dir: &std::path::Path, id: &str, from: u64, into: u64) {
+    async fn plant(dir: &std::path::Path, id: &PrincipalGenesis, from: u64, into: u64) {
         let db = fjall::Database::builder(dir.join("blobs"))
             .open()
             .expect("db");
@@ -524,13 +533,14 @@ mod eml {
     }
 
     /// Both indexer traits over a shared [`Gated`].
+    type Pg = PrincipalGenesis;
     struct GatedIndex(Arc<Gated>);
 
     impl Indexer for GatedIndex {
         delegate! {
-            get_tip(&self, id: &str) -> R<Option<TipState>>;
-            is_pg_established(&self, id: &str) -> R<bool>;
-            get_commit_chain(&self, id: &str, a: Option<u64>, b: Option<u64>) -> R<Vec<CommitRef>>;
+            get_tip(&self, id: &Pg) -> R<Option<TipState>>;
+            is_pg_established(&self, id: &Pg) -> R<bool>;
+            get_commit_chain(&self, id: &Pg, a: Option<u64>, b: Option<u64>) -> R<Vec<CommitRef>>;
             resolve_digest(&self, d: &cyphr::state::TaggedDigest) -> R<Option<EntityRef>>;
             list_principals(&self) -> R<Vec<PrincipalSummary>>;
             is_blob_indexed(&self, h: &Blake3Hash) -> R<bool>;
@@ -541,7 +551,7 @@ mod eml {
     impl IndexerWrite for GatedIndex {
         delegate! {
             check_commit(&self, c: &IndexableCommit, t: &Tok) -> R<()>;
-            replace_chain_from(&self, id: &str, seq: u64, c: &[IndexableCommit], t: &Tok) -> R<()>;
+            replace_chain_from(&self, id: &Pg, seq: u64, c: &[IndexableCommit], t: &Tok) -> R<()>;
             clear(&self, t: &Tok) -> R<()>;
             set_quarantined(&self, m: &[(Blake3Hash, String)], t: &Tok) -> R<()>;
             quarantined(&self) -> R<Vec<(Blake3Hash, String)>>;

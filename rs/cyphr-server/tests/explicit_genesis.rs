@@ -28,10 +28,13 @@ fn signer_of(kp: &coz::KeyPair) -> cyphr::signer::SoftwareSigner {
 
 /// A `principal/create` signed by `kp` naming `id`, as a wire coz plus the
 /// pieces `verify_and_apply` takes.
-fn principal_create(kp: &coz::KeyPair, id: &str) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+fn principal_create(
+    kp: &coz::KeyPair,
+    id: &cyphr::PrincipalGenesis,
+) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     let tmb = kp.alg.compute_thumbprint(&kp.pub_bytes).expect("tmb");
     let mut pay = serde_json::json!({
-        "alg": kp.alg.name(), "id": id, "now": NOW, "tmb": tmb.to_b64(),
+        "alg": kp.alg.name(), "id": id.to_string(), "now": NOW, "tmb": tmb.to_b64(),
         "typ": "cyphr.me/cyphr/principal/create",
     });
     pay.as_object_mut().unwrap().sort_keys();
@@ -43,7 +46,7 @@ fn principal_create(kp: &coz::KeyPair, id: &str) -> (Vec<u8>, Vec<u8>, coz::Czd)
 
 /// The genesis commit of `kps` (the first is the genesis key) as wire
 /// blobs, and the PG it establishes.
-async fn genesis_bundle(kps: &[coz::KeyPair]) -> (String, Vec<Vec<u8>>) {
+async fn genesis_bundle(kps: &[coz::KeyPair]) -> (cyphr::PrincipalGenesis, Vec<Vec<u8>>) {
     let mut p = cyphr::Principal::implicit(key_of(&kps[0]))
         .await
         .expect("genesis");
@@ -85,14 +88,13 @@ async fn genesis_bundle(kps: &[coz::KeyPair]) -> (String, Vec<Vec<u8>>) {
         .unwrap(),
     );
     blobs.push(cc);
-    assert_eq!(
-        p.pg().map(|pg| pg.0.tagged_first().unwrap().to_string()),
-        Some(pg.clone())
-    );
+    // The ids differ in how many hash variants they carry, not in the id
+    // they name: compare the printed (labelled) form.
+    assert_eq!(p.pg().map(ToString::to_string), Some(pg.to_string()));
     (pg, blobs)
 }
 
-fn push_body(principal_id: &str, blobs: &[Vec<u8>]) -> String {
+fn push_body(principal_id: &cyphr::PrincipalGenesis, blobs: &[Vec<u8>]) -> String {
     common::push_blobs(principal_id, blobs)
 }
 
@@ -379,7 +381,7 @@ async fn a_first_commit_without_principal_create_is_refused() {
     let mut p = cyphr::Principal::implicit(key.clone())
         .await
         .expect("implicit");
-    let id = p.pr_tagged().expect("pr");
+    let id = p.pr_id().expect("pr");
     let (pay, sig, czd, create) = key_create(&kp, &key);
     let mut scope = p.begin_commit();
     scope

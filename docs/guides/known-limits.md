@@ -151,7 +151,7 @@ clocks correct.
 - **A junk proof can block sign-in.** A relying party refuses sign-in
   while any served proof names a held branch commit it cannot verify, so
   a peer serving such proofs blocks sign-in for as long as it serves them
-  (`refusal_over`, `rs/cyphr-client/src/relying_party.rs`).
+  (`refusal_over`, `rs/cyphr-net/src/relying_party.rs`).
 - **Any once-active key can backdate a commit to re-open or lock a
   principal.** A commit signed by a revoked key is refused only if
   its own `now` is at or after the server's receipt time of the revoke
@@ -169,7 +169,7 @@ clocks correct.
   for a `fetch` first.
 - **An Active verdict means no fork was seen, not that none exists.** The
   verdict covers the peers that answered. A peer that serves one head is
-  not asked for fork evidence (`rs/cyphr-client/src/sync.rs` asks only when a peer reports
+  not asked for fork evidence (`rs/cyphr-net/src/sync.rs` asks only when a peer reports
   more than one head), and branch heads are hints, never proof. A peer
   can also bury genuine evidence under junk: a verifier reads at most 32
   evidence items per peer per pull, before checking them.

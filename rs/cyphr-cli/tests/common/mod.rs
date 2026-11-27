@@ -200,7 +200,8 @@ impl User {
         r.json()
     }
 
-    /// Create an identity: returns its genesis thumbprint (the identity arg).
+    /// Create an identity: returns its labelled id (the identity arg).
+    /// `--signer` takes the genesis thumbprint: use [`tmb`].
     pub fn new_identity(&self) -> String {
         self.new_identity_alg("ES256")
     }
@@ -210,15 +211,16 @@ impl User {
     pub fn new_identity_alg(&self, algo: &str) -> String {
         let g = self.setup(&["key", "generate", "--algo", algo]);
         let tmb = g["tmb"].as_str().expect("tmb").to_owned();
-        self.setup(&["upgrade", &format!("--identity={tmb}")]);
-        self.add_key(&tmb);
-        tmb
+        let id = labelled(algo, &tmb);
+        self.setup(&["upgrade", &format!("--identity={id}")]);
+        self.add_key(&id);
+        id
     }
 
     /// Commit one key addition, signed by the identity's genesis key.
     pub fn add_key(&self, identity: &str) {
         let id = format!("--identity={identity}");
-        let signer = format!("--signer={identity}");
+        let signer = format!("--signer={}", tmb(identity));
         self.setup(&["key", "add", &id, &signer]);
     }
 
@@ -248,6 +250,28 @@ impl User {
             .as_u64()
             .expect("commit_count")
     }
+}
+
+/// The hash an identity's genesis key of `algo` is digested under.
+fn hash_name(algo: &str) -> &'static str {
+    match algo {
+        "ES256" => "SHA-256",
+        "ES384" => "SHA-384",
+        "Ed25519" => "SHA-512",
+        other => panic!("no hash named for algo {other}"),
+    }
+}
+
+/// The labelled principal id (`ALG:digest`) of the implicit principal on a
+/// genesis key of `algo` with thumbprint `tmb`.
+pub fn labelled(algo: &str, tmb: &str) -> String {
+    format!("{}:{tmb}", hash_name(algo))
+}
+
+/// The bare digest of a labelled id: the genesis key's thumbprint, which
+/// is what `--signer` and the keystore take.
+pub fn tmb(id: &str) -> &str {
+    id.split_once(':').map_or(id, |(_, digest)| digest)
 }
 
 pub fn copy_dir(from: &Path, to: &Path) {

@@ -66,9 +66,9 @@ pub fn keyless() -> (Arc<AppState>, tempfile::TempDir) {
     (Arc::new(state), dir)
 }
 
-pub fn push_body(id: &str, b: &WireBundle) -> String {
+pub fn push_body(id: &cyphr::PrincipalGenesis, b: &WireBundle) -> String {
     let mut v = serde_json::to_value(b).expect("bundle");
-    v["principal_id"] = id.into();
+    v["principal_id"] = id.to_string().into();
     v.to_string()
 }
 
@@ -136,7 +136,7 @@ pub async fn serve_counting(app: Router) -> (String, Arc<Wire>) {
     (format!("http://{addr}"), wire)
 }
 
-pub fn login_body(id: &str) -> String {
+pub fn login_body(id: &cyphr::PrincipalGenesis) -> String {
     let path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
     let pool = test_fixtures::Pool::load(&path).expect("pool");
@@ -153,8 +153,7 @@ pub fn login_body(id: &str) -> String {
     );
     pay.tmb = Some(s.compute_tmb().expect("tmb"));
     pay.typ = Some(format!("{AUDIENCE}/user/login/request/create"));
-    let bare = id.split_once(':').map_or(id, |(_, b)| b);
-    pay.extra.insert("pg".into(), bare.into());
+    pay.extra.insert("pg".into(), id.to_string().into());
     let bytes = serde_json::to_vec(&pay).expect("pay");
     let (sig, _) = coz::sign_json(&bytes, &s.alg, &prv, &pubb).expect("sign");
     serde_json::to_string(&coz::CozJson {
@@ -191,17 +190,17 @@ pub struct ForkLocation {
 
 /// The chain a resumed holder's state covers, counting what is read of it.
 struct Counted {
-    entries: Vec<cyphr_client::PatchEntry>,
+    entries: Vec<cyphr_net::PatchEntry>,
     reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl cyphr_client::ChainSource for Counted {
+impl cyphr_net::ChainSource for Counted {
     fn first(
         &self,
         count: usize,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<Vec<cyphr_client::PatchEntry>, String>>
+            dyn std::future::Future<Output = Result<Vec<cyphr_net::PatchEntry>, String>>
                 + Send
                 + '_,
         >,
@@ -223,20 +222,20 @@ fn counting_clock() -> i64 {
 
 /// Counts what the holder asks the peer.
 struct Asked {
-    inner: cyphr_client::HttpConnector,
+    inner: cyphr_net::HttpConnector,
     asked: std::sync::Mutex<Vec<String>>,
     fetched: std::sync::Mutex<usize>,
 }
 
-impl cyphr_client::Connector for Asked {
-    fn channel_binding(&self) -> Option<&cyphr_client::ChannelBinding> {
+impl cyphr_net::Connector for Asked {
+    fn channel_binding(&self) -> Option<&cyphr_net::ChannelBinding> {
         self.inner.channel_binding()
     }
 
     async fn exchange(
         &self,
-        request: &cyphr_client::Request,
-    ) -> Result<Vec<u8>, cyphr_client::ConnectError> {
+        request: &cyphr_net::Request,
+    ) -> Result<Vec<u8>, cyphr_net::ConnectError> {
         self.asked
             .lock()
             .expect("asked")
@@ -341,17 +340,17 @@ async fn pull_fork(mine: &Chain, theirs: &Chain, height: usize, resumed: bool) -
         let pool = test_fixtures::Pool::load(&path).expect("pool");
         pool.get("golden").expect("golden").key().expect("key")
     };
-    let entries: Vec<cyphr_client::PatchEntry> = (0..mine.commits)
-        .map(|i| cyphr_client::PatchEntry {
+    let entries: Vec<cyphr_net::PatchEntry> = (0..mine.commits)
+        .map(|i| cyphr_net::PatchEntry {
             sequence: i as u64,
             bundle: Ok(mine.bundle(i)),
         })
         .collect();
     let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let built_before = CLOCK_READS.with(std::cell::Cell::get);
-    let mut record = cyphr_client::Record::from_entries(
+    let mut record = cyphr_net::Record::from_entries(
         &mine.id,
-        cyphr_client::Anchor::GenesisKey(key),
+        cyphr_net::Anchor::GenesisKey(key),
         counting_clock,
         &entries,
         &[],
@@ -371,20 +370,20 @@ async fn pull_fork(mine: &Chain, theirs: &Chain, height: usize, resumed: bool) -
             reads: reads.clone(),
         });
         record =
-            cyphr_client::Record::resume(&mine.id, state, counting_clock, store).expect("resumes");
+            cyphr_net::Record::resume(&mine.id, state, counting_clock, store).expect("resumes");
     }
 
     let connector = Asked {
-        inner: cyphr_client::HttpConnector::with_client(reqwest::Client::new(), &url, true)
+        inner: cyphr_net::HttpConnector::with_client(reqwest::Client::new(), &url, true)
             .expect("connector"),
         asked: Default::default(),
         fetched: Default::default(),
     };
     let checks_before = CLOCK_READS.with(std::cell::Cell::get);
     let t = std::time::Instant::now();
-    let report = cyphr_client::pull(
+    let report = cyphr_net::pull(
         &mut record,
-        &[cyphr_client::PullPeer {
+        &[cyphr_net::PullPeer {
             name: "peer",
             connector: &connector,
         }],

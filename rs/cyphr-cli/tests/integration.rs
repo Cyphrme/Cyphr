@@ -85,7 +85,7 @@ fn test_ed25519_level2_export_import_roundtrip() {
     let cli = CliTest::new();
     let genesis = cli.run_json(&["key", "generate", "--algo", "Ed25519"]);
     let tmb = genesis["tmb"].as_str().unwrap();
-    let identity_arg = format!("--identity={tmb}");
+    let identity_arg = format!("--identity=SHA-512:{tmb}");
     let signer_arg = format!("--signer={tmb}");
     cli.run_ok(&["upgrade", &identity_arg]);
     let _ = cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
@@ -116,8 +116,9 @@ fn test_ed25519_level2_export_import_roundtrip() {
     );
     let result: serde_json::Value = serde_json::from_slice(&out.stdout).expect("import JSON");
     assert_eq!(
-        result["identity"], tmb,
-        "imported identity is the key's thumbprint"
+        result["identity"],
+        format!("SHA-512:{tmb}"),
+        "imported identity is the key's thumbprint, labelled with the key's own hash"
     );
 }
 
@@ -131,7 +132,7 @@ fn test_export_import_roundtrip() {
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
 
     // Use --arg=value format to handle thumbprints starting with -
-    let identity_arg = format!("--identity={genesis_tmb}");
+    let identity_arg = format!("--identity=SHA-256:{genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
     cli.run_ok(&["upgrade", &identity_arg]);
     let _ = cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
@@ -200,7 +201,7 @@ fn test_key_list_accepts_thumbprint_starting_with_dash() {
         .find(|tmb| tmb.starts_with('-'))
         .expect("no thumbprint starting with '-' in 1000 keys");
 
-    let identity_arg = format!("--identity={tmb}");
+    let identity_arg = format!("--identity=SHA-256:{tmb}");
     let signer_arg = format!("--signer={tmb}");
     cli.run_ok(&["upgrade", &identity_arg]);
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
@@ -217,7 +218,7 @@ fn test_cleartext_peer_refused_and_names_opt_in_flag() {
 
     let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
     let tmb = genesis["tmb"].as_str().unwrap();
-    let identity_arg = format!("--identity={tmb}");
+    let identity_arg = format!("--identity=SHA-256:{tmb}");
 
     let err = cli
         .run(&["fetch", &identity_arg, "--peer=http://192.0.2.1:8080"])
@@ -239,7 +240,7 @@ fn test_exported_commits_carry_real_auth_root_and_state_root() {
 
     let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
-    let identity_arg = format!("--identity={genesis_tmb}");
+    let identity_arg = format!("--identity=SHA-256:{genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
     cli.run_ok(&["upgrade", &identity_arg]);
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
@@ -274,7 +275,7 @@ fn test_inspect_genesis() {
 
     // Inspect genesis state
     // Use --arg=value format to handle thumbprints starting with -
-    let identity_arg = format!("--identity={genesis_tmb}");
+    let identity_arg = format!("--identity=SHA-256:{genesis_tmb}");
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
     // At genesis, PG is not yet established
@@ -301,7 +302,7 @@ fn test_inspect_after_transactions() {
 
     // Add a key
     // Use --arg=value format to handle thumbprints starting with -
-    let identity_arg = format!("--identity={genesis_tmb}");
+    let identity_arg = format!("--identity=SHA-256:{genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
     cli.run_ok(&["upgrade", &identity_arg]);
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
@@ -435,7 +436,7 @@ fn test_unresolvable_identity_fails_loudly() {
 
     // Never generated, never initialized: a syntactically valid but
     // otherwise unknown base64url digest.
-    let bogus = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let bogus = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     let identity_arg = format!("--identity={bogus}");
 
     let result = cli.run(&["inspect", &identity_arg]);
@@ -462,7 +463,7 @@ fn test_full_workflow() {
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
 
     // Use --arg=value format to handle thumbprints starting with -
-    let identity_arg = format!("--identity={genesis_tmb}");
+    let identity_arg = format!("--identity=SHA-256:{genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
 
     // 2. Verify keystore has the key
@@ -534,7 +535,7 @@ fn test_tx_verify_after_transactions() {
     // Generate key
     let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
-    let identity_arg = format!("--identity={genesis_tmb}");
+    let identity_arg = format!("--identity=SHA-256:{genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
 
     // Add a key (the CLI commits the genesis commit first, then the add)
@@ -564,7 +565,7 @@ fn test_tx_verify_reports_storage_errors_instead_of_false_success() {
 
     let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
-    let identity_arg = format!("--identity={genesis_tmb}");
+    let identity_arg = format!("--identity=SHA-256:{genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
 
     // Create a real commit so this identity is NOT legitimately empty.
@@ -612,7 +613,7 @@ fn test_key_replace_in_the_second_of_an_action_is_not_refused() {
     let cli = CliTest::new();
     let genesis = cli.run_json(&["key", "generate", "--algo", "Ed25519", "--tag", "genesis"]);
     let tmb = genesis["tmb"].as_str().unwrap();
-    let identity_arg = format!("--identity={tmb}");
+    let identity_arg = format!("--identity=SHA-512:{tmb}");
     let signer_arg = format!("--signer={tmb}");
     cli.run_ok(&["upgrade", &identity_arg]);
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);

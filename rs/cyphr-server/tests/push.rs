@@ -8,6 +8,7 @@
 //! write never happened.
 
 use axum::http::StatusCode;
+use cyphr::{HashAlg, PrincipalGenesis};
 use cyphr_server::build_router;
 
 mod common;
@@ -16,13 +17,12 @@ use common::{
     attestor_server, build_genesis_push_body, get_json, golden_principal_id, load_pool, post_json,
 };
 
-/// A client-supplied identifier the engine will happily index a genesis
-/// commit under (any string is a usable storage key), but that is not a
-/// canonical genesis-thumbprint form -- the literal repro string from
-/// #168 itself (`rs/cyphr-server/src/receipt.rs:142`'s
-/// `parse_genesis_id_str` refuses it: not valid base64url-decodable to a
-/// supported 32/48/64-byte digest length).
-const NON_CANONICAL_PRINCIPAL_ID: &str = "bob";
+/// A client-supplied, well-formed labelled id that is not the one the
+/// genesis commit derives: the shape of #168's repro now that a malformed
+/// string (its original `bob`) is refused at the edge, before the engine.
+fn non_canonical_principal_id() -> PrincipalGenesis {
+    PrincipalGenesis::from_digest(HashAlg::Sha256, vec![0x61; 32]).expect("32-byte digest")
+}
 
 /// RED (#168): pushing a valid genesis bundle under a non-canonical
 /// `principal_id`, against a server that holds a signing identity, must
@@ -58,7 +58,7 @@ async fn push_never_reports_failure_for_a_write_that_landed() {
 
     let pool = load_pool();
     let now = 1_700_100_000;
-    let push_body = build_genesis_push_body(&pool, NON_CANONICAL_PRINCIPAL_ID, now).await;
+    let push_body = build_genesis_push_body(&pool, &non_canonical_principal_id(), now).await;
 
     let (status1, body1) = post_json(app.clone(), "/push", push_body.clone()).await;
     assert_ne!(
@@ -89,7 +89,7 @@ async fn push_never_reports_failure_for_a_write_that_landed() {
 
     let (tip_status, tip_body) = get_json(
         app.clone(),
-        &format!("/tip?pg={NON_CANONICAL_PRINCIPAL_ID}"),
+        &format!("/tip?pg={}", non_canonical_principal_id()),
     )
     .await;
     assert_eq!(

@@ -19,29 +19,29 @@ use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post
 
 /// A corrupt root per principal: the index refuses one digest naming two
 /// principals, so the injected values must differ between them. Keyed on
-/// the id's digest, so either spelling of the id names the same value.
-fn corrupt_root(kind: &str, principal_id: &str) -> String {
-    let digest = principal_id
-        .strip_prefix("SHA-256:")
-        .unwrap_or(principal_id);
-    format!("SHA-256:CORRUPTED_{kind}_{digest}")
+/// the id's digest.
+fn corrupt_root(kind: &str, principal_id: &cyphr::PrincipalGenesis) -> String {
+    format!("SHA-256:CORRUPTED_{kind}_{principal_id}")
 }
-fn corrupt_pr(p: &str) -> String {
+fn corrupt_pr(p: &cyphr::PrincipalGenesis) -> String {
     corrupt_root("PR", p)
 }
-fn corrupt_sr(p: &str) -> String {
+fn corrupt_sr(p: &cyphr::PrincipalGenesis) -> String {
     corrupt_root("SR", p)
 }
-fn corrupt_ar(p: &str) -> String {
+fn corrupt_ar(p: &cyphr::PrincipalGenesis) -> String {
     corrupt_root("AR", p)
 }
-fn corrupt_cr(p: &str) -> String {
+fn corrupt_cr(p: &cyphr::PrincipalGenesis) -> String {
     corrupt_root("CR", p)
 }
 
 /// Helper: Corrupt the indexer's tip state for `principal_id` by injecting a
 /// fake IndexableCommit with sequence 99 and corrupted root strings.
-async fn corrupt_indexer_tip(state: &Arc<cyphr_server::AppState>, principal_id: &str) {
+async fn corrupt_indexer_tip(
+    state: &Arc<cyphr_server::AppState>,
+    principal_id: &cyphr::PrincipalGenesis,
+) {
     // The index is keyed on the canonical (algorithm-labelled) spelling of a
     // principal id, which is how both principals here are named (their PG
     // is a SHA-256 PR).
@@ -50,7 +50,7 @@ async fn corrupt_indexer_tip(state: &Arc<cyphr_server::AppState>, principal_id: 
     let corrupt_commit = IndexableCommit {
         pg: Vec::new(),
         manifest: None,
-        principal_id: principal_id.to_string(),
+        principal_id: principal_id.clone(),
         commit_ids: vec![corrupt_root("COMMIT_ID", bare)],
         sequence: 99,
         pre: None,
@@ -79,7 +79,7 @@ async fn roots_derive_from_blobs() {
     let app = build_router(state.clone());
     let pool = load_pool();
     let principal_id = common::golden_principal_id(&pool).await;
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
     let now = 1_700_000_000;
 
     // 1. Establish valid principal via genesis push.
@@ -144,7 +144,7 @@ async fn roots_derive_from_blobs() {
     // 4. POST /push under corrupted index MUST NOT return a commit receipt signed over corrupted
     //    index values.
     let push_principal = common::genesis_push_id(&pool, "alice", "key_a").await;
-    let push_principal = push_principal.as_str();
+    let push_principal = &push_principal;
     corrupt_indexer_tip(&state, push_principal).await;
     let push_body_corrupt =
         common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now).await;
@@ -188,7 +188,7 @@ async fn stale_index_fails_attestation() {
     let app = build_router(state.clone());
     let pool = load_pool();
     let principal_id = common::golden_principal_id(&pool).await;
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
     let now = 1_700_000_000;
 
     // 1. Initial valid push.
@@ -226,7 +226,7 @@ async fn stale_index_fails_attestation() {
 
     // 4. POST /push with stale/corrupted index MUST FAIL attestation.
     let push_principal = common::genesis_push_id(&pool, "alice", "key_a").await;
-    let push_principal = push_principal.as_str();
+    let push_principal = &push_principal;
     corrupt_indexer_tip(&state, push_principal).await;
     let push_body_corrupt =
         common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now).await;
@@ -260,7 +260,7 @@ async fn failure_is_typed_not_silent() {
     let app = build_router(state.clone());
     let pool = load_pool();
     let principal_id = common::golden_principal_id(&pool).await;
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
     let now = 1_700_000_000;
 
     // 1. Initial valid push.
@@ -308,7 +308,7 @@ async fn failure_is_typed_not_silent() {
 
     // 4. POST /push under corrupted index must also fail with a typed error message.
     let push_principal = common::genesis_push_id(&pool, "alice", "key_a").await;
-    let push_principal = push_principal.as_str();
+    let push_principal = &push_principal;
     corrupt_indexer_tip(&state, push_principal).await;
     let push_body_corrupt =
         common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now).await;

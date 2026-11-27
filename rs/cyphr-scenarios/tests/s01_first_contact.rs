@@ -79,7 +79,10 @@ async fn check(h: &Harness, v: &Verdict, pr: &Principal, started: Instant) {
         .await;
     assert_eq!(v.standing, Standing::Active);
     assert!(v.evidence.is_empty());
-    assert!(pr.same_as(&v.anchor.id), "the anchor is Alice's genesis");
+    assert!(
+        pr.0.ends_with(&format!(":{}", v.anchor.id)),
+        "the anchor is Alice's genesis"
+    );
     let mut used = v.peers.clone();
     used.sort();
     assert_eq!(used, ["p1", "p2"], "a verdict names the peers it used");

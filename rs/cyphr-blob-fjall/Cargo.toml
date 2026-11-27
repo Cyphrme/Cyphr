@@ -8,6 +8,7 @@ version                = "0.1.0"
 
 [dependencies]
 blake3        = { workspace = true }
+cyphr         = { path = "../cyphr", version = "0.1.0" }
 cyphr-storage = { path = "../cyphr-storage", version = "0.1.0" }
 fjall         = { workspace = true }
 storage-fjall = { workspace = true }

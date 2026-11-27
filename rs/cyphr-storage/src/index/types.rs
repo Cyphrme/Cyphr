@@ -5,6 +5,8 @@
 //! protocol objects. The engine (Phase 3) bridges protocol types to
 //! these index-level representations.
 
+use cyphr::PrincipalGenesis;
+
 use crate::blob::Blake3Hash;
 
 /// Per-Coz metadata for the canonical event log.
@@ -39,7 +41,7 @@ pub struct IndexableCoz {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexableCommit {
     /// Principal genesis identifier (tagged digest string).
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     /// Commit ID variants (tagged digest strings).
     pub commit_ids: Vec<String>,
     /// Commit sequence number within this principal (0-indexed).
@@ -65,13 +67,13 @@ pub struct IndexableCommit {
     pub timestamp: i64,
     /// Public keys extracted from key-introducing transactions.
     pub keys: Vec<PublicKeyInfo>,
-    /// Principal Genesis variants (tagged digest strings), set only on the
+    /// Principal Genesis variants (each a single-variant id), set only on the
     /// commit that establishes the PG (`principal/create`): the PR held
     /// immediately BEFORE that commit, not the commit's own post-commit PR
     /// (SPEC §3.7.1). Empty on every other commit. `serde(default)` so a
     /// manifest written before this field existed still deserializes.
     #[serde(default)]
-    pub pg: Vec<String>,
+    pub pg: Vec<PrincipalGenesis>,
     /// The hash of the manifest blob that records this commit: where its
     /// grouping, signers and first-seen time are read from when needed.
     /// Set once the manifest is stored; `None` inside the manifest itself,
@@ -98,7 +100,7 @@ pub struct PublicKeyInfo {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct TipState {
     /// Principal genesis identifier.
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     /// Current Principal Root.
     pub pr: String,
     /// Current State Root; `None` for a Dead principal with no data.
@@ -170,7 +172,7 @@ pub struct EntityRef {
     /// only (`None` in a record written before this field existed): any
     /// authorisation decision must re-verify against replayed state.
     #[serde(default)]
-    pub principal_id: Option<String>,
+    pub principal_id: Option<PrincipalGenesis>,
     /// Whether this digest is a Principal Root variant (as opposed to a
     /// commit id, state, auth or commit root, or a coz digest). Lets a
     /// caller tell a PR claim from any other digest without loading
@@ -198,7 +200,7 @@ pub enum EntityType {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct PrincipalSummary {
     /// Principal genesis identifier.
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     /// Current Principal Root.
     pub pr: String,
     /// Total number of commits.

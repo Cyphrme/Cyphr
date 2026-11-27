@@ -357,10 +357,10 @@ impl User {
     /// for a Level 1 identity, then a key add.
     fn new_identity(&self) -> String {
         let g = self.setup(&["key", "generate", "--algo", "ES256"]);
-        let tmb = g["tmb"].as_str().expect("tmb").to_owned();
-        self.setup(&["upgrade", &format!("--identity={tmb}")]);
-        self.add_key(&tmb);
-        tmb
+        let id = format!("SHA-256:{}", g["tmb"].as_str().expect("tmb"));
+        self.setup(&["upgrade", &format!("--identity={id}")]);
+        self.add_key(&id);
+        id
     }
 
     fn add_key(&self, id: &str) {
@@ -368,7 +368,7 @@ impl User {
             "key",
             "add",
             &format!("--identity={id}"),
-            &format!("--signer={id}"),
+            &format!("--signer={}", tmb(id)),
         ]);
     }
 
@@ -708,4 +708,10 @@ fn redirect_is_not_followed() {
         "the redirect target was contacted: {:?}",
         elsewhere.hits()
     );
+}
+
+/// The bare digest of a labelled id: the genesis key's thumbprint, which
+/// is what `--signer` and the keystore take.
+fn tmb(id: &str) -> &str {
+    id.split_once(':').map_or(id, |(_, digest)| digest)
 }

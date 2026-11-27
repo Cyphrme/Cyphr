@@ -11,6 +11,7 @@
 //! the MVP the request travels out of band (a file or stdout).
 
 use base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::signer::Signer;
 use indexmap::IndexMap;
 use serde_json::Value;
@@ -40,7 +41,7 @@ fn pairing_typ(authority: &str) -> String {
 /// request for `identity` with it.
 pub fn request(
     cli: &Cli,
-    identity: &str,
+    identity: &PrincipalGenesis,
     algo: &str,
     tag: Option<&str>,
     file: Option<&std::path::Path>,
@@ -53,7 +54,7 @@ pub fn request(
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".into(), Value::String(signer.alg().to_string()));
     pay_map.insert("now".into(), Value::Number(current_timestamp().into()));
-    pay_map.insert("pg".into(), Value::String(identity.to_owned()));
+    pay_map.insert("pg".into(), Value::String(identity.to_string()));
     pay_map.insert("tmb".into(), Value::String(tmb.clone()));
     pay_map.insert("typ".into(), Value::String(pairing_typ(&cli.authority)));
     pay_map.sort_keys();
@@ -104,7 +105,7 @@ struct Verified {
 fn verify_request(
     request: &Value,
     authority: &str,
-    identity: &str,
+    identity: &PrincipalGenesis,
     now: i64,
     window: u64,
 ) -> crate::Result<Verified> {
@@ -130,7 +131,7 @@ fn verify_request(
             pairing_typ(authority)
         )));
     }
-    if text("pg")? != identity {
+    if text("pg")? != identity.to_string() {
         return Err(refuse(format!(
             "it is for principal `{}`, not `{identity}`",
             text("pg")?
@@ -176,7 +177,7 @@ fn decode(v: &Value, name: &'static str) -> crate::Result<Vec<u8>> {
 /// `identity` as a `key/create` signed by `signer_tmb`.
 pub fn accept(
     cli: &Cli,
-    identity: &str,
+    identity: &PrincipalGenesis,
     signer_tmb: &str,
     file: &std::path::Path,
     window: u64,

@@ -3,7 +3,7 @@
 //! Helpers mirror `embedded_principals.rs`.
 
 use cyphr::replay::WireBundle;
-use cyphr::{Principal, Tip, Tracking};
+use cyphr::{Principal, PrincipalGenesis, Tip, Tracking};
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::MemoryBlobStore;
 use cyphr_storage::engine::{EngineError, StorageEngine};
@@ -52,7 +52,7 @@ impl Kp {
 /// state the next commit is built on.
 struct Line {
     genesis: Genesis,
-    id: String,
+    id: PrincipalGenesis,
     state: Principal,
     bundles: Vec<WireBundle>,
 }

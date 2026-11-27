@@ -43,6 +43,7 @@
 //! so it survives a restart and adds no state.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use serde_json::Value;
 
 use super::ServerIdentity;
@@ -57,7 +58,7 @@ use super::ServerIdentity;
 /// token. Stamping issuance and checking verification against this one
 /// constant makes the two symmetric, so a token's kind is bound into
 /// the signature, not merely assumed by the reader.
-pub const BEARER_TOKEN_TYP: &str = cyphr_client::login::BEARER_TYP;
+pub const BEARER_TOKEN_TYP: &str = cyphr_net::login::BEARER_TYP;
 
 /// The signed claim naming the thumbprint (b64ut) of the principal key
 /// that logged in. The server signs it, so a holder cannot rebind a
@@ -75,7 +76,7 @@ pub const CHANNEL_FIELD: &str = "cb";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claims {
     /// The principal's genesis identifier.
-    pub pg: String,
+    pub pg: PrincipalGenesis,
     /// Permissions the token authorizes.
     pub perms: Vec<String>,
     /// Unix expiry timestamp.
@@ -100,6 +101,10 @@ pub enum TokenError {
     /// The payload verified but is missing a required claim.
     #[error("bearer token payload is missing required claim `{0}`")]
     MissingClaim(&'static str),
+
+    /// The `pg` claim is not a labelled principal id.
+    #[error("bearer token claim `pg` is not a principal id: {0}")]
+    PgMalformed(String),
 
     /// The signature did not verify against this identity's key.
     #[error("bearer token signature is invalid")]
@@ -135,14 +140,14 @@ impl ServerIdentity {
     /// (mirrors [`ServerIdentity::sign`]).
     pub fn issue_login_token(
         &self,
-        pg: impl Into<String>,
+        pg: &PrincipalGenesis,
         login_tmb: &coz::Thumbprint,
         perms: Vec<String>,
         now: i64,
         ttl_secs: i64,
         channel: Option<&[u8]>,
     ) -> Option<String> {
-        self.issue(pg.into(), Some(login_tmb), perms, now, ttl_secs, channel)
+        self.issue(pg, Some(login_tmb), perms, now, ttl_secs, channel)
     }
 
     /// A login-shaped token under a fixed login key, for unit tests that
@@ -150,7 +155,7 @@ impl ServerIdentity {
     #[cfg(test)]
     pub(crate) fn issue_test_token(
         &self,
-        pg: impl Into<String>,
+        pg: &PrincipalGenesis,
         perms: Vec<String>,
         now: i64,
         ttl_secs: i64,
@@ -164,17 +169,17 @@ impl ServerIdentity {
     #[cfg(test)]
     pub(crate) fn issue_unbound_token(
         &self,
-        pg: impl Into<String>,
+        pg: &PrincipalGenesis,
         perms: Vec<String>,
         now: i64,
         ttl_secs: i64,
     ) -> Option<String> {
-        self.issue(pg.into(), None, perms, now, ttl_secs, None)
+        self.issue(pg, None, perms, now, ttl_secs, None)
     }
 
     fn issue(
         &self,
-        pg: String,
+        pg: &PrincipalGenesis,
         login_tmb: Option<&coz::Thumbprint>,
         perms: Vec<String>,
         now: i64,
@@ -188,7 +193,8 @@ impl ServerIdentity {
         pay.now = Some(now);
         pay.tmb = Some(tmb);
         pay.typ = Some(BEARER_TOKEN_TYP.to_string());
-        pay.extra.insert("pg".to_string(), Value::String(pg));
+        pay.extra
+            .insert("pg".to_string(), Value::String(pg.to_string()));
         pay.extra
             .insert("exp".to_string(), Value::from(now + ttl_secs));
         pay.extra.insert("perms".to_string(), Value::from(perms));
@@ -265,7 +271,8 @@ fn claims_from_pay(pay: &coz::Pay) -> Result<Claims, TokenError> {
         .get("pg")
         .and_then(Value::as_str)
         .ok_or(TokenError::MissingClaim("pg"))?
-        .to_string();
+        .parse()
+        .map_err(|e: cyphr::Error| TokenError::PgMalformed(e.to_string()))?;
 
     let exp = pay
         .extra
@@ -356,7 +363,12 @@ mod tests {
         (dir, path)
     }
 
-    const PR: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+    /// The labelled id whose digest is bytes 1..=32.
+    fn pr() -> cyphr::PrincipalGenesis {
+        "SHA-256:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+            .parse()
+            .expect("labelled id")
+    }
 
     /// Backs: bearer-token claims are signature-bound; a rewritten claim is refused.
     /// Unit: e2e cannot rewrite a token minted by the server.
@@ -366,7 +378,7 @@ mod tests {
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_test_token(PR, vec!["read".to_string()], 1_000, 300)
+            .issue_test_token(&pr(), vec!["read".to_string()], 1_000, 300)
             .expect("issue token");
 
         // Flip a claim without re-signing: "read" -> "admin".
@@ -391,7 +403,7 @@ mod tests {
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_test_token(PR, vec!["read".to_string()], 1_000, 300)
+            .issue_test_token(&pr(), vec!["read".to_string()], 1_000, 300)
             .expect("issue token");
 
         // now == exp: expiry is inclusive of the boundary instant.
@@ -426,7 +438,7 @@ mod tests {
 
         let token = identity
             .issue_test_token(
-                PR,
+                &pr(),
                 vec!["read".to_string(), "write".to_string()],
                 1_700_000_000,
                 900,
@@ -436,10 +448,10 @@ mod tests {
         const GOLDEN: &str = concat!(
             r#"{"pay":{"alg":"Ed25519","now":1700000000,"#,
             r#""tmb":"aaMiqIXTeW8wfSkKY_ME3BDBAfz5t-qPLabapQ1TQfNzUFPOEp4_4KTGYRUHVbe18MOVsXusLb0qAWmmoV3Yvw","#,
-            r#""typ":"cyphr.me/user/login/bearer/create","pg":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA","#,
+            r#""typ":"cyphr.me/user/login/bearer/create","pg":"SHA-256:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA","#,
             r#""exp":1700000900,"perms":["read","write"],"#,
             r#""ltmb":"OzD0J6wdMqmN0aWu42RcWFRp1DzYJeQW8KYvXdrsLOrNV8Pva_ZpjrNtvsdqWsFL_zpZUDutAiTu4W5OdIL44A"},"#,
-            r#""sig":"1SLPRqsv9liBekrZmtRYHGylWGLXhw3QOlWaeCya-agbJ0Dmkk4WhvfGjUkkysea5LdTYHPDP9C4Iqz2pd7SBg"}"#,
+            r#""sig":"TliTebO2uvDiBJHYkDz2y11fPvsimeuCTa-psekNdbgfDm-Cg-KVHdehGhPjpi1NwXDrWU_rtHMfocZ1yYzYBg"}"#,
         );
 
         assert_eq!(token, GOLDEN);
@@ -449,7 +461,7 @@ mod tests {
         let claims = identity
             .verify_token(&token, 1_700_000_000)
             .expect("golden-vector token must verify");
-        assert_eq!(claims.pg, PR);
+        assert_eq!(claims.pg, pr());
     }
 
     /// Backs: the login key rides in the signed token (#162). The claim
@@ -464,13 +476,20 @@ mod tests {
             .expect("thumbprint");
 
         let token = identity
-            .issue_login_token(PR, &login_tmb, vec!["read".to_string()], 1_000, 300, None)
+            .issue_login_token(
+                &pr(),
+                &login_tmb,
+                vec!["read".to_string()],
+                1_000,
+                300,
+                None,
+            )
             .expect("issue login token");
         let claims = identity.verify_token(&token, 1_100).expect("verifies");
         assert_eq!(claims.login_tmb, Some(login_tmb.to_b64()));
 
         let plain = identity
-            .issue_unbound_token(PR, vec!["read".to_string()], 1_000, 300)
+            .issue_unbound_token(&pr(), vec!["read".to_string()], 1_000, 300)
             .expect("issue plain token");
         assert_eq!(
             identity.verify_token(&plain, 1_100).unwrap().login_tmb,

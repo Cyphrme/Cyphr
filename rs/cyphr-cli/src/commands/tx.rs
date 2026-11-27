@@ -1,6 +1,6 @@
 //! ParsedCoz commands.
 
-use cyphr::StateDigest;
+use cyphr::{PrincipalGenesis, StateDigest};
 
 use super::common::{
     CliPrincipal, get_commits_from_engine, load_key_from_keystore, load_principal_from_engine,
@@ -17,7 +17,7 @@ pub fn run(cli: &Cli, command: &TxCommands) -> crate::Result<()> {
 }
 
 /// List cozies for an identity.
-fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
+fn list(cli: &Cli, identity: &PrincipalGenesis) -> crate::Result<()> {
     let principal = load_identity(cli, identity)?;
 
     let cozies: Vec<_> = principal.iter_all_cozies().collect();
@@ -72,7 +72,7 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
 }
 
 /// Verify coz chain integrity for an identity.
-pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
+pub fn verify(cli: &Cli, identity: &PrincipalGenesis) -> crate::Result<()> {
     let store = parse_store(cli)?;
 
     // Load commits from store. A real storage error here (corrupted
@@ -85,22 +85,12 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     if commits.is_empty() {
         // Genesis state - verify by reconstructing from keystore
         let keystore = super::common::open_backend(cli)?;
-        let key = load_key_from_keystore(&keystore, identity)?;
+        let key = load_key_from_keystore(&keystore, &super::common::keystore_name(identity)?)?;
         let principal = cyphr::PrincipalState::genesis(key)?;
 
         // Verify PG matches (L1 has no PG)
         if let Some(pg) = principal.pg() {
-            use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            let computed_pg = pg
-                .as_multihash()
-                .first_variant()
-                .map(Base64UrlUnpadded::encode_string)?;
-            if computed_pg != identity {
-                return Err(Error::PgMismatch {
-                    computed: computed_pg,
-                    expected: identity.to_owned(),
-                });
-            }
+            check_pg(pg, identity)?;
         }
 
         match cli.format {
@@ -130,21 +120,12 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     // Verify PG matches
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
     if let Some(pg) = principal.pg() {
-        let computed_pg = pg
-            .as_multihash()
-            .first_variant()
-            .map(Base64UrlUnpadded::encode_string)?;
-        if computed_pg != identity {
-            return Err(Error::PgMismatch {
-                computed: computed_pg,
-                expected: identity.to_owned(),
-            });
-        }
+        check_pg(pg, identity)?;
     }
 
     // Verify state digests from commits match computed state
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
     let Some(last_commit) = commits.last() else {
         return Ok(());
     };
@@ -193,8 +174,20 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     Ok(())
 }
 
+/// Whether the PG the history computed names `identity`.
+fn check_pg(computed: &PrincipalGenesis, identity: &PrincipalGenesis) -> crate::Result<()> {
+    use cyphr::StateDigest;
+    if computed.as_multihash().matches(identity.as_multihash()) {
+        return Ok(());
+    }
+    Err(Error::PgMismatch {
+        computed: computed.to_string(),
+        expected: identity.to_string(),
+    })
+}
+
 /// Load identity from storage or keystore.
-fn load_identity(cli: &Cli, identity: &str) -> crate::Result<CliPrincipal> {
+fn load_identity(cli: &Cli, identity: &PrincipalGenesis) -> crate::Result<CliPrincipal> {
     let store = parse_store(cli)?;
     let keystore = super::common::open_backend(cli)?;
     load_principal_from_engine(&store, &keystore, identity)

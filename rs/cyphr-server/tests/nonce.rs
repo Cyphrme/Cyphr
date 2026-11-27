@@ -110,7 +110,10 @@ fn pg_of(p: &cyphr::Principal) -> String {
 /// genesis) reads from its record alone.
 fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
-    common::push_body(id, &entries[i].bundle().expect("bundle"))
+    let mut body =
+        serde_json::to_value(entries[i].bundle().expect("bundle")).expect("bundle serializes");
+    body["principal_id"] = id.into();
+    body.to_string()
 }
 
 /// The tip payload minus the response's own clock.

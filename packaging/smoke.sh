@@ -53,8 +53,8 @@ for _ in $(seq 1 100); do
 done
 [[ -n $addr ]] || { echo "server never reported a listen address" >&2; cat "$tmp/err" >&2; exit 1; }
 
-# An unknown principal id: well-formed base64url of 32 bytes, never created.
-unknown=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+# An unknown principal id: a labelled SHA-256 id of 32 bytes, never created.
+unknown=SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 status=$(curl -s -o "$tmp/body" -w '%{http_code}' "http://$addr/tip?pg=$unknown")
 echo "GET /tip?pg=$unknown -> $status"
 cat "$tmp/body"; echo

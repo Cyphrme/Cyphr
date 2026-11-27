@@ -43,6 +43,7 @@
 
 use std::collections::BTreeSet;
 
+use cyphr::PrincipalGenesis;
 use cyphr::state::TaggedDigest;
 use cyphr_storage::blob::Blake3Hash;
 use cyphr_storage::index::{
@@ -109,7 +110,7 @@ struct IndexMeta {
 struct CommitRow {
     commit: CommitRef,
     entries: Vec<(String, EntityRef)>,
-    pg: Vec<String>,
+    pg: Vec<PrincipalGenesis>,
 }
 
 /// Encode a `commits` partition key: `principal_id`'s length (big-endian
@@ -136,8 +137,9 @@ struct CommitRow {
 /// differing content byte, which likewise can never be masked by any
 /// suffix. See `injectivity` tests below for the adversarial cases this
 /// rules out.
-fn commit_key(principal_id: &str, sequence: u64) -> Vec<u8> {
-    let pid = principal_id.as_bytes();
+fn commit_key(principal_id: &PrincipalGenesis, sequence: u64) -> Vec<u8> {
+    let id = principal_id.to_string();
+    let pid = id.as_bytes();
     let mut key = Vec::with_capacity(4 + pid.len() + 8);
     key.extend_from_slice(&(pid.len() as u32).to_be_bytes());
     key.extend_from_slice(pid);
@@ -146,34 +148,37 @@ fn commit_key(principal_id: &str, sequence: u64) -> Vec<u8> {
 }
 
 /// Inclusive `[from, to]` range of [`commit_key`]s for one `principal_id`.
-fn commit_key_range(principal_id: &str, from: u64, to: u64) -> (Vec<u8>, Vec<u8>) {
+fn commit_key_range(principal_id: &PrincipalGenesis, from: u64, to: u64) -> (Vec<u8>, Vec<u8>) {
     (commit_key(principal_id, from), commit_key(principal_id, to))
 }
 
 /// The stored principal id `id` names: itself if a principal is stored
 /// under it, else the principal its alias names, else `id` unchanged.
-fn canonical_id(tips: &Keyspace, aliases: &Keyspace, id: String) -> Result<String, IndexerError> {
-    // Established-PG markers share this table under a NUL-prefixed key
-    // (see [`pg_marker_key`]); no real id starts with NUL.
-    if id.starts_with('\0') {
-        return Ok(id);
+fn canonical_id(
+    tips: &Keyspace,
+    aliases: &Keyspace,
+    id: &PrincipalGenesis,
+) -> Result<PrincipalGenesis, IndexerError> {
+    let key = id.to_string();
+    if tips.contains_key(key.as_bytes()).map_err(to_backend_err)? {
+        return Ok(id.clone());
     }
-    if tips.contains_key(id.as_bytes()).map_err(to_backend_err)? {
-        return Ok(id);
-    }
-    match aliases.get(id.as_bytes()).map_err(to_backend_err)? {
-        Some(bytes) => String::from_utf8(bytes.to_vec())
-            .map_err(|e| IndexerError::Backend(format!("alias value is not utf-8: {e}"))),
-        None => Ok(id),
+    match aliases.get(key.as_bytes()).map_err(to_backend_err)? {
+        Some(bytes) => std::str::from_utf8(&bytes)
+            .map_err(|e| IndexerError::Backend(format!("alias value is not utf-8: {e}")))?
+            .parse()
+            .map_err(|e| IndexerError::Backend(format!("alias value is not a principal id: {e}"))),
+        None => Ok(id.clone()),
     }
 }
 
 /// Key of the "this principal's PG is established" marker, stored in the
 /// alias table so the index still registers exactly one alias table.
-fn pg_marker_key(principal_id: &str) -> Vec<u8> {
-    let mut key = Vec::with_capacity(1 + principal_id.len());
+fn pg_marker_key(principal_id: &PrincipalGenesis) -> Vec<u8> {
+    let id = principal_id.to_string();
+    let mut key = Vec::with_capacity(1 + id.len());
     key.push(0);
-    key.extend_from_slice(principal_id.as_bytes());
+    key.extend_from_slice(id.as_bytes());
     key
 }
 
@@ -196,13 +201,9 @@ fn ser<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IndexerError> {
 /// type), and a write touches only its own key.
 fn holder_key(digest: &str, holder: &EntityRef) -> Vec<u8> {
     let mut key = digest_prefix(digest);
-    key.extend_from_slice(
-        holder
-            .principal_id
-            .as_deref()
-            .unwrap_or_default()
-            .as_bytes(),
-    );
+    if let Some(id) = &holder.principal_id {
+        key.extend_from_slice(id.to_string().as_bytes());
+    }
     key.push(0);
     key.push(holder.entity_type as u8);
     key
@@ -382,15 +383,18 @@ impl FjallIndexer {
 impl Indexer for FjallIndexer {
     fn get_tip(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> impl std::future::Future<Output = Result<Option<TipState>, IndexerError>> + Send {
-        let principal_id = principal_id.to_string();
+        let principal_id = principal_id.clone();
         let tips = self.tips.clone();
         let aliases = self.aliases.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                let id = canonical_id(&tips, &aliases, principal_id)?;
-                match tips.get(id.as_bytes()).map_err(to_backend_err)? {
+                let id = canonical_id(&tips, &aliases, &principal_id)?;
+                match tips
+                    .get(id.to_string().as_bytes())
+                    .map_err(to_backend_err)?
+                {
                     Some(bytes) => Ok(Some(de(&bytes)?)),
                     None => Ok(None),
                 }
@@ -402,7 +406,7 @@ impl Indexer for FjallIndexer {
 
     fn is_pg_established(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send {
         let key = pg_marker_key(principal_id);
         let aliases = self.aliases.clone();
@@ -415,17 +419,17 @@ impl Indexer for FjallIndexer {
 
     fn get_commit_chain(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: Option<u64>,
         to: Option<u64>,
     ) -> impl std::future::Future<Output = Result<Vec<CommitRef>, IndexerError>> + Send {
-        let principal_id = principal_id.to_string();
+        let principal_id = principal_id.clone();
         let commits = self.commits.clone();
         let tips = self.tips.clone();
         let aliases = self.aliases.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                let principal_id = canonical_id(&tips, &aliases, principal_id)?;
+                let principal_id = canonical_id(&tips, &aliases, &principal_id)?;
                 let (lower, upper) =
                     commit_key_range(&principal_id, from.unwrap_or(0), to.unwrap_or(u64::MAX));
                 let mut chain = Vec::new();
@@ -579,12 +583,12 @@ impl IndexerWrite for FjallIndexer {
 
     fn replace_chain_from(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         sequence: u64,
         commits: &[IndexableCommit],
         _token: &DeriveToken,
     ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
-        let principal_id = principal_id.to_string();
+        let principal_id = principal_id.clone();
         let commits = commits.to_vec();
         let db = self.db.clone();
         let ks = self.keyspaces();
@@ -668,10 +672,15 @@ impl IndexerWrite for FjallIndexer {
 /// such a write names no new truth, it rewrites an old one. The only
 /// exclusive claim; digests name sets of holders.
 fn claims_conflict(ks: &Keyspaces, commit: &IndexableCommit) -> Result<(), IndexerError> {
-    let pid_key = commit.principal_id.as_bytes();
+    let id = commit.principal_id.to_string();
+    let pid_key = id.as_bytes();
     for pr in commit.pg.iter().filter(|pr| **pr != commit.principal_id) {
-        let alias_owner = ks.aliases.get(pr).map_err(to_backend_err)?;
-        let names_principal = ks.principals.contains_key(pr).map_err(to_backend_err)?;
+        let alias = pr.to_string();
+        let alias_owner = ks.aliases.get(alias.as_bytes()).map_err(to_backend_err)?;
+        let names_principal = ks
+            .principals
+            .contains_key(alias.as_bytes())
+            .map_err(to_backend_err)?;
         let other = match alias_owner {
             Some(owner) => owner.as_ref() != pid_key,
             None => names_principal,
@@ -758,7 +767,7 @@ fn db_index_commit(
 fn db_replace_chain_from(
     db: &Database,
     ks: &Keyspaces,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     sequence: u64,
     commits: &[IndexableCommit],
 ) -> Result<(), IndexerError> {
@@ -789,7 +798,7 @@ fn db_replace_chain_from(
             staged.holders.insert(key, kept);
         }
         for pr in &row.pg {
-            staged.aliases.insert(pr.as_bytes().to_vec(), None);
+            staged.aliases.insert(pr.to_string().into_bytes(), None);
         }
         if !row.pg.is_empty() {
             staged.aliases.insert(pg_marker_key(principal_id), None);
@@ -821,10 +830,10 @@ fn db_replace_chain_from(
 /// The principal summary stored under exactly `principal_id`.
 fn summary_of(
     ks: &Keyspaces,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
 ) -> Result<Option<PrincipalSummary>, IndexerError> {
     ks.principals
-        .get(principal_id.as_bytes())
+        .get(principal_id.to_string().as_bytes())
         .map_err(to_backend_err)?
         .map(|b| de(&b))
         .transpose()
@@ -871,9 +880,10 @@ impl Staged {
             self.holders.insert(key, merged.pop());
         }
 
-        let pid_key = commit.principal_id.as_bytes();
+        let id = commit.principal_id.to_string();
+        let pid_key = id.as_bytes();
         // The principal's own id needs no alias.
-        let pg: Vec<String> = commit
+        let pg: Vec<PrincipalGenesis> = commit
             .pg
             .iter()
             .filter(|pr| **pr != commit.principal_id)
@@ -881,7 +891,7 @@ impl Staged {
             .collect();
         for pr in &pg {
             self.aliases
-                .insert(pr.as_bytes().to_vec(), Some(pid_key.to_vec()));
+                .insert(pr.to_string().into_bytes(), Some(pid_key.to_vec()));
         }
         if !commit.pg.is_empty() {
             self.aliases
@@ -963,7 +973,8 @@ impl Staged {
                 partitions: PARTITION_NAMES.iter().map(|s| s.to_string()).collect(),
             })?,
         );
-        let pid_key = tip.principal_id.as_bytes();
+        let id = tip.principal_id.to_string();
+        let pid_key = id.as_bytes();
         let pr = tip.prs.first().cloned().unwrap_or_default();
         batch.insert(
             &ks.tips,

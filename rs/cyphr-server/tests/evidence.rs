@@ -3,14 +3,14 @@
 //! checks them offline from signatures and the chain alone.
 //!
 //! Every test runs over real servers and real signed commits; the client
-//! side is `cyphr_client::evidence`, fed only what it fetched.
+//! side is `cyphr_net::evidence`, fed only what it fetched.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::evidence::{EvidenceFailure, verify_principal_fork};
+use cyphr_net::evidence::{EvidenceFailure, verify_principal_fork};
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::{AppState, build_router};
@@ -118,7 +118,7 @@ async fn genesis_commit(keys: &[&Kp], now: i64) -> cyphr::Principal {
 /// Push body for line `i` of `p`'s export under `id`, in the wire form
 /// (SPEC 4.6.2): its keys travel in the bundle's `keys`, so commit 0 (the
 /// genesis) reads from its record alone.
-fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
+fn wire(p: &cyphr::Principal, i: usize, id: &cyphr::PrincipalGenesis) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
     common::push_body(id, &entries[i].bundle().expect("bundle"))
 }
@@ -154,16 +154,19 @@ async fn attestor(key_from: Option<&Path>) -> (AppState, Arc<ServerIdentity>, Te
 }
 
 /// What a client holds of a principal after fetching `/patch` from `app`.
-async fn fetch_entries(app: &axum::Router, pr: &str) -> Vec<cyphr_client::PatchEntry> {
+async fn fetch_entries(
+    app: &axum::Router,
+    pr: &cyphr::PrincipalGenesis,
+) -> Vec<cyphr_net::PatchEntry> {
     let (status, body) = get_json(app.clone(), &format!("/patch?pg={pr}")).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
-    cyphr_client::verify_patch_body(&serde_json::to_vec(&body).expect("json"), pr, None)
+    cyphr_net::verify_patch_body(&serde_json::to_vec(&body).expect("json"), pr, None)
         .expect("patch decodes")
         .entries
 }
 
 /// The signed coz of a server's `GET /tip`.
-async fn tip_of(app: &axum::Router, pr: &str) -> serde_json::Value {
+async fn tip_of(app: &axum::Router, pr: &cyphr::PrincipalGenesis) -> serde_json::Value {
     let (status, body) = get_json(app.clone(), &format!("/tip?pg={pr}")).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     assert_eq!(body["statement"]["kind"], "signed", "{body:?}");
@@ -175,7 +178,7 @@ async fn tip_of(app: &axum::Router, pr: &str) -> serde_json::Value {
 struct Pr {
     g: Kp,
     a: Kp,
-    id: String,
+    id: cyphr::PrincipalGenesis,
     base: cyphr::Principal,
 }
 
@@ -183,13 +186,7 @@ async fn principal() -> Pr {
     let pool = load_pool();
     let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
     let base = genesis_commit(&[&g, &a], NOW).await;
-    // The bare spelling of the PG, which names the evidence's `pg`.
-    let id = golden_principal_id(&pool)
-        .await
-        .split_once(':')
-        .expect("labelled PG")
-        .1
-        .to_string();
+    let id = golden_principal_id(&pool).await;
     Pr { id, g, a, base }
 }
 
@@ -220,7 +217,10 @@ impl Pr {
     }
 }
 
-async fn evidence_items(app: &axum::Router, pr: &str) -> Vec<serde_json::Value> {
+async fn evidence_items(
+    app: &axum::Router,
+    pr: &cyphr::PrincipalGenesis,
+) -> Vec<serde_json::Value> {
     let (status, body) = get_json(app.clone(), &format!("/evidence?pg={pr}")).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     envelope_payload(&body)["items"]
@@ -278,9 +278,11 @@ async fn fork_evidence_is_served_and_verified_offline() {
     let proof = verify_principal_fork(item, &pr.id, genesis().await, &held)
         .await
         .expect("the client verifies the fork from the chain it fetched");
-    assert_eq!((proof.pg.as_str(), proof.height), (pr.id.as_str(), 1));
+    assert_eq!((proof.pg, proof.height), (pr.id.clone(), 1));
 
-    let refused = async |item: &serde_json::Value, pg: &str, held: &[cyphr_client::PatchEntry]| {
+    let refused = async |item: &serde_json::Value,
+                         pg: &cyphr::PrincipalGenesis,
+                         held: &[cyphr_net::PatchEntry]| {
         verify_principal_fork(item, pg, genesis().await, held)
             .await
             .expect_err("must be refused")
@@ -549,9 +551,9 @@ async fn genesis_fork_is_evidence_at_height_zero() {
 /// `g`'s principal whose genesis commit (SPEC 5.1) is `g`'s self
 /// `key/create`, a KT-level `nonce/create` of `nonce`, the
 /// `principal/create` and the `commit/create`, made at `now`; and its PG,
-/// bare. Two nonces on one key give two principals with one genesis key
+/// labelled. Two nonces on one key give two principals with one genesis key
 /// and different PGs (SPEC 5.1: "a nonce embedding for a unique PG").
-async fn nonce_genesis(g: &Kp, nonce: u8, now: i64) -> (cyphr::Principal, String) {
+async fn nonce_genesis(g: &Kp, nonce: u8, now: i64) -> (cyphr::Principal, cyphr::PrincipalGenesis) {
     let signer = cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb);
     let mut p = cyphr::Principal::implicit(key_of(g))
         .await
@@ -581,8 +583,7 @@ async fn nonce_genesis(g: &Kp, nonce: u8, now: i64) -> (cyphr::Principal, String
         .finalize_with_software(&signer, now, "cyphr.me")
         .await
         .expect("genesis commit");
-    let bare = pg.split_once(':').expect("labelled PG").1.to_string();
-    (p, bare)
+    (p, pg)
 }
 
 /// Claim (`arch-principal-fork-evidence`, SPEC 5.1 nonce siblings): a fork
@@ -610,7 +611,7 @@ async fn a_nonce_siblings_fork_is_not_evidence_against_the_other() {
     };
     let relabel = |item: &serde_json::Value| {
         let mut item = item.clone();
-        item["pg"] = serde_json::json!(honest_pg);
+        item["pg"] = serde_json::json!(honest_pg.to_string());
         item
     };
 

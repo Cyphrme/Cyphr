@@ -16,9 +16,9 @@ tokio         = { workspace = true, features = ["rt", "macros"] }
 [dependencies.cyphr]
 path = "../cyphr"
 
-[dependencies.cyphr-client]
+[dependencies.cyphr-net]
 default-features = false
-path             = "../cyphr-client"
+path             = "../cyphr-net"
 
 [dependencies.cyphr-server]
 path = "../cyphr-server"

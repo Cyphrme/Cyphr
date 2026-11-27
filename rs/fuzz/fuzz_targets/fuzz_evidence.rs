@@ -6,7 +6,7 @@
 // untrusted-input parser.
 
 use cyphr::eml::MemoryStorage;
-use cyphr_client::evidence::{EvidenceItem, verify_principal_fork};
+use cyphr_net::evidence::{EvidenceItem, verify_principal_fork};
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
@@ -52,7 +52,7 @@ fuzz_target!(|data: &[u8]| {
             };
             json!({
                 "kind": "principal-fork",
-                "pg": b64(&[7; 32]),
+                "pg": format!("SHA-256:{}", b64(&[7; 32])),
                 "height": u64::arbitrary(&mut u).unwrap_or_default() % 4,
                 "pre": if bool::arbitrary(&mut u).unwrap_or(false) { Value::Null } else { json!(blob(&mut u)) },
                 "a": {"txs": [[blob(&mut u)]]},
@@ -66,6 +66,8 @@ fuzz_target!(|data: &[u8]| {
         let Some(base) = genesis().await else {
             return;
         };
-        let _ = verify_principal_fork(&item, &b64(&[7; 32]), base, &[]).await;
+        let pg = cyphr::PrincipalGenesis::from_digest(cyphr::state::HashAlg::Sha256, vec![7; 32])
+            .expect("a 32-byte digest is a SHA-256 width");
+        let _ = verify_principal_fork(&item, &pg, base, &[]).await;
     });
 });

@@ -226,8 +226,7 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
     let state = boot(config, false).await;
     let fixture = common::load_golden("mutations", "key_add_changes_state");
     let principal_id = common::fixture_principal_id(&fixture);
-    let principal_id = principal_id.as_str();
-    common::bootstrap_principal(&state, principal_id, &fixture).await;
+    common::bootstrap_principal(&state, &principal_id, &fixture).await;
 
     // Drop every handle onto the physical databases (the engine, the blob
     // store, the indexer, all reachable only through `state`) before
@@ -323,9 +322,8 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
 
     let pool = common::load_pool();
     let principal_id = common::golden_principal_id(&pool).await;
-    let principal_id = principal_id.as_str();
     let push_now = 1_700_000_000;
-    let push_body = common::build_genesis_push_body(&pool, principal_id, push_now).await;
+    let push_body = common::build_genesis_push_body(&pool, &principal_id, push_now).await;
     let (push_status, push_json) = common::post_json(app.clone(), "/push", push_body).await;
     assert_eq!(
         push_status,
@@ -361,7 +359,7 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
         &pool,
         "golden",
         AUDIENCE,
-        Some(principal_id),
+        Some(&principal_id),
         None,
         login_now,
     );
@@ -376,13 +374,8 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     let claims_before = identity_before
         .verify_token(&token_before, now_secs())
         .expect("token issued before deletion must verify");
-    // The token's subject is the principal's bare canonical digest.
-    assert_eq!(
-        claims_before.pg,
-        principal_id
-            .split_once(':')
-            .map_or(principal_id, |(_, digest)| digest)
-    );
+    // The token's subject is the principal's labelled canonical id.
+    assert_eq!(claims_before.pg, principal_id);
 
     // Drop every handle onto the physical databases before touching
     // index/ on disk.
@@ -475,7 +468,7 @@ fn login_body(
     pool: &test_fixtures::Pool,
     signer_name: &str,
     audience: &str,
-    claimed_pr: Option<&str>,
+    claimed_pr: Option<&cyphr::PrincipalGenesis>,
     challenge: Option<&str>,
     now: i64,
 ) -> String {
@@ -494,7 +487,7 @@ fn login_body(
     pay.typ = Some(format!("{audience}/user/login/request/create"));
     if let Some(pr) = claimed_pr {
         pay.extra
-            .insert("pg".to_string(), serde_json::Value::String(pr.into()));
+            .insert("pg".to_string(), serde_json::Value::String(pr.to_string()));
     }
     if let Some(c) = challenge {
         pay.extra

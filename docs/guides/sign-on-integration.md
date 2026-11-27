@@ -513,17 +513,16 @@ one its genesis keys derive — for a single-key genesis, the genesis key's
 thumbprint — and the server refuses a first push filed under any other id
 with a `400`,
 `invalid input: principal_id is not the genesis-derived id: <id>`. The server
-stores the algorithm-labelled spelling (`SHA-256:M9wE…`) and also accepts
-the bare digest (`M9wE…`) as input for the same principal. No one can
+stores the algorithm-labelled spelling (`SHA-256:M9wE…`), which is the only
+spelling it accepts as input: a bare digest is refused. No one can
 claim another principal's identifier by pushing first.
 
 Two consequences for your account table:
 
-- **Normalize the spelling.** The token's `pg` is the spelling the client
-  claimed at login, copied verbatim, so one principal can arrive bare
-  from one client and labelled from another. Pick one form — the part
-  after the `ALG:` label, or the labelled form — and convert before you
-  look up or create a row, or one person gets two accounts.
+- **Key the row on the token's `pg`, verbatim.** It is the principal's
+  labelled id, one spelling whichever way the client named the principal at
+  login (a login claiming a bare digest is refused), so one person is one
+  row.
 - **Addressing a principal by its Principal Genesis (PG) is not
   supported yet.** A principal that adds keys before
   `principal/create` has a PG that differs from its genesis-derived id,
@@ -547,7 +546,7 @@ users need accounts that cannot be linked, this scheme does not provide it.
 
 The exchange above makes your app trust the Cyphr server's word: the token says
 the server found the key active. If your app is written in Rust, you can drop
-that trust. `cyphr_client::RelyingParty` (in `rs/cyphr-client`) holds its own
+that trust. `cyphr_net::RelyingParty` (in `rs/cyphr-net`) holds its own
 copy of one principal's record and decides a sign-in from the key set it
 replayed itself; the server is only a peer it pulls from.
 
@@ -570,7 +569,7 @@ replayed itself; the server is only a peer it pulls from.
   interval of the removal reaching a peer you pull from. A fork it cannot
   record, or one that abandoned its own branch, also refuses.
 
-`cargo run -p cyphr-client --example relying_party -- --server
+`cargo run -p cyphr-net --example relying_party -- --server
 http://127.0.0.1:3999` signs a fresh principal in this way against a running
 server. The login itself is the same signed request as above (`cyphr login`
 makes it), so a user's client does not change. The library does not run the
@@ -801,8 +800,8 @@ Named plainly, because finding these out mid-integration is worse than reading
 them here:
 
 - **Signing a login is not an SDK for your language.** `cyphr login` signs one
-  from the command line, and the Rust crate `cyphr-client` carries the login
-  contract (`cyphr_client::login`) and a relying party that checks sign-ins
+  from the command line, and the Rust crate `cyphr-net` carries the login
+  contract (`cyphr_net::login`) and a relying party that checks sign-ins
   without trusting this server's token (see [Skipping the server's
   token](#skipping-the-servers-token)). For any other stack, the code in this
   guide is the reference; port it.

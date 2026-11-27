@@ -183,7 +183,7 @@ async fn sign_key_create_commit<S: eml::Storage>(
 
 /// The id the fixture's genesis derives (SPEC 3.1), the only `principal_id`
 /// the engine accepts for it.
-fn fixture_principal_id(fixture: &serde_json::Value) -> String {
+fn fixture_principal_id(fixture: &serde_json::Value) -> cyphr::PrincipalGenesis {
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
     cyphr_storage::engine::genesis_principal_id(&make_genesis(genesis_keys))
         .expect("fixture genesis derives an id")
@@ -191,13 +191,17 @@ fn fixture_principal_id(fixture: &serde_json::Value) -> String {
 
 /// The id (the PG, SPEC 3.1) of the standard principal whose genesis
 /// commit `build_genesis_push_body` pushes.
-async fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
+async fn golden_principal_id(pool: &test_fixtures::Pool) -> cyphr::PrincipalGenesis {
     common::golden_principal_id(pool).await
 }
 
 /// Bootstrap a principal into the engine via the validated write path
 /// (explicit genesis), submitting every commit in the fixture in order.
-async fn bootstrap_principal(state: &AppState, principal_id: &str, fixture: &serde_json::Value) {
+async fn bootstrap_principal(
+    state: &AppState,
+    principal_id: &cyphr::PrincipalGenesis,
+    fixture: &serde_json::Value,
+) {
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
     let commits = fixture["commits"].as_array().unwrap();
 
@@ -269,7 +273,7 @@ async fn send(req: Request<Body>, app: axum::Router) -> (StatusCode, serde_json:
 /// below, which only differ in what (if any) bearer token they attach.
 async fn build_genesis_push_body(
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    principal_id: &cyphr::PrincipalGenesis,
     now: i64,
 ) -> String {
     common::build_genesis_push_body(pool, principal_id, now).await
@@ -310,7 +314,7 @@ fn real_now() -> i64 {
 async fn push_with_mismatched_token_pr_rejected() {
     let pool = load_pool();
     let principal_id = golden_principal_id(&pool).await;
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
     let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000).await;
 
     let state = state_with_identity();
@@ -319,7 +323,8 @@ async fn push_with_mismatched_token_pr_rejected() {
         .as_ref()
         .unwrap()
         .issue_login_token(
-            "a-different-principal",
+            &cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![0x44; 32])
+                .expect("32-byte digest"),
             &pool.get("golden").unwrap().compute_tmb().unwrap(),
             vec!["write".to_string()],
             real_now(),
@@ -343,7 +348,7 @@ async fn push_with_mismatched_token_pr_rejected() {
 async fn push_with_matching_token_pr_succeeds() {
     let pool = load_pool();
     let principal_id = golden_principal_id(&pool).await;
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
     let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000).await;
 
     let state = state_with_identity();
@@ -352,8 +357,8 @@ async fn push_with_matching_token_pr_succeeds() {
         .as_ref()
         .unwrap()
         .issue_login_token(
-            // A token's subject is the canonical bare digest.
-            cyphr_storage::engine::bare_digest(principal_id),
+            // A token's subject is the canonical labelled id.
+            principal_id,
             &pool.get("golden").unwrap().compute_tmb().unwrap(),
             vec!["read".to_string(), "write".to_string()],
             real_now(),
@@ -384,7 +389,7 @@ async fn push_with_matching_token_pr_succeeds() {
 async fn push_for_existing_principal_with_no_token_succeeds() {
     let pool = load_pool();
     let principal_id = golden_principal_id(&pool).await;
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
 
     let genesis_body = build_genesis_push_body(&pool, principal_id, 1_700_000_000).await;
 
@@ -558,13 +563,13 @@ async fn login_token(
     state: &Arc<AppState>,
     pool: &test_fixtures::Pool,
     signer_name: &str,
-    pr: &str,
+    pr: &cyphr::PrincipalGenesis,
 ) -> String {
     let req = Request::builder()
         .method("POST")
         .uri("/auth/login")
         .header("content-type", "application/json")
-        .body(Body::from(login_body(pool, signer_name, pr)))
+        .body(Body::from(login_body(pool, signer_name, &pr.to_string())))
         .unwrap();
     let (status, json) = send(req, build_router(state.clone())).await;
     assert_eq!(status, StatusCode::OK, "{signer_name} login: {json:?}");
@@ -674,7 +679,7 @@ async fn revoked_key_session() -> (Arc<AppState>, String, String, String) {
     let state = state_with_login();
     let pool = load_pool();
     let pid = golden_principal_id(&pool).await;
-    let pid = pid.as_str();
+    let pid = &pid;
 
     let genesis = build_genesis_push_body(&pool, pid, 1_700_000_000).await;
     let (status, json) = send(push_request(genesis, None), build_router(state.clone())).await;
@@ -763,7 +768,7 @@ async fn bearer_refuses_server_signed_non_token() {
     pay.tmb = Some(pool.get("golden").unwrap().compute_tmb().unwrap());
     pay.typ = Some("cyphr-server/auth/not-a-token".to_string());
     pay.extra
-        .insert("pg".to_string(), serde_json::Value::String(pid.clone()));
+        .insert("pg".to_string(), serde_json::Value::String(pid.to_string()));
     pay.extra
         .insert("exp".to_string(), serde_json::Value::from(real_now() + 300));
     pay.extra
@@ -796,8 +801,8 @@ async fn bearer_refuses_server_signed_non_token() {
 async fn token_key_absent_or_missing_is_refused_at_push() {
     let (state, followup, _revoked, _survivor) = revoked_key_session().await;
     let pool = load_pool();
-    // A token's subject is the canonical bare digest.
-    let pid = cyphr_storage::engine::bare_digest(&golden_principal_id(&pool).await).to_string();
+    // A token's subject is the canonical labelled id.
+    let pid = golden_principal_id(&pool).await;
     let identity = state.identity.as_ref().unwrap();
     let stranger = coz::Alg::Ed25519
         .compute_thumbprint(&coz::Alg::Ed25519.generate_keypair().pub_bytes)
@@ -805,7 +810,7 @@ async fn token_key_absent_or_missing_is_refused_at_push() {
     let perms = || vec!["write".to_string()];
 
     let absent = identity
-        .issue_login_token(pid.as_str(), &stranger, perms(), real_now(), 300, None)
+        .issue_login_token(&pid, &stranger, perms(), real_now(), 300, None)
         .expect("issue token");
     // What no login mints: a genuine server-signed bearer token naming no
     // login key (built by hand; issuance has no such path).
@@ -816,7 +821,7 @@ async fn token_key_absent_or_missing_is_refused_at_push() {
         pay.tmb = identity.alg().compute_thumbprint(identity.pub_key());
         pay.typ = Some(cyphr_server::auth::token::BEARER_TOKEN_TYP.to_string());
         pay.extra
-            .insert("pg".to_string(), serde_json::Value::String(pid.clone()));
+            .insert("pg".to_string(), serde_json::Value::String(pid.to_string()));
         pay.extra
             .insert("exp".to_string(), serde_json::Value::from(real_now() + 300));
         pay.extra
@@ -895,7 +900,7 @@ async fn token_key_naked_revoked_session_refused() {
     let state = state_with_login();
     let pool = load_pool();
     let pid = golden_principal_id(&pool).await;
-    let pid = pid.as_str();
+    let pid = &pid;
 
     let genesis = build_genesis_push_body(&pool, pid, 1_700_000_000).await;
     let (status, json) = send(push_request(genesis, None), build_router(state.clone())).await;

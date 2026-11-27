@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::http::StatusCode;
 use cyphr::replay::WireBundle;
-use cyphr_client::{
+use cyphr_net::{
     Anchor, ChannelBinding, ConnectError, Connector, HttpConnector, PatchEntry, PeerStanding,
     PullPeer, Record, Request, pull,
 };
@@ -157,7 +157,7 @@ async fn line(
     (p, bundles)
 }
 
-async fn follower(id: &str, entries: &[&WireBundle]) -> Record {
+async fn follower(id: &cyphr::PrincipalGenesis, entries: &[&WireBundle]) -> Record {
     let pool = load_pool();
     let g = pool.get("golden").expect("golden");
     let entries: Vec<PatchEntry> = entries
@@ -180,7 +180,7 @@ async fn follower(id: &str, entries: &[&WireBundle]) -> Record {
 }
 
 struct World {
-    id: String,
+    id: cyphr::PrincipalGenesis,
     peer: Arc<AppState>,
     url: String,
     _dir: tempfile::TempDir,
@@ -226,7 +226,7 @@ fn connector(w: &World) -> Watched {
     )
 }
 
-fn only_standing(report: &cyphr_client::PullReport) -> &PeerStanding {
+fn only_standing(report: &cyphr_net::PullReport) -> &PeerStanding {
     &report.peers.first().expect("one peer").standing
 }
 
@@ -314,7 +314,7 @@ async fn a_forked_peers_branch_is_handed_on_no_longer_than_ours() {
         );
         assert_eq!(report.forks.first().expect("a fork").height, 3);
         handed.push(
-            cyphr_client::branch_bundles(&record, &report, &peers)
+            cyphr_net::branch_bundles(&record, &report, &peers)
                 .await
                 .len(),
         );
@@ -349,7 +349,7 @@ async fn a_request_reads_no_more_of_the_index_as_history_grows() {
         }
         let next = key_commit_by(&mut tip, "golden", "eve_ed25519", T + 50).await;
         let app = build_router(w.peer.clone());
-        let id = w.id.replace(':', "%3A");
+        let id = w.id.to_string().replace(':', "%3A");
         let before = w.peer.engine.chain_rows_read();
         for route in [
             format!("/tip?pg={id}"),
@@ -555,7 +555,7 @@ async fn an_unkept_principal_is_replayed_once_for_its_proofs() {
     };
     let again = Arc::new(AppState::new(config).expect("reopens"));
     let app = build_router(again.clone());
-    let q = id.replace(':', "%3A");
+    let q = id.to_string().replace(':', "%3A");
     let before = again.engine.commits_replayed();
     for _ in 0..3 {
         for route in [
@@ -599,7 +599,7 @@ async fn an_unkept_principal_is_replayed_once_for_its_proofs() {
 async fn the_proof_request_is_bounded() {
     let (w, _) = world(&["key_a", "carol"]).await; // three commits
     let app = build_router(w.peer.clone());
-    let id = w.id.replace(':', "%3A");
+    let id = w.id.to_string().replace(':', "%3A");
     for (claim, size, want) in [
         ("extends:1", "3", StatusCode::OK),
         ("extends:2", "3", StatusCode::OK),
@@ -633,8 +633,19 @@ async fn the_proof_request_is_bounded() {
         .await;
         assert_eq!(status, want, "claim={claim} size={size}: {body:?}");
     }
-    let (status, _) = get_json(app.clone(), "/proof?pg=nobody&size=1&claim=member:0").await;
+    let unknown = cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![9; 32])
+        .expect("digest")
+        .to_string()
+        .replace(':', "%3A");
+    let (status, _) = get_json(
+        app.clone(),
+        &format!("/proof?pg={unknown}&size=1&claim=member:0"),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    // An unlabelled id is refused at the edge.
+    let (status, _) = get_json(app.clone(), "/proof?pg=nobody&size=1&claim=member:0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 
     let (_, body) = get_json(app, &format!("/tip?pg={id}")).await;
     let payload = envelope_payload(&body);
@@ -647,7 +658,7 @@ async fn the_proof_request_is_bounded() {
 async fn a_proof_from_a_kept_principal_replays_nothing() {
     let (w, _) = world(&["key_a", "carol", "key_b"]).await;
     let app = build_router(w.peer.clone());
-    let id = w.id.replace(':', "%3A");
+    let id = w.id.to_string().replace(':', "%3A");
     let before = w.peer.engine.commits_replayed();
     let (status, _) = get_json(
         app.clone(),

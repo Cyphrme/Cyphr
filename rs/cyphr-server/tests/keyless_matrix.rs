@@ -122,7 +122,7 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
     let pool = load_pool();
     // The id the genesis commit derives: its PG (SPEC 5.1).
     let principal_id_derived = common::golden_principal_id(&pool).await;
-    let principal_id = principal_id_derived.as_str();
+    let principal_id = &principal_id_derived;
     let now = 1_700_000_000;
     let push_body = common::build_genesis_push_body(&pool, principal_id, now).await;
     let pushed_blobs =
@@ -154,11 +154,8 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
         "tip must succeed on a keyless server: {tip_envelope:?}"
     );
     let tip_payload = assert_unsigned_envelope(&tip_envelope);
-    // `/tip` names the principal by its bare canonical digest.
-    assert_eq!(
-        tip_payload["principal_id"],
-        principal_id.split_once(':').expect("labelled PG").1
-    );
+    // `/tip` names the principal by its labelled canonical id.
+    assert_eq!(tip_payload["principal_id"], principal_id.to_string());
     assert_eq!(tip_payload["commit_count"].as_u64().unwrap(), 1);
     let pr_digest = tip_payload["pr"]
         .as_str()

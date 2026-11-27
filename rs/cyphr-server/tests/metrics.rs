@@ -221,7 +221,10 @@ async fn metrics_carry_no_identifier_and_bounded_labels() {
     }
 
     let (series, text) = scrape(&app).await;
-    for secret in [id.as_str(), golden.pub_key.as_str(), marker] {
+    let id_text = id.to_string();
+    // The digest part is a substring of every spelling of the id.
+    let id_digest = id_text.split_once(':').expect("labelled id").1;
+    for secret in [id_digest, golden.pub_key.as_str(), marker] {
         assert!(
             !text.contains(secret),
             "exposition leaks {secret:?}:\n{text}"

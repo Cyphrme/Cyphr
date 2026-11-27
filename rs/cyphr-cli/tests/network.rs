@@ -137,7 +137,7 @@ fn genesis_only_principal_is_published_with_one_key() {
     let server = Server::start();
     let a = User::new();
     let init = a.setup(&["init", "--algo", "Ed25519", "--genesis-commit"]);
-    let id = init["keys"][0].as_str().expect("genesis key").to_owned();
+    let id = common::labelled("Ed25519", init["keys"][0].as_str().expect("genesis key"));
     accepted(&a.push(&id, &server.url), "genesis-only push");
 
     let reader = User::new();
@@ -155,7 +155,7 @@ fn genesis_only_principal_is_published_with_one_key() {
         "no extra key: {seen}"
     );
     assert!(
-        seen["pg"].to_string().contains(&id),
+        seen["pg"].to_string().contains(common::tmb(&id)),
         "PG is the SR principal/create names, i.e. the identity {id}: {}",
         seen["pg"]
     );
@@ -176,7 +176,7 @@ fn genesis_bundle_carries_key_create_principal_create_commit_create() {
     let server = Server::start();
     let a = User::new();
     let init = a.setup(&["init", "--algo", "Ed25519", "--genesis-commit"]);
-    let id = init["keys"][0].as_str().expect("genesis key").to_owned();
+    let id = common::labelled("Ed25519", init["keys"][0].as_str().expect("genesis key"));
     accepted(&a.push(&id, &server.url), "genesis push");
 
     let reader = User::new();
@@ -188,7 +188,7 @@ fn genesis_bundle_carries_key_create_principal_create_commit_create() {
     assert!(f.ok, "fetch: {}", f.stderr);
     let seen = reader.setup(&["inspect", &format!("--identity={id}")]);
     assert!(
-        seen["pg"].to_string().contains(&id),
+        seen["pg"].to_string().contains(common::tmb(&id)),
         "PG is the identity {id}: {}",
         seen["pg"]
     );
@@ -266,7 +266,7 @@ fn multi_key_genesis_is_published_with_every_key_created() {
         "both genesis keys: {seen}"
     );
     assert!(
-        seen["pg"].to_string().contains(&id),
+        seen["pg"].to_string().contains(common::tmb(&id)),
         "PG is the identity {id}: {}",
         seen["pg"]
     );
@@ -401,7 +401,7 @@ fn data_commit_includes_only_the_actions_it_names() {
     let a = User::new();
     let id = a.new_identity();
     accepted(&a.push(&id, &server.url), "push of the genesis history");
-    let signer = format!("--signer={id}");
+    let signer = format!("--signer={}", common::tmb(&id));
     let ident = format!("--identity={id}");
     // `push` reports `up_to_date` only when the peer's tip is this device's
     // last commit, and fails stale when the peer holds any other tip, so it
@@ -460,7 +460,10 @@ fn data_push_sends_actions_ahead_of_their_ds_create() {
     let server = Server::start();
     let a = User::new();
     let id = a.new_identity();
-    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+    let (ident, signer) = (
+        format!("--identity={id}"),
+        format!("--signer={}", common::tmb(&id)),
+    );
     a.setup(&["data", "action", &ident, &signer, "--msg=one"]);
     a.setup(&["data", "action", &ident, &signer, "--msg=two"]);
     let made = a.setup(&["data", "commit", &ident, &signer]);
@@ -493,7 +496,10 @@ fn trust_remote_discards_only_diverged_commits_and_keeps_actions() {
     let id = a.new_identity();
     accepted(&a.push(&id, &server.url), "base push");
     let b = a.clone_identity(&id);
-    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+    let (ident, signer) = (
+        format!("--identity={id}"),
+        format!("--signer={}", common::tmb(&id)),
+    );
 
     // A key A adds is naked-revoked, and B's store records the revoke (the
     // pull step does): a record outside any commit, which adopting must keep.
@@ -641,7 +647,7 @@ fn a_save_survives_a_held_action_whose_signer_was_revoked() {
         "key",
         "add",
         &format!("--identity={id}"),
-        &format!("--signer={id}"),
+        &format!("--signer={}", common::tmb(&id)),
     ])["added_key"]
         .as_str()
         .expect("added_key")
@@ -682,7 +688,7 @@ fn a_save_survives_a_held_action_whose_signer_was_revoked() {
         "data",
         "action",
         &format!("--identity={id}"),
-        &format!("--signer={id}"),
+        &format!("--signer={}", common::tmb(&id)),
         "--msg=next",
     ]);
     assert!(
@@ -713,7 +719,7 @@ fn naked_revoke_is_sent_past_an_unreachable_peer() {
         "key",
         "add",
         &format!("--identity={id}"),
-        &format!("--signer={id}"),
+        &format!("--signer={}", common::tmb(&id)),
     ])["added_key"]
         .as_str()
         .expect("added_key")
@@ -874,7 +880,8 @@ fn verify_choices_file_sets_anchor_peers_freshness() {
     std::fs::write(
         &choices,
         format!(
-            "anchor = \"{id}\"\npeers = [\"{}\"]\nfreshness_secs = 7\n",
+            "anchor = \"{}\"\npeers = [\"{}\"]\nfreshness_secs = 7\n",
+            common::tmb(&id),
             server.url
         ),
     )
@@ -888,7 +895,11 @@ fn verify_choices_file_sets_anchor_peers_freshness() {
     );
     let v = r.json();
     assert_answer_shape(&v);
-    assert_eq!(v["anchor"]["value"], id.as_str(), "anchor from file: {v}");
+    assert_eq!(
+        v["anchor"]["value"],
+        common::tmb(&id),
+        "anchor from file: {v}"
+    );
     assert_eq!(v["peers_queried"], 1, "peer from file was queried: {v}");
     assert_eq!(v["freshness_secs"], 7, "freshness from file: {v}");
 }
@@ -963,7 +974,10 @@ fn verify_choices_unknown_key_is_refused() {
     let choices = a.dir.path().join("choices.toml");
     std::fs::write(
         &choices,
-        format!("anchor = \"{id}\"\npeerz = [\"http://127.0.0.1:1\"]\nfreshness_secs = 7\n"),
+        format!(
+            "anchor = \"{}\"\npeerz = [\"http://127.0.0.1:1\"]\nfreshness_secs = 7\n",
+            common::tmb(&id)
+        ),
     )
     .expect("write choices");
     let c = format!("--choices={}", choices.display());
@@ -1101,7 +1115,7 @@ fn login_signs_in_to_a_server_by_timestamp_and_by_challenge() {
         let mut args = vec![
             "login".to_owned(),
             format!("--identity={id}"),
-            format!("--signer={id}"),
+            format!("--signer={}", common::tmb(&id)),
             format!("--peer={}", server.url),
         ];
         args.extend(extra.iter().map(|s| (*s).to_owned()));
@@ -1117,7 +1131,11 @@ fn login_signs_in_to_a_server_by_timestamp_and_by_challenge() {
         id.as_str(),
         "the token names the principal"
     );
-    assert_eq!(token["pay"]["ltmb"], id.as_str(), "and the key that signed");
+    assert_eq!(
+        token["pay"]["ltmb"],
+        common::tmb(&id),
+        "and the key that signed"
+    );
     assert_eq!(
         answer["audience"], "svc.example",
         "the output names its audience"
@@ -1129,14 +1147,14 @@ fn login_signs_in_to_a_server_by_timestamp_and_by_challenge() {
         .build()
         .expect("runtime")
         .block_on(async {
-            let http = cyphr_client::HttpConnector::connect(
+            let http = cyphr_net::HttpConnector::connect(
                 &server.url,
-                &cyphr_client::HttpOptions::new(std::time::Duration::from_secs(10)),
+                &cyphr_net::HttpOptions::new(std::time::Duration::from_secs(10)),
             )
             .expect("connect");
-            cyphr_client::Connector::exchange(
+            cyphr_net::Connector::exchange(
                 &http,
-                &cyphr_client::Request::post("/auth/challenge", Vec::new()),
+                &cyphr_net::Request::post("/auth/challenge", Vec::new()),
             )
             .await
         })

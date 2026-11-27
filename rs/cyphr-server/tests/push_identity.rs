@@ -11,6 +11,7 @@
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::{HashAlg, PrincipalGenesis};
 use cyphr_server::build_router;
 use cyphr_storage::{Genesis, load_principal_from_commits};
 
@@ -26,11 +27,11 @@ const NOW: i64 = 1_700_100_000;
 /// The genesis-derived id for `build_genesis_push_body`'s principal
 /// (a genesis commit on the pool's `golden` key that also creates `key_a`):
 /// its PG.
-async fn derived_id(pool: &test_fixtures::Pool) -> String {
+async fn derived_id(pool: &test_fixtures::Pool) -> PrincipalGenesis {
     golden_principal_id(pool).await
 }
 
-async fn tip_status(app: axum::Router, id: &str) -> StatusCode {
+async fn tip_status(app: axum::Router, id: &PrincipalGenesis) -> StatusCode {
     get_json(app, &format!("/tip?pg={id}")).await.0
 }
 
@@ -67,12 +68,13 @@ async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
     let pool = load_pool();
-    let squat = "bob";
+    // A well-formed labelled id that is not this genesis's.
+    let squat = PrincipalGenesis::from_digest(HashAlg::Sha256, vec![0x62; 32]).expect("id");
 
     let (status, body) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, squat, NOW).await,
+        build_genesis_push_body(&pool, &squat, NOW).await,
     )
     .await;
     assert!(
@@ -80,14 +82,14 @@ async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
         "genesis stored under unrelated principal_id {squat:?}: {status} {body:?}"
     );
     assert_eq!(
-        tip_status(app, squat).await,
+        tip_status(app, &squat).await,
         StatusCode::NOT_FOUND,
         "a refused push must not land"
     );
 }
 
 /// Backs: same refusal for a well-formed-looking but wrong 32-byte id on
-/// an attestor server, where `parse_genesis_id_str` passes (right length)
+/// an attestor server, where the id is well formed
 /// yet the id is not this genesis's. This is the in-tree
 /// `routes.rs` `push_test_genesis` shape (`[0x61; 32]`). Red now because
 /// only the id's byte length is checked.
@@ -96,7 +98,7 @@ async fn d2_push_refuses_genesis_under_wellformed_wrong_id_attestor() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
     let pool = load_pool();
-    let squat = Base64UrlUnpadded::encode_string(&[0x61u8; 32]);
+    let squat = PrincipalGenesis::from_digest(HashAlg::Sha256, vec![0x61; 32]).expect("id");
     assert_ne!(squat, derived_id(&pool).await, "premise");
 
     let (status, body) = post_json(

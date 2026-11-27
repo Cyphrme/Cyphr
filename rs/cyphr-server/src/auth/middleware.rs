@@ -15,7 +15,8 @@
 
 use axum::http::HeaderMap;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_storage::engine::{EngineError, bare_digest};
+use cyphr::PrincipalGenesis;
+use cyphr_storage::engine::EngineError;
 
 use super::token::Claims;
 use super::{ServerIdentity, server_now};
@@ -211,7 +212,7 @@ pub async fn check_push_admission(
     token: Option<&str>,
     identity: Option<&ServerIdentity>,
     engine: &Engine,
-    target_principal: &str,
+    target_principal: &PrincipalGenesis,
     now: i64,
     channel: Option<&[u8]>,
 ) -> Result<(), AppError> {
@@ -229,13 +230,13 @@ pub async fn check_push_admission(
             )));
         },
     };
-    // The token subject is the canonical bare digest; compare like with
-    // like, whichever spelling the push named.
+    // The token subject is the canonical id; compare like with like,
+    // whichever address the push named the principal by.
     let canonical = engine
         .canonical_principal_id(target_principal)
         .await
         .map_err(AppError::engine)?;
-    if claims.pg != bare_digest(&canonical) {
+    if claims.pg != canonical {
         return Err(AppError::unauthorized(
             "bearer token does not authorize this principal",
         ));
@@ -285,7 +286,10 @@ mod tests {
         headers
     }
 
-    const PR: &str = "test-principal";
+    fn pr() -> cyphr::PrincipalGenesis {
+        cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![7; 32])
+            .expect("32-byte SHA-256 digest")
+    }
 
     // --- bearer_token ---
 
@@ -317,7 +321,7 @@ mod tests {
                 bearer_token(&headers),
                 Some(&identity),
                 &state.engine,
-                PR,
+                &pr(),
                 1_100,
                 None
             )

@@ -1,5 +1,5 @@
 //! The server end of the principal-authenticated Noise transport
-//! (`cyphr_client::transport`): the responder, and the same router served
+//! (`cyphr_net::transport`): the responder, and the same router served
 //! over it.
 //!
 //! A session authenticates both ends as Cyphr principals before a single
@@ -25,8 +25,9 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
-use cyphr_client::Method;
-use cyphr_client::transport::{
+use cyphr::PrincipalGenesis;
+use cyphr_net::Method;
+use cyphr_net::transport::{
     BindStatement, Channel, MAX_MESSAGE, Role, TransportError, assemble_statement, decode_request,
     encode_ack, encode_response, statement_cad, statement_pay,
 };
@@ -57,8 +58,8 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthenticatedPeer {
     /// The initiator's principal: the stored principal's canonical id, or
-    /// for a Level 1 principal the thumbprint that is its id.
-    pub pg: String,
+    /// for a Level 1 principal the id its key derives.
+    pub pg: PrincipalGenesis,
     /// The key that signed the initiator's statement.
     pub tmb: coz::Thumbprint,
     /// The Noise handshake hash of this session: the binding the statement
@@ -385,17 +386,16 @@ async fn authorize_initiator(
         .await
         .map_err(lookup)?
         .is_some();
-    // The principal's one spelling, so a route keys on it whatever the
-    // statement called it (a stored id may be tagged or bare).
+    // The principal's canonical id, so a route keys on it whatever
+    // address the statement named it by (its key, or its PG).
     let pg = if stored {
-        let canonical = state
+        state
             .engine
             .canonical_principal_id(claimed)
             .await
-            .map_err(lookup)?;
-        cyphr_storage::engine::bare_digest(&canonical).to_string()
+            .map_err(lookup)?
     } else {
-        claimed.to_string()
+        claimed.clone()
     };
     if stored {
         // A stored principal is judged by its chain alone; any sidecar the
@@ -428,9 +428,13 @@ async fn authorize_initiator(
                 "the sidecar key is not the key the statement names",
             ));
         }
-        if claimed != key.tmb().to_b64() {
+        let derived = cyphr_storage::engine::genesis_principal_id(
+            &cyphr_storage::Genesis::Implicit(key.clone()),
+        )
+        .map_err(lookup)?;
+        if *claimed != derived {
             return Err(SessionError::Initiator(
-                "an unstored principal must be its key's thumbprint",
+                "an unstored principal must be the id its key derives",
             ));
         }
         statement.verify(&key)?;
@@ -457,7 +461,7 @@ async fn dispatch(
     router: &Router,
     peer: SocketAddr,
     identity: &AuthenticatedPeer,
-    request: cyphr_client::Request,
+    request: cyphr_net::Request,
 ) -> (u16, Vec<u8>) {
     let method = match request.method {
         Method::Get => axum::http::Method::GET,

@@ -257,7 +257,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.ensure_healed().await?;
         let tmb = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
         // Held across the write, so two revokes of one key store one record.
-        let lock = self.principal_lock(&format!("revoke\0{tmb}"));
+        let lock = self.named_lock(&format!("revoke\0{tmb}"));
         let _one_record = lock.lock().await;
         if self.deaths.contains(&tmb) {
             return Ok(());

@@ -331,7 +331,7 @@ impl Harness {
         let held = PeerTip::parse(&v)?;
         // The observer must be reading the principal it asked about.
         assert!(
-            p.same_as(&held.principal_id),
+            p.pg() == held.principal_id,
             "peer `{peer}` answered for {}, asked about {}",
             held.principal_id,
             p.0
@@ -593,9 +593,21 @@ impl Harness {
         )
         .map_err(|e| format!("parsing {}: {e}", path.display()))?;
         let genesis = &fixture["genesis_keys"][0];
-        let id = genesis["tmb"]
+        let tmb = genesis["tmb"]
             .as_str()
             .ok_or("fixture genesis has no tmb")?;
+        // A one-key genesis is the implicit principal: its id is the key's
+        // thumbprint under the hash its own algorithm names, labelled.
+        let alg = genesis["alg"]
+            .as_str()
+            .ok_or("fixture genesis has no alg")?;
+        let hash = cyphr::state::hash_alg_from_str(alg).map_err(|e| e.to_string())?;
+        let id = cyphr::PrincipalGenesis::from_digest(
+            hash,
+            Base64UrlUnpadded::decode_vec(tmb).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?
+        .to_string();
         // The fixture's genesis commit, pushed in the wire form: each coz
         // of each transaction as a base64url string, the keys as stated.
         let commit = &fixture["commits"][0];
@@ -631,6 +643,6 @@ impl Harness {
                 return Err(format!("push to `{peer}` answered {status}: {text}"));
             }
         }
-        Ok(Principal(id.to_owned()))
+        Ok(Principal(id))
     }
 }

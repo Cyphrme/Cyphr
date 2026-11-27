@@ -89,7 +89,7 @@ async fn register_route_is_gone_and_push_never_dials_out() {
     let (reg_status, _) = post_json(
         app.clone(),
         "/witness/register",
-        signed_register_create(&pool, &pid, &peer_url),
+        signed_register_create(&pool, &pid.to_string(), &peer_url),
     )
     .await;
 

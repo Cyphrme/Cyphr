@@ -65,7 +65,7 @@ async fn healthz_answers_200_on_a_healthy_peer_that_holds_data() {
         "healthy peer must answer 200: {body}"
     );
     assert!(
-        !body.contains(&id),
+        !body.contains(id.to_string().split_once(':').expect("labelled id").1),
         "health body must not name a principal: {body}"
     );
 }

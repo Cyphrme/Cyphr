@@ -12,11 +12,16 @@ use super::*;
 /// Each principal's held resync PoPs (the verified `{pay, sig}` coz) by
 /// the PR they assert.
 #[derive(Debug, Default)]
-pub(super) struct Resyncs(HashMap<String, BTreeMap<String, serde_json::Value>>);
+pub(super) struct Resyncs(HashMap<PrincipalGenesis, BTreeMap<String, serde_json::Value>>);
 
 impl Resyncs {
     /// Hold `evidence`, the PoP for `principal_id`'s tip `tip`.
-    pub(super) fn note(&mut self, principal_id: String, tip: String, evidence: serde_json::Value) {
+    pub(super) fn note(
+        &mut self,
+        principal_id: PrincipalGenesis,
+        tip: String,
+        evidence: serde_json::Value,
+    ) {
         self.0
             .entry(principal_id)
             .or_default()
@@ -24,7 +29,7 @@ impl Resyncs {
     }
 
     /// The PRs `principal_id`'s held PoPs assert, sorted.
-    pub(super) fn asserted(&self, principal_id: &str) -> Vec<String> {
+    pub(super) fn asserted(&self, principal_id: &PrincipalGenesis) -> Vec<String> {
         self.0
             .get(principal_id)
             .map(|held| held.keys().cloned().collect())
@@ -32,7 +37,7 @@ impl Resyncs {
     }
 
     /// The PoPs held for `principal_id`, one per asserted tip, sorted by tip.
-    fn proofs(&self, principal_id: &str) -> Vec<serde_json::Value> {
+    fn proofs(&self, principal_id: &PrincipalGenesis) -> Vec<serde_json::Value> {
         self.0
             .get(principal_id)
             .map(|held| held.values().cloned().collect())
@@ -57,7 +62,12 @@ impl ResyncStore {
         *self.held.lock().unwrap_or_else(|p| p.into_inner()) = resyncs;
     }
 
-    pub(super) fn note(&self, principal_id: String, tip: String, evidence: serde_json::Value) {
+    pub(super) fn note(
+        &self,
+        principal_id: PrincipalGenesis,
+        tip: String,
+        evidence: serde_json::Value,
+    ) {
         self.held
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -65,7 +75,7 @@ impl ResyncStore {
     }
 
     /// The PRs `principal_id`'s held PoPs assert, sorted.
-    pub(super) fn asserted(&self, principal_id: &str) -> Vec<String> {
+    pub(super) fn asserted(&self, principal_id: &PrincipalGenesis) -> Vec<String> {
         self.held
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -73,7 +83,7 @@ impl ResyncStore {
     }
 
     /// The PoPs held for `principal_id`, one per asserted tip.
-    pub(super) fn proofs(&self, principal_id: &str) -> Vec<serde_json::Value> {
+    pub(super) fn proofs(&self, principal_id: &PrincipalGenesis) -> Vec<serde_json::Value> {
         self.held
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -84,7 +94,7 @@ impl ResyncStore {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResyncReceipt {
     /// The principal's storage key.
-    pub principal_id: String,
+    pub principal_id: cyphr::PrincipalGenesis,
     /// The asserted tip's PR.
     pub id: String,
     /// `false` when a PoP for this tip was already held: nothing was
@@ -123,7 +133,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// proof.
     pub async fn submit_resync(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         pop: &serde_json::Value,
         line: &[WireBundle],
     ) -> Result<ResyncReceipt, EngineError> {
@@ -134,9 +144,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let principal_id = self.stored_id(principal_id).await?.ok_or_else(|| {
             EngineError::NotFound(format!("no principal {principal_id} is stored"))
         })?;
-        let principal_id = principal_id.as_str();
+        let principal_id = &principal_id;
         let receipt = |stored, promoted| ResyncReceipt {
-            principal_id: principal_id.to_string(),
+            principal_id: principal_id.clone(),
             id: resync.id.clone(),
             stored,
             promoted,
@@ -304,7 +314,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         serde_json::to_writer(
             &mut bytes,
             &ResyncRecord {
-                principal_id: principal_id.to_string(),
+                principal_id: principal_id.clone(),
                 tip: resync.id.clone(),
                 evidence: pop.clone(),
                 key: record_key,
@@ -315,7 +325,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.put_counted(&bytes).await?;
         self.persist_record().await?;
         self.resyncs
-            .note(principal_id.to_string(), resync.id.clone(), pop.clone());
+            .note(principal_id.clone(), resync.id.clone(), pop.clone());
         if !promote {
             return Ok(receipt(true, false));
         }
@@ -359,7 +369,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// The resync PoPs held for `principal_id`, one per asserted tip, as
     /// the `{pay, sig}` coz each arrived in: what a peer fetches to reach
     /// the same verdict ([`Self::submit_resync`]).
-    pub async fn resyncs(&self, principal_id: &str) -> Result<Vec<serde_json::Value>, EngineError> {
+    pub async fn resyncs(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> Result<Vec<serde_json::Value>, EngineError> {
         let principal_id = self.canonical_principal_id(principal_id).await?;
         Ok(self.resyncs.proofs(&principal_id))
     }

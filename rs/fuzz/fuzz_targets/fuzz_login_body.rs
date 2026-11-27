@@ -1,6 +1,6 @@
 #![no_main]
 
-use cyphr_client::login::{LoginRequest, REQUEST_TYP_SUFFIX};
+use cyphr_net::login::{LoginRequest, REQUEST_TYP_SUFFIX};
 use cyphr_server::auth::login::parse_login;
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;

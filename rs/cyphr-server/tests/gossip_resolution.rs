@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
-use cyphr_client::HttpConnector;
+use cyphr_net::HttpConnector;
 use cyphr_server::gossip::Peer;
 use cyphr_server::{AppState, build_router};
 
@@ -90,15 +90,18 @@ async fn data_commit(p: &mut cyphr::Principal, msg: &str, now: i64) -> (Vec<u8>,
     (action, bundle)
 }
 
-async fn push(app: &axum::Router, id: &str, bundle: &WireBundle) -> StatusCode {
+async fn push(app: &axum::Router, id: &cyphr::PrincipalGenesis, bundle: &WireBundle) -> StatusCode {
     post_json(app.clone(), "/push", common::push_body(id, bundle))
         .await
         .0
 }
 
-async fn tip_pr(app: &axum::Router, id: &str) -> String {
-    let (status, body) =
-        get_json(app.clone(), &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
+async fn tip_pr(app: &axum::Router, id: &cyphr::PrincipalGenesis) -> String {
+    let (status, body) = get_json(
+        app.clone(),
+        &format!("/tip?pg={}", id.to_string().replace(':', "%3A")),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     envelope_payload(&body)["pr"]
         .as_str()
@@ -108,9 +111,12 @@ async fn tip_pr(app: &axum::Router, id: &str) -> String {
 
 /// The tied heads `/tip` names while the principal is in Error (it has no
 /// single tip then), by commit id.
-async fn error_heads(app: &axum::Router, id: &str) -> Vec<String> {
-    let (status, body) =
-        get_json(app.clone(), &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
+async fn error_heads(app: &axum::Router, id: &cyphr::PrincipalGenesis) -> Vec<String> {
+    let (status, body) = get_json(
+        app.clone(),
+        &format!("/tip?pg={}", id.to_string().replace(':', "%3A")),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let payload = envelope_payload(&body);
     assert_eq!(payload["state"], "error", "{body:?}");
@@ -219,7 +225,7 @@ async fn one_round_takes_a_peers_resolution() {
 /// a revoke received now leaves its commits as history.
 async fn dead_key_fixture() -> (
     WireBundle,
-    String,
+    cyphr::PrincipalGenesis,
     cyphr::Principal,
     WireBundle,
     WireBundle,
@@ -234,7 +240,7 @@ async fn dead_key_fixture() -> (
 /// cutoff, kills `eve`'s commits.
 async fn dead_key_fixture_ahead() -> (
     WireBundle,
-    String,
+    cyphr::PrincipalGenesis,
     cyphr::Principal,
     WireBundle,
     WireBundle,
@@ -255,7 +261,7 @@ async fn dead_key_fixture_at(
     t0: i64,
 ) -> (
     WireBundle,
-    String,
+    cyphr::PrincipalGenesis,
     cyphr::Principal,
     WireBundle,
     WireBundle,

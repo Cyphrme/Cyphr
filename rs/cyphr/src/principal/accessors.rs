@@ -48,20 +48,22 @@ impl PrincipalState {
     ///
     /// Returns `EmptyMultihash` if the state digest has no variants.
     pub fn pr_tagged(&self) -> Result<String> {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        Ok(self.pr_id()?.to_string())
+    }
 
-        let first_alg = self
-            .active_algs()
-            .first()
-            .copied()
-            .unwrap_or_else(|| self.hash_alg());
+    /// The current Principal Root, in the first active algorithm only, as
+    /// the principal id it names: for a principal with no commit this is
+    /// the id its genesis derives (SPEC 3.1), and [`Self::pr_tagged`]'s
+    /// spelling of it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmptyMultihash` or `MissingVariant` if the state digest has
+    /// no variant for that algorithm.
+    pub fn pr_id(&self) -> Result<crate::state::PrincipalGenesis> {
+        let first_alg = self.hash_alg();
         let bytes = self.pr.0.get_or_err(first_alg)?;
-
-        Ok(format!(
-            "{}:{}",
-            first_alg,
-            Base64UrlUnpadded::encode_string(bytes)
-        ))
+        crate::state::PrincipalGenesis::from_digest(first_alg, bytes.to_vec())
     }
 
     /// Get the current Key Root; `None` for a Dead principal (see

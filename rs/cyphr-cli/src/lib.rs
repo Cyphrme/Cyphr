@@ -327,9 +327,9 @@ pub enum Commands {
     /// the user moves it up, here or with their `--upgrade` flag. Refused on
     /// an identity that already has a commit.
     Upgrade {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
     },
 
     /// Key management operations
@@ -355,16 +355,16 @@ pub enum Commands {
 
     /// Display identity state
     Inspect {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
     },
 
     /// Export identity to JSONL file
     Export {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Output file path
         #[arg(long)]
@@ -385,9 +385,9 @@ pub enum Commands {
     /// chooses: `cyphr fetch --trust-remote` adopts the peer's, or
     /// `--assert-local` pushes the local commits as a fork.
     Push {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Peer base URL (e.g., http://127.0.0.1:8080)
         #[arg(long)]
@@ -412,9 +412,9 @@ pub enum Commands {
     /// sign out, delete the token.
     #[command(group(clap::ArgGroup::new("delivery").required(true).multiple(false).args(["peer", "sign_only"])))]
     Login {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Thumbprint of the key to sign with
         #[arg(long, allow_hyphen_values = true)]
@@ -454,9 +454,9 @@ pub enum Commands {
     /// a proof on a second branch leaves it in Error for good, and recovery
     /// is the only other exit.
     Resync {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Peer base URL
         #[arg(long)]
@@ -480,9 +480,9 @@ pub enum Commands {
     /// adopted history accepts them as signed; any other is dropped and
     /// listed under `dropped_actions`, never re-signed.
     Fetch {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Peer base URL
         #[arg(long)]
@@ -499,9 +499,9 @@ pub enum Commands {
     /// The answer states how old the view is and whether a peer reported a
     /// newer tip; it never claims the view is current.
     Verify {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Peer base URL to ask (repeatable)
         #[arg(long)]
@@ -523,9 +523,9 @@ pub enum Commands {
 
     /// Run `verify` on a timer, printing each round's verdict
     Watch {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Peer base URL to ask (repeatable)
         #[arg(long)]
@@ -555,9 +555,9 @@ pub enum Commands {
     /// Run `verify` and print the evidence held (both branches of a fork,
     /// the resolving key, the naked revokes) in full
     Audit {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Peer base URL to ask (repeatable)
         #[arg(long)]
@@ -583,9 +583,9 @@ pub enum Commands {
     /// `--clear` returns to no branch chosen. It is never stored with
     /// commits or sent to a peer, and `verify` still reports Error.
     Recover {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// The branch head to trust, as `verify` lists it
         #[arg(
@@ -619,9 +619,9 @@ pub enum GossipCommands {
     /// Write the verified record, the other branch of each fork held and
     /// the naked revokes held to a bundle file
     Export {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Bundle file to write
         #[arg(long)]
@@ -631,9 +631,9 @@ pub enum GossipCommands {
     /// Replay a bundle file into the local store, as if each chain in it
     /// were a peer: nothing in it is believed except by replay
     Import {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Bundle file to read
         #[arg(long)]
@@ -662,9 +662,9 @@ pub enum KeyCommands {
 
     /// Add a key to an identity
     Add {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Thumbprint of key to add (if omitted, generates new key)
         #[arg(long, allow_hyphen_values = true)]
@@ -682,9 +682,9 @@ pub enum KeyCommands {
 
     /// Remove a key from an identity without marking it compromised (SPEC 6.2)
     Delete {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Thumbprint of the key to remove
         #[arg(long, allow_hyphen_values = true)]
@@ -697,9 +697,9 @@ pub enum KeyCommands {
 
     /// Swap the signing key for a new one in one commit (SPEC 6.3)
     Replace {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Thumbprint of the new key (if omitted, generates one)
         #[arg(long, allow_hyphen_values = true)]
@@ -734,9 +734,9 @@ pub enum KeyCommands {
 
     /// Revoke a key from an identity, by a commit signed by that key
     Revoke {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Thumbprint of key to revoke
         #[arg(long, allow_hyphen_values = true)]
@@ -753,9 +753,9 @@ pub enum KeyCommands {
     /// request carries only its public half, signed by the key itself as a
     /// proof of possession. Carry it to a device already in the principal.
     Request {
-        /// Principal Genesis (base64url) the request is for
+        /// Principal Genesis, labelled (`ALG:digest`) the request is for
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Algorithm (ES256, ES384, ES512, Ed25519)
         #[arg(long, default_value = "ES256")]
@@ -775,9 +775,9 @@ pub enum KeyCommands {
     /// Refused unless the request's proof of possession verifies, it names
     /// this identity, and its `now` is within the window.
     Accept {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Thumbprint of the signing key
         #[arg(long, allow_hyphen_values = true)]
@@ -794,9 +794,9 @@ pub enum KeyCommands {
 
     /// List keys (from keystore if no identity, from identity if provided)
     List {
-        /// Principal Genesis (base64url) - if omitted, lists keystore keys
+        /// Principal Genesis, labelled (`ALG:digest`) - if omitted, lists keystore keys
         #[arg(long, allow_hyphen_values = true)]
-        identity: Option<String>,
+        identity: Option<cyphr::PrincipalGenesis>,
     },
 }
 
@@ -808,9 +808,9 @@ pub enum DataCommands {
     /// The action enters DT only; DR enters PR when `data commit` signs a
     /// `ds/create`. `push` sends recorded actions ahead of the commits.
     Action {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Thumbprint of the signing key
         #[arg(long, allow_hyphen_values = true)]
@@ -836,9 +836,9 @@ pub enum DataCommands {
 
     /// Sign a `ds/create` over the local DT; its `id` becomes DR in PR
     Commit {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Thumbprint of the signing key
         #[arg(long, allow_hyphen_values = true)]
@@ -852,9 +852,9 @@ pub enum DataCommands {
 
     /// Send a signed action (the output of `data action`) to a peer
     Submit {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
 
         /// Peer base URL
         #[arg(long)]
@@ -871,15 +871,15 @@ pub enum DataCommands {
 pub enum TxCommands {
     /// List cozies for an identity
     List {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
     },
 
     /// Verify coz chain integrity
     Verify {
-        /// Principal Genesis (base64url)
+        /// Principal Genesis, labelled (`ALG:digest`)
         #[arg(long, allow_hyphen_values = true)]
-        identity: String,
+        identity: cyphr::PrincipalGenesis,
     },
 }

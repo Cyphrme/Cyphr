@@ -1,14 +1,15 @@
 //! `cyphr login`: sign in to a service (SPEC 17.2).
 //!
-//! The request is the one `cyphr_client::login` defines, signed through the
+//! The request is the one `cyphr_net::login` defines, signed through the
 //! keystore's signer so the private key never leaves it. The command names
 //! the audience it signed for and the peer it sent to, because a verifier's
 //! verdict names its choice and a signer should see theirs.
 
-use cyphr_client::login::{self, LoginRequest};
+use cyphr::PrincipalGenesis;
+use cyphr_net::login::{self, LoginRequest};
 use serde_json::json;
 
-use super::common::{block_on, current_timestamp, get_principal_id, parse_principal_genesis};
+use super::common::{block_on, current_timestamp};
 use crate::keystore::KeyBackend;
 use crate::net::Peer;
 use crate::{Cli, Error, OutputFormat};
@@ -16,7 +17,7 @@ use crate::{Cli, Error, OutputFormat};
 /// The arguments of `cyphr login`.
 pub struct Request<'a> {
     /// Principal Genesis, as the user spelled it.
-    pub identity: &'a str,
+    pub identity: &'a PrincipalGenesis,
     /// Thumbprint of the signing key.
     pub signer: &'a str,
     /// The service signed in to.
@@ -34,8 +35,6 @@ pub struct Request<'a> {
 pub fn run(cli: &Cli, req: &Request<'_>) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
     let signer = keystore.signer(req.signer)?;
-    let pg = parse_principal_genesis(req.identity)?;
-    let pg = cyphr_storage::engine::bare_digest(&get_principal_id(&pg)?).to_owned();
 
     let challenge: Option<coz::CozJson> = req
         .challenge
@@ -61,7 +60,7 @@ pub fn run(cli: &Cli, req: &Request<'_>) -> crate::Result<()> {
     let request: LoginRequest = block_on(login::sign_request(
         &signer,
         req.audience,
-        &pg,
+        req.identity,
         current_timestamp(),
         challenge.as_ref(),
         channel.as_deref(),

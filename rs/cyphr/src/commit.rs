@@ -931,9 +931,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     ///
     /// `NoActiveKeys` if the scope holds no key; a root derivation error
     /// otherwise.
-    pub fn genesis_id(&self) -> crate::error::Result<String> {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
+    pub fn genesis_id(&self) -> crate::error::Result<crate::state::PrincipalGenesis> {
         let pg = self.projected.genesis_pr()?;
         let alg = self
             .projected
@@ -942,7 +940,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             .copied()
             .unwrap_or_else(|| self.projected.hash_alg());
         let bytes = pg.0.get_or_err(alg)?;
-        Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
+        crate::state::PrincipalGenesis::from_digest(alg, bytes.to_vec())
     }
 
     /// The `id` a signer gives a `ds/create` applied now (SPEC 4.8.2): MR

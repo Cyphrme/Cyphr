@@ -75,7 +75,7 @@ async fn verify_all_names_a_corrupted_chain() {
             let (k, v) = guard.into_inner().expect("entry");
             if v.first() != Some(&0)
                 && String::from_utf8_lossy(&v)
-                    .contains(&golden[golden.find(':').map_or(0, |i| i + 1)..])
+                    .contains(golden.to_string().split_once(':').expect("labelled id").1)
             {
                 hit = Some(k);
                 break;

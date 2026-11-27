@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 
+use cyphr::PrincipalGenesis;
+
 use super::EngineError;
 use super::ingest::WriteLock;
 /// A small insertion-ordered cache that never holds more than `capacity`
@@ -143,7 +145,10 @@ pub(super) struct KeptStates {
     /// Replay cold and compare with a kept state at every use
     /// ([`StorageEngine::with_kept_shadow`]).
     shadow: bool,
-    entries: std::sync::Mutex<(HashMap<String, Kept>, std::collections::VecDeque<String>)>,
+    entries: std::sync::Mutex<(
+        HashMap<PrincipalGenesis, Kept>,
+        std::collections::VecDeque<PrincipalGenesis>,
+    )>,
 }
 
 /// [`StorageEngine::verified`]'s boxed future.
@@ -187,10 +192,10 @@ impl KeptStates {
         }
         let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         let (map, order) = &mut *guard;
-        if map.insert(write.principal().to_string(), kept).is_some() {
+        if map.insert(write.principal().clone(), kept).is_some() {
             order.retain(|id| id != write.principal());
         }
-        order.push_back(write.principal().to_string());
+        order.push_back(write.principal().clone());
         while map.len() > self.capacity {
             match order.pop_front() {
                 Some(oldest) => {

@@ -14,9 +14,12 @@ use common::{
 };
 
 /// The tip payload minus the response's own clock.
-async fn tip(app: &axum::Router, id: &str) -> serde_json::Value {
-    let (status, body) =
-        get_json(app.clone(), &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
+async fn tip(app: &axum::Router, id: &cyphr::PrincipalGenesis) -> serde_json::Value {
+    let (status, body) = get_json(
+        app.clone(),
+        &format!("/tip?pg={}", id.to_string().replace(':', "%3A")),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let mut payload = envelope_payload(&body).clone();
     payload.as_object_mut().expect("object").remove("now");
@@ -25,7 +28,7 @@ async fn tip(app: &axum::Router, id: &str) -> serde_json::Value {
 
 /// The embedded principal B of the golden vector: its id (the PG its genesis
 /// commit names) and its commit lines, which a client pushes first.
-fn peer_of(fixture: &serde_json::Value) -> (String, Vec<serde_json::Value>) {
+fn peer_of(fixture: &serde_json::Value) -> (cyphr::PrincipalGenesis, Vec<serde_json::Value>) {
     let lines = fixture["peer"]["commits"].as_array().expect("peer").clone();
     let id = test_fixtures::bundle::genesis_id(&build_bundle(&lines[0])).expect("peer pg");
     (id, lines)

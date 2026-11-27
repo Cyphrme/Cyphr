@@ -371,7 +371,7 @@ async fn a_thief_prefilling_the_shared_keys_quota_cannot_keep_a_server_active() 
         bundles.push(create(&mut cur, &k, &fresh_k(), T + i).await);
         chain.push(cur.fork().await.expect("fork"));
     }
-    let id = k.tmb.to_b64();
+    let id = format!("SHA-512:{}", k.tmb.to_b64());
     // A line of `n` commits over chain[over]; each commit's bundle.
     let line = async |over: usize, n: usize, now: i64| {
         let mut p = chain[over].fork().await.expect("fork");

@@ -12,6 +12,7 @@
 //! and a rebuild from the blobs must answer as the live engine does.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::MemoryBlobStore;
@@ -83,7 +84,7 @@ const CREATED: [&str; 5] = ["key_a", "key_b", "alice", "bob", "carol"];
 /// child of node `parents[i]` (0 is the shared genesis commit), signed by
 /// `SIGNERS[signers[i]]`.
 struct World {
-    id: String,
+    id: PrincipalGenesis,
     genesis: Genesis,
     /// Each node's principal after its commit, and its commit id.
     nodes: Vec<cyphr::Principal>,
@@ -204,7 +205,7 @@ fn engine() -> Engine {
 }
 
 /// What an engine answers about the verdict: Error, or the one head.
-async fn verdict(e: &Engine, id: &str) -> Result<String, ()> {
+async fn verdict(e: &Engine, id: &PrincipalGenesis) -> Result<String, ()> {
     let a = e.assess(id).await.expect("assess");
     match a.consensus {
         Consensus::Error => Err(()),

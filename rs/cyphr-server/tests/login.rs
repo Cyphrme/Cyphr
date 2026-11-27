@@ -20,9 +20,9 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 /// A push body: `principal_id` and `bundle` in the wire form (SPEC 4.6.2).
-fn push_body(principal_id: &str, bundle: &cyphr::replay::WireBundle) -> String {
+fn push_body(principal_id: &cyphr::PrincipalGenesis, bundle: &cyphr::replay::WireBundle) -> String {
     let mut body = serde_json::to_value(bundle).expect("bundle serializes");
-    body["principal_id"] = principal_id.into();
+    body["principal_id"] = principal_id.to_string().into();
     body.to_string()
 }
 
@@ -148,6 +148,13 @@ fn login_app_state() -> AppState {
     AppState::new(config).expect("open login AppState")
 }
 
+/// A well-formed labelled id no test ever pushes.
+fn unknown_id() -> String {
+    cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![0x5a; 32])
+        .expect("digest")
+        .to_string()
+}
+
 /// Current wall-clock Unix seconds, for signing timestamp-flow logins the
 /// server will accept as in-window.
 fn now_secs() -> i64 {
@@ -162,8 +169,8 @@ fn now_secs() -> i64 {
 fn cyphr_server_login_request(
     coz: coz::CozJson,
     challenge: Option<&serde_json::Value>,
-) -> cyphr_client::login::LoginRequest {
-    cyphr_client::login::LoginRequest {
+) -> cyphr_net::login::LoginRequest {
+    cyphr_net::login::LoginRequest {
         coz,
         challenge: challenge.map(|c| serde_json::from_value(c.clone()).expect("challenge coz")),
     }
@@ -238,8 +245,8 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
 /// path: its genesis commit (SPEC 5.1), in which `genesis_name` creates
 /// itself and `add_key`, so both keys are active and the principal is
 /// loadable by the login handler. Returns the principal's id (its PG) in
-/// the bare spelling.
-async fn bootstrap_active_with_key(
+/// the labelled spelling, the only one the server accepts.
+async fn bootstrap_active_labelled(
     app: axum::Router,
     pool: &test_fixtures::Pool,
     genesis_name: &str,
@@ -271,11 +278,19 @@ async fn bootstrap_active_with_key(
         StatusCode::CREATED,
         "bootstrap active principal push must succeed"
     );
-    principal_id
-        .split_once(':')
-        .expect("an algorithm-labelled PG")
-        .1
-        .to_string()
+    principal_id.to_string()
+}
+
+/// [`bootstrap_active_labelled`], returning the id's bare digest: what a
+/// client that drops the label would send.
+async fn bootstrap_active_with_key(
+    app: axum::Router,
+    pool: &test_fixtures::Pool,
+    genesis_name: &str,
+    add_key: &str,
+) -> String {
+    let id = bootstrap_active_labelled(app, pool, genesis_name, add_key).await;
+    id.split_once(':').expect("labelled PG").1.to_string()
 }
 
 /// Bootstrap a golden `lifecycle/` fixture so the login handler can load it:
@@ -284,7 +299,7 @@ async fn bootstrap_active_with_key(
 /// fixture's own pre-signed transactions drive the real lifecycle
 /// transition. Only reachable once the storage layer recognizes the
 /// lifecycle transactions (see the module-level note).
-async fn bootstrap_lifecycle(state: &AppState, fixture_name: &str) -> String {
+async fn bootstrap_lifecycle(state: &AppState, fixture_name: &str) -> cyphr::PrincipalGenesis {
     let fixture = load_golden("lifecycle", fixture_name);
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
     let principal_id = cyphr_storage::engine::genesis_principal_id(&make_genesis(genesis_keys))
@@ -369,9 +384,10 @@ async fn bootstrap_active_then_revoke(
     revoked_key: &str,
 ) -> String {
     let principal_id =
-        bootstrap_active_with_key(build_router(state.clone()), pool, genesis_name, revoked_key)
+        bootstrap_active_labelled(build_router(state.clone()), pool, genesis_name, revoked_key)
             .await;
-    let principal_id = principal_id.as_str();
+    let principal_id: cyphr::PrincipalGenesis = principal_id.parse().expect("labelled PG");
+    let principal_id = &principal_id;
 
     let genesis = state
         .engine
@@ -406,7 +422,7 @@ async fn login_timestamp_flow_issues_valid_token() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
 
     let app = build_router(state.clone());
@@ -427,7 +443,11 @@ async fn login_timestamp_flow_issues_valid_token() {
         .unwrap()
         .verify_token(token, now_secs())
         .expect("issued token must verify as a genuine bearer token");
-    assert_eq!(claims.pg, pid, "token must bind the logged-in principal");
+    assert_eq!(
+        claims.pg.to_string(),
+        pid,
+        "token must bind the logged-in principal"
+    );
 }
 
 /// Challenge flow: fetch a challenge, sign it, receive a valid token.
@@ -436,7 +456,7 @@ async fn login_challenge_flow_issues_valid_token() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state.clone());
 
@@ -476,7 +496,7 @@ struct NotesPolicy {
 }
 
 impl cyphr_server::auth::policy::LoginPolicy for NotesPolicy {
-    fn perms(&self, _pg: &str, login_key: &coz::Thumbprint) -> Vec<String> {
+    fn perms(&self, _pg: &cyphr::PrincipalGenesis, login_key: &coz::Thumbprint) -> Vec<String> {
         if *login_key == self.writer {
             vec!["notes:write".to_string()]
         } else {
@@ -504,7 +524,7 @@ async fn a_service_policy_grants_and_its_route_requires_a_permission() {
     let writer = pool.get("golden").unwrap().compute_tmb().unwrap();
     let state = Arc::new(login_app_state().with_login_policy(Arc::new(NotesPolicy { writer })));
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let app = build_router(state.clone()).merge(
         axum::Router::new()
             .route("/notes", axum::routing::post(save_note))
@@ -553,15 +573,12 @@ async fn login_refuses_a_challenge_another_issuer_signed() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let other = coz::Alg::Ed25519.generate_keypair();
-    let other = cyphr_client::login::SoftwareIssuer::new(
-        other.alg.name(),
-        &other.prv_bytes,
-        &other.pub_bytes,
-    );
+    let other =
+        cyphr_net::login::SoftwareIssuer::new(other.alg.name(), &other.prv_bytes, &other.pub_bytes);
     let foreign = serde_json::to_value(
-        cyphr_client::login::issue_challenge(&other, AUDIENCE, now_secs()).expect("issues"),
+        cyphr_net::login::issue_challenge(&other, AUDIENCE, now_secs()).expect("issues"),
     )
     .expect("json");
 
@@ -592,7 +609,7 @@ async fn login_rejects_replayed_challenge() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state.clone());
 
@@ -624,7 +641,7 @@ async fn login_rejects_out_of_window_timestamp() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state);
 
@@ -649,7 +666,7 @@ async fn login_rejects_mismatched_audience() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state);
 
@@ -671,7 +688,7 @@ async fn login_rejects_missing_audience() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state);
 
@@ -701,7 +718,7 @@ async fn login_rejects_missing_audience() {
 async fn login_rejects_missing_principal_claim() {
     let state = login_state();
     let pool = load_pool();
-    bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let app = build_router(state);
 
     let body = login_body(&pool, "golden", AUDIENCE, None, None, now_secs());
@@ -727,9 +744,9 @@ async fn login_binds_key_to_claimed_principal_not_thumbprint() {
     // Distinct genesis keys, because a principal's id is derived from its
     // genesis.
     let other =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let claimed =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "alice", "key_b").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "alice", "key_b").await;
     let (other, claimed) = (other.as_str(), claimed.as_str());
 
     // key_a claiming P_other: accepted (key_a is active there).
@@ -764,7 +781,7 @@ async fn login_rejects_invalid_signature() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state);
 
@@ -833,7 +850,7 @@ async fn login_rejects_unknown_principal() {
         &pool,
         "golden",
         AUDIENCE,
-        Some("no-such-principal"),
+        Some(&unknown_id()),
         None,
         now_secs(),
     );
@@ -860,18 +877,19 @@ async fn login_rejects_unknown_principal() {
 async fn login_rejects_frozen_principal() {
     let state = login_state();
     let pool = load_pool();
-    let pid = bootstrap_lifecycle(&state, "freeze_create_transitions_to_frozen").await;
+    let pg = bootstrap_lifecycle(&state, "freeze_create_transitions_to_frozen").await;
+    let pid = pg.to_string();
     let pid = pid.as_str();
 
     // The reconstructed principal is genuinely Frozen (real state, real path).
     let genesis = state
         .engine
-        .resolve_genesis(pid, &[])
+        .resolve_genesis(&pg, &[])
         .await
         .expect("resolve genesis");
     let principal = state
         .engine
-        .load_principal(pid, genesis)
+        .load_principal(&pg, genesis)
         .await
         .expect("load principal");
     assert_eq!(
@@ -898,17 +916,18 @@ async fn login_rejects_frozen_principal() {
 async fn login_rejects_deleted_principal() {
     let state = login_state();
     let pool = load_pool();
-    let pid = bootstrap_lifecycle(&state, "principal_delete_transitions_to_deleted").await;
+    let pg = bootstrap_lifecycle(&state, "principal_delete_transitions_to_deleted").await;
+    let pid = pg.to_string();
     let pid = pid.as_str();
 
     let genesis = state
         .engine
-        .resolve_genesis(pid, &[])
+        .resolve_genesis(&pg, &[])
         .await
         .expect("resolve genesis");
     let principal = state
         .engine
-        .load_principal(pid, genesis)
+        .load_principal(&pg, genesis)
         .await
         .expect("load principal");
     assert_eq!(
@@ -945,16 +964,17 @@ async fn login_rejects_key_revoked_in_claimed_principal() {
     let state = login_state();
     let pool = load_pool();
     let pid = bootstrap_active_then_revoke(&state, &pool, "golden", "key_a").await;
+    let pg: cyphr::PrincipalGenesis = pid.parse().expect("labelled PG");
     let pid = pid.as_str();
 
     let genesis = state
         .engine
-        .resolve_genesis(pid, &[])
+        .resolve_genesis(&pg, &[])
         .await
         .expect("resolve genesis");
     let principal = state
         .engine
-        .load_principal(pid, genesis)
+        .load_principal(&pg, genesis)
         .await
         .expect("load principal");
     assert!(
@@ -981,7 +1001,7 @@ async fn create_key_push(
     signer_name: &str,
     new_key: &str,
     now: i64,
-    id: &str,
+    id: &cyphr::PrincipalGenesis,
 ) -> String {
     let signer = pool.get(signer_name).expect("signer in pool");
     let new = pool
@@ -1072,14 +1092,14 @@ async fn login_rejects_errored_principal() {
         ],
         "A, B (rival), B2 (resolves for B), A2 (rival)"
     );
-    let bare = id.split_once(':').expect("labelled PG").1;
+    let claimed = id.to_string();
     assert!(
-        state.engine.is_errored(bare).await.expect("verdict"),
+        state.engine.is_errored(&id).await.expect("verdict"),
         "both branches extended: Error"
     );
 
     for signer in [golden, eve] {
-        let body = login_body(&pool, signer, AUDIENCE, Some(bare), None, now_secs());
+        let body = login_body(&pool, signer, AUDIENCE, Some(&claimed), None, now_secs());
         let (status, json) = post_json(app.clone(), "/auth/login", body).await;
         assert_eq!(
             status,
@@ -1093,28 +1113,34 @@ async fn login_rejects_errored_principal() {
 // Sign-on hardening (SO1)
 // ========================================================================
 
-/// Backs: one principal has one token subject. A login claiming the bare
-/// spelling and one claiming the algorithm-labelled spelling of the same
-/// identity both succeed and mint tokens naming the same subject. Turns
-/// red if: `parsed.pr` reaches `issue_login_token` as typed, giving a relying
-/// party two account rows for one identity. A no-op that canonicalizes
-/// only one flow (or lowercases) still fails the equality. End to end: yes.
+/// Backs: one principal has one token subject. Two logins by the same
+/// principal, one per flow (timestamp and challenge), both claiming its
+/// labelled id, mint tokens naming the same subject. Turns red if either
+/// flow's `parsed.pg` reaches `issue_login_token` in another form, giving a
+/// relying party two account rows for one identity. End to end: yes.
 #[tokio::test]
-async fn token_subject_is_one_whatever_spelling_logged_in() {
+async fn token_subject_is_one_whatever_flow_logged_in() {
     let state = login_state();
     let pool = load_pool();
-    let bare =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
-    let labelled = format!("SHA-256:{bare}");
+    let id = bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
+
+    let (_, cj) = post_json(
+        build_router(state.clone()),
+        "/auth/challenge",
+        String::new(),
+    )
+    .await;
+    let challenge = envelope_payload(&cj)["challenge"].clone();
 
     let mut subjects = Vec::new();
-    for spelling in [bare.as_str(), labelled.as_str()] {
-        let body = login_body(&pool, "golden", AUDIENCE, Some(spelling), None, now_secs());
+    for challenge in [None, Some(&challenge)] {
+        let body = login_body(&pool, "golden", AUDIENCE, Some(&id), challenge, now_secs());
         let (status, json) = post_json(build_router(state.clone()), "/auth/login", body).await;
         assert_eq!(
             status,
             StatusCode::OK,
-            "login under {spelling} must succeed (same identity): {json:?}"
+            "login must succeed (challenge: {}): {json:?}",
+            challenge.is_some()
         );
         let token = envelope_payload(&json)["token"].as_str().expect("token");
         let claims = state
@@ -1127,7 +1153,12 @@ async fn token_subject_is_one_whatever_spelling_logged_in() {
     }
     assert_eq!(
         subjects[0], subjects[1],
-        "two spellings of one principal produced two token subjects"
+        "two logins of one principal produced two token subjects"
+    );
+    assert_eq!(
+        subjects[0].to_string(),
+        id,
+        "the subject is the labelled id"
     );
 }
 
@@ -1160,7 +1191,14 @@ async fn login_and_challenge_refuse_alike_without_audience() {
     let state = Arc::new(AppState::new(config).expect("open audience-less AppState"));
 
     let pool = load_pool();
-    let body = login_body(&pool, "golden", AUDIENCE, Some("any"), None, now_secs());
+    let body = login_body(
+        &pool,
+        "golden",
+        AUDIENCE,
+        Some(&unknown_id()),
+        None,
+        now_secs(),
+    );
     let (login_status, login_json) =
         post_json(build_router(state.clone()), "/auth/login", body).await;
     let (challenge_status, challenge_json) =
@@ -1201,7 +1239,7 @@ async fn login_rejects_future_dated_timestamp() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let app = build_router(state);
 
     let future = now_secs() + 3600;
@@ -1267,7 +1305,7 @@ async fn login_typ_is_matched_exactly() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
 
     let exact = format!("{AUDIENCE}/user/login/request/create");
     let (status, json) = post_json(
@@ -1313,7 +1351,7 @@ async fn cross_flow_challenge_statement_never_passes_as_timestamp() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let typ = format!("{AUDIENCE}/user/login/request/create");
 
     let (_, cj) = post_json(
@@ -1366,7 +1404,7 @@ async fn login_role_is_not_interchangeable_with_other_statements() {
     let state = login_state();
     let pool = load_pool();
     let pid =
-        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+        bootstrap_active_labelled(build_router(state.clone()), &pool, "golden", "key_a").await;
     let login_typ = format!("{AUDIENCE}/user/login/request/create");
 
     // Other roles presented as a login.
@@ -1389,7 +1427,7 @@ async fn login_role_is_not_interchangeable_with_other_statements() {
         .as_ref()
         .unwrap()
         .issue_login_token(
-            pid.as_str(),
+            &pid.parse().expect("labelled PG"),
             &pool.get("golden").unwrap().compute_tmb().unwrap(),
             vec!["read".into()],
             now_secs(),
@@ -1438,4 +1476,83 @@ async fn login_role_is_not_interchangeable_with_other_statements() {
         StatusCode::OK,
         "the golden key must not be dead: {json:?}"
     );
+}
+
+// ========================================================================
+// Principal-id spelling at the login edge (CLOSE-DECISIONS D5, Q1)
+// ========================================================================
+
+/// The label a bare digest was printed under, read off its width here in
+/// the test only (the code under test must never do this).
+fn labelled(genesis: &str, bare: &str) -> String {
+    let hash = match bare.len() {
+        43 => "SHA-256",
+        64 => "SHA-384",
+        86 => "SHA-512",
+        n => panic!("{genesis}: unexpected digest length {n}"),
+    };
+    format!("{hash}:{bare}")
+}
+
+/// Over the pool's principals (each a different genesis key, so a different
+/// digest): a login claiming its principal by the labelled `ALG:digest` is
+/// accepted, and the token subject is that same labelled id, which parses
+/// and prints back unchanged.
+///
+/// Red before ID: the subject is the bare digest. End to end: yes.
+#[tokio::test]
+async fn login_claims_the_labelled_id_and_the_subject_is_that_id() {
+    let state = login_state();
+    let pool = load_pool();
+    for (genesis, key) in [("golden", "key_a"), ("alice", "key_b")] {
+        let bare =
+            bootstrap_active_with_key(build_router(state.clone()), &pool, genesis, key).await;
+        let id = labelled(genesis, &bare);
+
+        let ok = login_body(&pool, genesis, AUDIENCE, Some(&id), None, now_secs());
+        let (status, json) = post_json(build_router(state.clone()), "/auth/login", ok).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{genesis}: labelled login: {json:?}"
+        );
+        let token = envelope_payload(&json)["token"].as_str().expect("token");
+        let claims = state
+            .identity
+            .as_ref()
+            .unwrap()
+            .verify_token(token, now_secs())
+            .expect("issued token verifies");
+        let subject = claims.pg.to_string();
+        let parsed: cyphr::PrincipalGenesis = subject
+            .parse()
+            .unwrap_or_else(|e| panic!("{genesis}: subject {subject:?} is not a labelled id: {e}"));
+        assert_eq!(parsed.to_string(), subject, "{genesis}: Display round trip");
+        assert_eq!(subject, id, "{genesis}: the subject is the id logged in");
+    }
+}
+
+/// A login claiming the bare digest is refused, whatever the principal,
+/// with an error that shows the labelled form; no token is issued and no
+/// width is guessed.
+///
+/// Red before ID: the bare claim is accepted (200). End to end: yes.
+#[tokio::test]
+async fn login_refuses_a_bare_id_and_shows_the_labelled_form() {
+    let state = login_state();
+    let pool = load_pool();
+    for (genesis, key) in [("golden", "key_a"), ("alice", "key_b")] {
+        let bare =
+            bootstrap_active_with_key(build_router(state.clone()), &pool, genesis, key).await;
+        let refused = login_body(&pool, genesis, AUDIENCE, Some(&bare), None, now_secs());
+        let (status, json) = post_json(build_router(state.clone()), "/auth/login", refused).await;
+        assert!(
+            status.is_client_error(),
+            "{genesis}: a bare claim must be refused, got {status}: {json:?}"
+        );
+        assert!(
+            json.to_string().contains("unlabelled principal id"),
+            "{genesis}: the refusal must show the labelled form: {json:?}"
+        );
+    }
 }

@@ -78,7 +78,7 @@ fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
 /// A principal over the genesis `keys` (the first signs) with its genesis
 /// commit (SPEC 5.1) made at `now`, and its id: the PG, the principal
 /// state over those keys.
-async fn genesis(keys: &[&Kp], now: i64) -> (cyphr::Principal, String) {
+async fn genesis(keys: &[&Kp], now: i64) -> (cyphr::Principal, cyphr::PrincipalGenesis) {
     let mut p = cyphr::Principal::implicit(key_of(keys[0]))
         .await
         .expect("genesis");
@@ -97,16 +97,16 @@ async fn genesis(keys: &[&Kp], now: i64) -> (cyphr::Principal, String) {
 /// Push body for line `i` of `p`'s export under `id`, in the wire form
 /// (SPEC 4.6.2): its keys travel in the bundle's `keys`, so commit 0 (the
 /// genesis) reads from its record alone.
-fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
+fn wire(p: &cyphr::Principal, i: usize, id: &cyphr::PrincipalGenesis) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
     common::push_body(id, &entries[i].bundle().expect("bundle"))
 }
 
-fn enc(id: &str) -> String {
-    id.replace(':', "%3A")
+fn enc(id: &(impl ToString + ?Sized)) -> String {
+    id.to_string().replace(':', "%3A")
 }
 
-async fn tip_payload(app: axum::Router, id: &str) -> serde_json::Value {
+async fn tip_payload(app: axum::Router, id: &cyphr::PrincipalGenesis) -> serde_json::Value {
     let (status, body) = get_json(app, &format!("/tip?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let mut payload = envelope_payload(&body).clone();
@@ -134,14 +134,14 @@ fn error_heads(payload: &serde_json::Value) -> Vec<String> {
 /// genesis keys), and a fork at its last position: two rival commits that
 /// both verify at the same `pre`.
 struct Forked {
-    id: String,
+    id: cyphr::PrincipalGenesis,
     /// The shared prefix, pushed first.
     shared: cyphr::Principal,
     /// The commit that is pushed first at the fork position, and its rival.
     canonical: cyphr::Principal,
     rival: cyphr::Principal,
-    /// Every spelling the PG answers to, the id among them.
-    spellings: Vec<String>,
+    /// Every labelled spelling the PG answers to, the id among them.
+    spellings: Vec<cyphr::PrincipalGenesis>,
 }
 
 async fn forked() -> Forked {
@@ -157,8 +157,7 @@ async fn forked() -> Forked {
     let mh = shared.pg().expect("PG established").as_multihash();
     for alg in mh.algorithms() {
         let tagged = mh.tagged(alg).expect("variant").to_string();
-        spellings.push(tagged.split_once(':').expect("tagged").1.to_string());
-        spellings.push(tagged);
+        spellings.push(tagged.parse().expect("a labelled variant is a PG"));
     }
 
     let mut canonical = shared.fork().await.expect("fork");
@@ -174,7 +173,10 @@ async fn forked() -> Forked {
     }
 }
 
-async fn branches(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value) {
+async fn branches(
+    app: axum::Router,
+    id: &cyphr::PrincipalGenesis,
+) -> (StatusCode, serde_json::Value) {
     let (status, body) = get_json(app, &format!("/branches?pg={}", enc(id))).await;
     let payload = if status == StatusCode::OK {
         envelope_payload(&body).clone()
@@ -185,7 +187,7 @@ async fn branches(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value
 }
 
 /// Backs a-red-route: a server holding a fork lists both branches, under
-/// the genesis id and every PG spelling alike; and the push that forked it
+/// the genesis id and every labelled PG spelling alike; and the push that forked it
 /// is still refused (409) without moving the tip. Turns red if the fork is
 /// dropped
 /// (one branch listed), both or neither is canonical, or the listing
@@ -489,7 +491,7 @@ async fn forked_server() -> Resolved {
 }
 
 /// `/branches` entries as (sequence, canonical, tip).
-async fn heads(app: &axum::Router, id: &str) -> Vec<(u64, bool, String)> {
+async fn heads(app: &axum::Router, id: &cyphr::PrincipalGenesis) -> Vec<(u64, bool, String)> {
     let (status, payload) = branches(app.clone(), id).await;
     assert_eq!(status, StatusCode::OK, "{payload:?}");
     payload["branches"]
@@ -506,7 +508,7 @@ async fn heads(app: &axum::Router, id: &str) -> Vec<(u64, bool, String)> {
         .collect()
 }
 
-async fn evidence_count(app: &axum::Router, id: &str) -> usize {
+async fn evidence_count(app: &axum::Router, id: &cyphr::PrincipalGenesis) -> usize {
     let (status, body) = get_json(app.clone(), &format!("/evidence?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let payload = envelope_payload(&body);
@@ -720,7 +722,7 @@ async fn extend_c(
     app: &axum::Router,
     c: &cyphr::Principal,
     n: usize,
-    id: &str,
+    id: &cyphr::PrincipalGenesis,
     status: StatusCode,
 ) -> (serde_json::Value, Vec<(u64, bool, String)>) {
     let pool = load_pool();
@@ -763,7 +765,7 @@ const ERRORED: StatusCode = StatusCode::LOCKED;
 /// (`thief_first`) or the owner pushes first is at NOW+5, the other at
 /// NOW+6 (a later push dated earlier than the tip is TIMESTAMP_PAST).
 struct Theft {
-    id: String,
+    id: cyphr::PrincipalGenesis,
     n: usize,
     shared: cyphr::Principal,
     a: cyphr::Principal,
@@ -807,7 +809,12 @@ async fn theft(thief_first: bool) -> Theft {
 }
 
 /// Push `p`'s commit at `i` and return the status.
-async fn push(app: &axum::Router, p: &cyphr::Principal, i: usize, id: &str) -> StatusCode {
+async fn push(
+    app: &axum::Router,
+    p: &cyphr::Principal,
+    i: usize,
+    id: &cyphr::PrincipalGenesis,
+) -> StatusCode {
     post_json(app.clone(), "/push", wire(p, i, id)).await.0
 }
 
@@ -856,7 +863,7 @@ async fn revoke_eve(state: &cyphr_server::AppState, now: i64) {
         .expect("the engine keeps the revoke");
 }
 
-async fn errored(state: &cyphr_server::AppState, id: &str) -> bool {
+async fn errored(state: &cyphr_server::AppState, id: &cyphr::PrincipalGenesis) -> bool {
     state.engine.is_errored(id).await.expect("verdict")
 }
 
@@ -1256,7 +1263,7 @@ async fn sign_commit(
 /// Y by `golden` at NOW+11. The attacker holds `eve` and builds B over A,
 /// dated A's `now` (NOW+3), and B' over B at NOW+3.
 struct Rewrite {
-    id: String,
+    id: cyphr::PrincipalGenesis,
     n: usize,
     chain: cyphr::Principal,
     b: cyphr::Principal,
@@ -2068,14 +2075,14 @@ async fn fresh_client_replays_after_thief_data_promotion() {
     let (status, served) = get_json(app.clone(), &format!("/patch?pg={}", enc(&id))).await;
     assert_eq!(status, StatusCode::OK, "{served:?}");
     let bytes = serde_json::to_vec(&served).expect("body");
-    let patch = cyphr_client::verify_patch_body(&bytes, &id, None).expect("well-formed patch");
+    let patch = cyphr_net::verify_patch_body(&bytes, &id, None).expect("well-formed patch");
     let genesis_commit = envelope_payload(&served)["entries"][0]["commit_id"]
         .as_str()
         .expect("genesis commit id")
         .to_owned();
-    let record = cyphr_client::Record::from_entries(
+    let record = cyphr_net::Record::from_entries(
         &id,
-        cyphr_client::Anchor::GenesisCommit(genesis_commit),
+        cyphr_net::Anchor::GenesisCommit(genesis_commit),
         cyphr::principal::system_clock,
         &patch.entries,
         &patch.actions,
@@ -2099,7 +2106,7 @@ async fn fresh_client_replays_after_thief_data_promotion() {
 
 /// The commits of the fork-rule table, over one shared prefix of `n`.
 struct Table {
-    id: String,
+    id: cyphr::PrincipalGenesis,
     n: usize,
     shared: cyphr::Principal,
     /// The thief's line: A at n, D, F, G above it.
@@ -2144,7 +2151,7 @@ async fn table() -> Table {
 async fn verdict(
     app: &axum::Router,
     state: &cyphr_server::AppState,
-    id: &str,
+    id: &cyphr::PrincipalGenesis,
 ) -> (bool, serde_json::Value, Vec<String>) {
     let assessed = state.engine.assess(id).await.expect("assess");
     (
@@ -2348,7 +2355,7 @@ fn tied_heads(t: &Theft) -> Vec<(serde_json::Value, u64)> {
 }
 
 /// `GET /tip` as the served envelope body, minus the response's own clock.
-async fn tip_body(app: &axum::Router, id: &str) -> serde_json::Value {
+async fn tip_body(app: &axum::Router, id: &cyphr::PrincipalGenesis) -> serde_json::Value {
     let (status, mut body) = get_json(app.clone(), &format!("/tip?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     body["payload"]
@@ -2358,7 +2365,7 @@ async fn tip_body(app: &axum::Router, id: &str) -> serde_json::Value {
     body
 }
 
-async fn patch_body(app: &axum::Router, id: &str) -> serde_json::Value {
+async fn patch_body(app: &axum::Router, id: &cyphr::PrincipalGenesis) -> serde_json::Value {
     let (status, body) = get_json(app.clone(), &format!("/patch?pg={}", enc(id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     body
@@ -2925,7 +2932,7 @@ async fn caught_up_patch_is_signed_whatever_the_anchor_spelling() {
 /// thief's J_3, J_4 over C_2, two junk rivals X, Y beside C_2 over C_1 (the
 /// key's whole quota), and the owner's answer O_3, O_4 over C_2.
 struct Prefilled {
-    id: String,
+    id: cyphr::PrincipalGenesis,
     chain: Vec<cyphr::Principal>,
     j: Vec<cyphr::Principal>,
     x: cyphr::Principal,
@@ -3228,12 +3235,7 @@ async fn sync_over_cap(mode: Cap) -> Result<(), String> {
     );
     // The witness already follows the authority's server principal: the
     // proxy serves only the patch the test rewrites.
-    let pg = astate
-        .principal
-        .as_ref()
-        .expect("principal")
-        .pg()
-        .to_string();
+    let pg = astate.principal.as_ref().expect("principal").pg().clone();
     for entry in &astate
         .engine
         .get_patch(&pg, None, None)

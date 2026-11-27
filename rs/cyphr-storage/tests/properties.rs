@@ -216,7 +216,7 @@ fn build_intent(genesis_key_idx: usize, steps: Vec<Step>) -> test_fixtures::inte
 /// push: its id, its genesis, and its commit lines with each action-only
 /// line carried into the next commit's bundle (SPEC 4.6.2 `actions`).
 struct History {
-    principal_id: String,
+    principal_id: cyphr::PrincipalGenesis,
     genesis: Genesis,
     commits: Vec<CommitEntry>,
 }

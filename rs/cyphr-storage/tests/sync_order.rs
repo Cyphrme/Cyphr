@@ -167,17 +167,17 @@ struct RecIndex {
 }
 
 impl Indexer for RecIndex {
-    async fn get_tip(&self, id: &str) -> R<Option<TipState>> {
+    async fn get_tip(&self, id: &cyphr::PrincipalGenesis) -> R<Option<TipState>> {
         self.inner.get_tip(id).await
     }
 
-    async fn is_pg_established(&self, id: &str) -> R<bool> {
+    async fn is_pg_established(&self, id: &cyphr::PrincipalGenesis) -> R<bool> {
         self.inner.is_pg_established(id).await
     }
 
     async fn get_commit_chain(
         &self,
-        id: &str,
+        id: &cyphr::PrincipalGenesis,
         from: Option<u64>,
         to: Option<u64>,
     ) -> R<Vec<CommitRef>> {
@@ -217,7 +217,7 @@ impl IndexerWrite for RecIndex {
 
     async fn replace_chain_from(
         &self,
-        id: &str,
+        id: &cyphr::PrincipalGenesis,
         sequence: u64,
         commits: &[IndexableCommit],
         t: &DeriveToken,
@@ -340,7 +340,7 @@ async fn create_on(state: &mut Principal, signer: &Kp, new: &Kp, now: i64) -> Wi
 struct Line {
     signer: Kp,
     genesis: Genesis,
-    id: String,
+    id: cyphr::PrincipalGenesis,
     chain: Vec<WireBundle>,
     /// `snaps[i]` is the state after commit `i`.
     snaps: Vec<Principal>,
@@ -598,7 +598,7 @@ async fn run(ops: &[Op], fail_at: Option<usize>) -> Outcome {
 
 /// What the engine would sign over for `id`: its tip and, in Error, the
 /// held heads with their first-seen times.
-async fn signed(e: &Engine, id: &str) -> (Option<(String, u64)>, String) {
+async fn signed(e: &Engine, id: &cyphr::PrincipalGenesis) -> (Option<(String, u64)>, String) {
     let tip = e
         .get_tip(id)
         .await

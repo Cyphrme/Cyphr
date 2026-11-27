@@ -75,6 +75,7 @@ use axum::extract::{ConnectInfo, Request};
 use axum::http::header::CONTENT_LENGTH;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use cyphr::PrincipalGenesis;
 use futures::future::BoxFuture;
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use moka::sync::Cache;
@@ -97,7 +98,7 @@ const KEY_CEILING: usize = 100_000;
 /// resolves to `0` (under any quota) -- an index blip never fabricates a quota
 /// refusal of legitimate traffic; the fence only ever refuses on a *known*
 /// over-cap count.
-pub type CountProbe = Arc<dyn Fn(String) -> BoxFuture<'static, u64> + Send + Sync>;
+pub type CountProbe = Arc<dyn Fn(PrincipalGenesis) -> BoxFuture<'static, u64> + Send + Sync>;
 
 /// A single-key `governor` DIRECT (un-keyed) rate limiter -- the per-key cell
 /// [`BoundedLimiter`] stores one of per resident key.
@@ -419,10 +420,10 @@ fn quota_exceeded(limit: u64) -> Response {
 /// cross-fence coupling.
 #[derive(Deserialize)]
 struct PrincipalIdPeek {
-    principal_id: String,
+    principal_id: PrincipalGenesis,
 }
 
-fn peek_principal_id(bytes: &[u8]) -> Option<String> {
+fn peek_principal_id(bytes: &[u8]) -> Option<PrincipalGenesis> {
     serde_json::from_slice::<PrincipalIdPeek>(bytes)
         .ok()
         .map(|peek| peek.principal_id)

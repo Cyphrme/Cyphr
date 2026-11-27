@@ -1,11 +1,13 @@
 //! One genesis-derived identity has one stored spelling (SPEC 3.1).
 //!
-//! A principal id may be written bare (`X`, the PG's digest) or
-//! algorithm-labelled (`SHA-256:X`). If the server keyed storage on whichever
-//! spelling arrived, the same identity could be stored as two independent
-//! principals: a fork refused under one spelling would be accepted under the
-//! other, and a key the owner revoked under one spelling would keep signing
+//! A principal id is written in one spelling, the labelled `ALG:digest`, and
+//! a PG with several hash variants (a principal whose keys span algorithms)
+//! has one labelled id per variant. If the server keyed storage on whichever
+//! variant arrived, the same identity could be stored as two independent
+//! principals: a fork refused under one variant would be accepted under the
+//! other, and a key the owner revoked under one variant would keep signing
 //! under the other. Both scenarios are end to end over `/push` and `/tip`.
+//! A bare digest names nothing: it is refused (see `principal_id_edges.rs`).
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -14,27 +16,47 @@ use cyphr_server::build_router;
 
 mod common;
 
-use common::{
-    build_genesis_push_body_with, build_second_commit_push_body, envelope_payload, get_json,
-    keyless_server, load_pool, post_json,
-};
+use common::{envelope_payload, get_json, keyless_server, load_pool, post_json};
 
 const NOW: i64 = 1_700_100_000;
 
-/// The two spellings of the standard principal's id (the PG of the genesis
-/// in which `golden` creates itself and `key_a`): bare `X` and labelled
-/// `SHA-256:X` (golden is an ES256 key).
-async fn spellings(pool: &test_fixtures::Pool) -> (String, String) {
-    let labelled = common::golden_principal_id(pool).await;
-    let bare = labelled.split_once(':').expect("labelled PG").1.to_string();
-    (bare, labelled)
+/// A principal whose genesis commit (at `now`) has `golden` (ES256) create
+/// itself and `diana_es384`, so its PG has a SHA-256 and a SHA-384 variant.
+/// Returns it with those two labelled ids: two spellings of one identity.
+async fn two_variant_principal(
+    pool: &test_fixtures::Pool,
+    now: i64,
+) -> (cyphr::Principal, String, String) {
+    let (g, d) = (kp(pool, "golden"), kp(pool, "diana_es384"));
+    let mut p = cyphr::Principal::implicit(key_of(&g))
+        .await
+        .expect("genesis");
+    genesis_commit(&mut p, &g, vec![key_create(&g, &d, now)], now).await;
+    let (sha256, sha384) = sha256_and_sha384_ids(&p);
+    (p, sha256, sha384)
+}
+
+/// The SHA-256 and SHA-384 labelled ids of `p`'s PG.
+fn sha256_and_sha384_ids(p: &cyphr::Principal) -> (String, String) {
+    let mh = p
+        .pg()
+        .expect("established principal has a PG")
+        .as_multihash();
+    let id = |alg: &str| {
+        mh.algorithms()
+            .map(|a| mh.tagged(a).expect("variant digest").to_string())
+            .find(|t| t.starts_with(&format!("{alg}:")))
+            .unwrap_or_else(|| panic!("premise: the PG has a {alg} variant"))
+    };
+    (id("SHA-256"), id("SHA-384"))
 }
 
 /// The two spellings of the id of a principal whose genesis creates only
 /// `golden` (no nonce): its bare tmb `X` and `SHA-256:X` (SPEC 5.1).
 fn implicit_spellings(pool: &test_fixtures::Pool) -> (String, String) {
-    let bare = common::implicit_principal_id(pool, "golden");
-    let labelled = format!("SHA-256:{bare}");
+    let id = common::implicit_principal_id(pool, "golden");
+    let labelled = id.to_string();
+    let bare = labelled.split_once(':').expect("labelled id").1.to_string();
     (bare, labelled)
 }
 
@@ -48,54 +70,47 @@ async fn tip(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value) {
     (status, payload)
 }
 
-/// Backs: a divergent commit is refused (409) under BOTH spellings of an
-/// already-stored identity, and both spellings read the one chain. The
-/// divergent commit continues another genesis of the same keys (signed at
-/// another `now`, so the same PG but another post-genesis state), so its
-/// `pre` forks the stored chain at its root. Turns red if the alias keys a
-/// second, independent principal: the divergent commit is then accepted
-/// under the labelled spelling. End to end: yes.
+/// Backs: a divergent commit is refused (409) under BOTH variant ids of an
+/// already-stored identity, and both read the one chain. The divergent
+/// commit continues another genesis of the same keys (signed at another
+/// `now`, so the same PG but another post-genesis state), so its `pre` forks
+/// the stored chain at its root. Turns red if the alias keys a second,
+/// independent principal: the divergent commit is then accepted under the
+/// other variant. End to end: yes.
 #[tokio::test]
 async fn alias_spelling_cannot_fork_a_stored_principal() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
     let pool = load_pool();
-    let (bare, labelled) = spellings(&pool).await;
+    let (owner, sha256, sha384) = two_variant_principal(&pool, NOW).await;
+    let (mut rival, rival_256, _) = two_variant_principal(&pool, NOW + 5).await;
+    assert_eq!(
+        sha256, rival_256,
+        "premise: one PG whatever the genesis `now`"
+    );
+    let a = kp(&pool, "key_a");
+    let (parts, sidecar) = key_create(&kp(&pool, "golden"), &a, NOW + 10);
+    commit_one(&mut rival, &kp(&pool, "golden"), parts, sidecar, NOW + 10).await;
 
-    let (status, body) = post_json(
-        app.clone(),
-        "/push",
-        build_genesis_push_body_with(&pool, "golden", "key_a", &bare, NOW).await,
-    )
-    .await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&owner, 0, &sha256)).await;
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
 
-    // Control: a commit on a divergent genesis (the same keys, signed at
-    // another `now`) under the same spelling is a fork and is refused.
-    let (status, body) = post_json(
-        app.clone(),
-        "/push",
-        build_second_commit_push_body(&pool, &bare, NOW + 5, NOW + 10).await,
-    )
-    .await;
+    // Control: a commit on a divergent genesis under the same spelling is a
+    // fork and is refused.
+    let (status, body) = post_json(app.clone(), "/push", wire(&rival, 1, &sha256)).await;
     assert_eq!(status, StatusCode::CONFLICT, "control: {body:?}");
 
-    // The same divergent commit under the other spelling is the same fork.
-    let (status, body) = post_json(
-        app.clone(),
-        "/push",
-        build_second_commit_push_body(&pool, &labelled, NOW + 5, NOW + 10).await,
-    )
-    .await;
+    // The same divergent commit under the other variant is the same fork.
+    let (status, body) = post_json(app.clone(), "/push", wire(&rival, 1, &sha384)).await;
     assert_eq!(
         status,
         StatusCode::CONFLICT,
-        "the labelled spelling stored a second, divergent principal: {body:?}"
+        "the SHA-384 variant stored a second, divergent principal: {body:?}"
     );
 
-    let (_, by_bare) = tip(app.clone(), &bare).await;
-    let (_, by_label) = tip(app, &labelled).await;
-    assert_eq!(by_bare, by_label, "both spellings must read one chain");
+    let (_, by_256) = tip(app.clone(), &sha256).await;
+    let (_, by_384) = tip(app, &sha384).await;
+    assert_eq!(by_256, by_384, "both variants must read one chain");
 }
 
 struct Kp {
@@ -199,11 +214,14 @@ fn key_create(signer: &Kp, new: &Kp, now: i64) -> Tx {
 /// genesis) reads from its record alone.
 fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
-    common::push_body(id, &entries[i].bundle().expect("bundle"))
+    let mut body =
+        serde_json::to_value(entries[i].bundle().expect("bundle")).expect("bundle serializes");
+    body["principal_id"] = id.into();
+    body.to_string()
 }
 
 /// Backs: a key the owner self-revoked can neither commit nor rewind the
-/// principal through the OTHER spelling of its id: both the owner's own
+/// principal through the OTHER variant of its id: both the owner's own
 /// pre-revocation commit replayed and a fresh commit by the revoked key are
 /// refused, and the tip does not move. Turns red if the alias keys a second
 /// principal: the replay of the public genesis is accepted there and the
@@ -212,14 +230,21 @@ fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
 async fn revoked_key_cannot_commit_through_the_alias_spelling() {
     let pool = load_pool();
     let (g, a, b) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "key_b"));
-    let (bare, labelled) = spellings(&pool).await;
+    let d = kp(&pool, "diana_es384");
 
-    // Owner: the genesis commit in which golden creates itself and key_a;
-    // then golden self-revokes, the commit finalized by key_a.
+    // Owner: the genesis commit in which golden creates itself, diana (so
+    // the PG has two variants) and key_a; then golden self-revokes, the
+    // commit finalized by key_a.
     let mut owner = cyphr::Principal::implicit(key_of(&g))
         .await
         .expect("genesis");
-    genesis_commit(&mut owner, &g, vec![key_create(&g, &a, NOW)], NOW).await;
+    genesis_commit(
+        &mut owner,
+        &g,
+        vec![key_create(&g, &d, NOW), key_create(&g, &a, NOW)],
+        NOW,
+    )
+    .await;
     commit_one(
         &mut owner,
         &a,
@@ -232,6 +257,8 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
         NOW + 10,
     )
     .await;
+
+    let (bare, labelled) = sha256_and_sha384_ids(&owner);
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);
@@ -246,7 +273,13 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
     let mut attacker = cyphr::Principal::implicit(key_of(&g))
         .await
         .expect("genesis");
-    genesis_commit(&mut attacker, &g, vec![key_create(&g, &a, NOW)], NOW).await;
+    genesis_commit(
+        &mut attacker,
+        &g,
+        vec![key_create(&g, &d, NOW), key_create(&g, &a, NOW)],
+        NOW,
+    )
+    .await;
     let (parts, sidecar) = key_create(&g, &b, NOW + 20);
     commit_one(&mut attacker, &g, parts, sidecar, NOW + 20).await;
 
@@ -256,7 +289,7 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
     let (status, body) = post_json(app.clone(), "/push", wire(&attacker, 1, &bare)).await;
     assert_eq!(status, StatusCode::CONFLICT, "control: {body:?}");
 
-    // Replaying the owner's public first commit under the other spelling
+    // Replaying the owner's public first commit under the other variant
     // must not open a second, pre-revocation copy of the principal.
     let (status, body) = post_json(app.clone(), "/push", wire(&owner, 0, &labelled)).await;
     assert!(
@@ -267,7 +300,7 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
     assert_eq!(
         status,
         StatusCode::CONFLICT,
-        "the revoked key committed through the alias spelling: {body:?}"
+        "the revoked key committed through the alias variant: {body:?}"
     );
 
     let (_, after) = tip(app, &bare).await;
@@ -327,8 +360,8 @@ async fn principal_with_keys_before_create_is_pushable_under_its_pg() {
     );
 }
 
-/// Every spelling a principal's PG has: each hash-variant label (`ALG:d`)
-/// and each bare digest.
+/// Every id a principal's PG has: one labelled `ALG:digest` per hash
+/// variant.
 fn pg_spellings(p: &cyphr::Principal) -> Vec<String> {
     let mh = p
         .pg()
@@ -336,10 +369,7 @@ fn pg_spellings(p: &cyphr::Principal) -> Vec<String> {
         .as_multihash();
     let mut out = Vec::new();
     for alg in mh.algorithms() {
-        let tagged = mh.tagged(alg).expect("variant digest").to_string();
-        let bare = tagged.split_once(':').expect("tagged digest").1.to_string();
-        out.push(tagged);
-        out.push(bare);
+        out.push(mh.tagged(alg).expect("variant digest").to_string());
     }
     out
 }
@@ -365,9 +395,9 @@ fn without_now(mut v: serde_json::Value) -> serde_json::Value {
 /// Backs SPEC §12.1 (every PG hash variant names the same principal) and
 /// the no-forged-label rule: a principal whose keys span ES256, ES384 and
 /// Ed25519 (so its PG has SHA-256, SHA-384 and SHA-512 variants) is read
-/// under every variant label and every bare digest with one tip and one
-/// chain, is advanced by a push under a variant other than the one it was
-/// created under, and refuses a label it does not have without creating
+/// under every variant label with one tip and one chain, is advanced by a
+/// push under a variant other than the one it was created under, and
+/// refuses a label it does not have, or a bare digest, without creating
 /// anything. Turns red if a variant is not resolved (the read is refused
 /// or reads another principal), if a variant push forks or is refused, or
 /// if a label the PG lacks is accepted. End to end: yes.
@@ -395,7 +425,7 @@ async fn variant_labels_and_bare_digests_address_one_principal() {
     let pg_all = pg_spellings(&p);
     assert_eq!(
         pg_all.len(),
-        6,
+        3,
         "premise: the PG has SHA-256, SHA-384 and SHA-512 variants: {pg_all:?}"
     );
     let label = |alg: &str| -> String {
@@ -465,11 +495,13 @@ async fn variant_labels_and_bare_digests_address_one_principal() {
     }
 
     // A label the PG does not have is refused and creates nothing: the
-    // SHA-256 digest relabelled SHA-512, and a label no variant carries.
+    // SHA-256 digest relabelled SHA-512, a label no variant carries, and
+    // the digest with no label at all.
     let sha256_digest = pg256.split_once(':').expect("tagged").1;
     for forged in [
         format!("SHA-512:{sha256_digest}"),
         format!("SHA3-256:{sha256_digest}"),
+        sha256_digest.to_string(),
     ] {
         let (status, body) = tip(app.clone(), &forged).await;
         assert!(
@@ -649,7 +681,7 @@ async fn first_commit_under_its_own_post_commit_pr_is_refused_cleanly() {
 
 /// A nonce-embedded principal on `g`: its genesis commit inserts `nonce` at
 /// the KT root after golden's own `key/create`, so its PG differs from the
-/// bare key's. Returns it with the id it is stored under: its PG (`SHA-256:`
+/// lone key's. Returns it with the id it is stored under: its PG (`SHA-256:`
 /// form), which the nonce makes unique (SPEC 5.1 step 3 and "a nonce
 /// embedding for a unique PG").
 async fn nonce_principal(g: &Kp, nonce: u8) -> (cyphr::Principal, String) {
@@ -715,13 +747,13 @@ async fn bare_tmb_never_resolves_to_a_nonce_principal() {
 
 /// Backs the same identity rule from the other side: a no-nonce single-key
 /// principal and a nonce-embedded principal on the SAME key coexist, and
-/// the bare tmb names the first only, each tip being its own. Turns red if
-/// the second push collides (non-201: both would be stored under the one
-/// tmb key), if the bare tmb answers with the nonce principal's root, or if
+/// the key's own id (`SHA-256:` tmb) names the first only, each tip being its
+/// own. Turns red if the second push collides (non-201: both would be stored
+/// under the one tmb key), if that id answers with the nonce principal's root, or if
 /// either push moves the other's tip. Order is covered both ways. End to
 /// end: yes.
 #[tokio::test]
-async fn bare_tmb_resolves_to_the_no_nonce_principal_beside_a_nonce_sibling() {
+async fn key_id_resolves_to_the_no_nonce_principal_beside_a_nonce_sibling() {
     for nonce_first in [true, false] {
         let pool = load_pool();
         let g = kp(&pool, "golden");
@@ -736,7 +768,7 @@ async fn bare_tmb_resolves_to_the_no_nonce_principal_beside_a_nonce_sibling() {
             .tagged_first()
             .expect("pr")
             .to_string();
-        let (bare, labelled) = implicit_spellings(&pool);
+        let (_, labelled) = implicit_spellings(&pool);
         let (state, _dir) = keyless_server();
         let app = build_router(state);
 
@@ -752,23 +784,26 @@ async fn bare_tmb_resolves_to_the_no_nonce_principal_beside_a_nonce_sibling() {
         assert_eq!(a.0, StatusCode::CREATED, "nonce_first={nonce_first}: {a:?}");
         assert_eq!(b.0, StatusCode::CREATED, "nonce_first={nonce_first}: {b:?}");
 
-        let (_, by_bare) = tip(app.clone(), &bare).await;
-        let (_, by_label) = tip(app.clone(), &labelled).await;
-        assert_eq!(by_bare, by_label, "the two spellings read different chains");
+        let (status, by_label) = tip(app.clone(), &labelled).await;
+        assert_eq!(status, StatusCode::OK, "{by_label:?}");
         let plain_bare = plain_pr_0.split_once(':').expect("tagged").1;
         assert!(
-            by_bare["pr"]
+            by_label["pr"]
                 .as_str()
                 .is_some_and(|v| v.contains(plain_bare)),
-            "the bare tmb does not read the no-nonce principal: {by_bare:?}"
+            "the key's labelled id does not read the no-nonce principal: {by_label:?}"
         );
         let (status, own) = tip(app.clone(), &pg).await;
         assert_eq!(status, StatusCode::OK, "{own:?}");
         assert_ne!(
-            by_bare["pr"], own["pr"],
-            "the bare tmb reads the nonce principal"
+            by_label["pr"], own["pr"],
+            "the key's labelled id reads the nonce principal"
         );
-        assert_eq!(by_bare["commit_count"], serde_json::json!(1), "{by_bare:?}");
+        assert_eq!(
+            by_label["commit_count"],
+            serde_json::json!(1),
+            "{by_label:?}"
+        );
         assert_eq!(own["commit_count"], serde_json::json!(1), "{own:?}");
     }
 }

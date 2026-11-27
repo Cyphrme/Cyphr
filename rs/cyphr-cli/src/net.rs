@@ -1,10 +1,11 @@
-//! The CLI's view of a peer: one [`cyphr_client::HttpConnector`] with the
+//! The CLI's view of a peer: one [`cyphr_net::HttpConnector`] with the
 //! bounds a peer deserves, and the typed ways an exchange can fail.
 
 use std::time::Duration;
 
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
-use cyphr_client::{
+use cyphr_net::{
     ConnectError, Connector, HttpConnector, HttpOptions, PatchFailure, Request, TipAnswer,
     verify_patch_body,
 };
@@ -134,7 +135,7 @@ pub struct PeerHistory {
 }
 
 /// One peer reached over HTTP(S). The carrier bounds every request (total
-/// timeout, no redirect, at most [`cyphr_client::MAX_RESPONSE_BYTES`] read) and refuses
+/// timeout, no redirect, at most [`cyphr_net::MAX_RESPONSE_BYTES`] read) and refuses
 /// cleartext to a non-loopback host unless the user allowed it.
 pub struct Peer {
     connector: HttpConnector,
@@ -175,7 +176,7 @@ impl Peer {
     /// [`PeerError`] when the peer is unreachable or answers outside the
     /// contract. The answer is the peer's claim: the server validates any
     /// commit it is later sent, so this is only used to choose what to send.
-    pub async fn tip(&self, principal: &str) -> Result<Option<TipAnswer>, PeerError> {
+    pub async fn tip(&self, principal: &PrincipalGenesis) -> Result<Option<TipAnswer>, PeerError> {
         match self
             .send(&Request::get(format!("/tip?pg={principal}")))
             .await
@@ -200,8 +201,8 @@ impl Peer {
     ///
     /// [`PeerError`] for a carrier failure, a refusal, or an answer that is
     /// not a well-formed patch.
-    pub async fn chain(&self, principal: &str) -> Result<PeerHistory, PeerError> {
-        let target = cyphr_client::PatchRequest {
+    pub async fn chain(&self, principal: &PrincipalGenesis) -> Result<PeerHistory, PeerError> {
+        let target = cyphr_net::PatchRequest {
             principal_id: principal,
             anchor: None,
         }
@@ -238,7 +239,11 @@ impl Peer {
     ///
     /// [`PeerError::Stale`] when the peer answers 409 (its tip has moved
     /// past the commit's predecessor); other [`PeerError`]s otherwise.
-    pub async fn push_commit(&self, principal: &str, bundle: &WireBundle) -> Result<(), PeerError> {
+    pub async fn push_commit(
+        &self,
+        principal: &PrincipalGenesis,
+        bundle: &WireBundle,
+    ) -> Result<(), PeerError> {
         self.push_commit_with_parent(principal, bundle, None).await
     }
 
@@ -251,12 +256,12 @@ impl Peer {
     /// As [`push_commit`](Self::push_commit).
     pub async fn push_commit_with_parent(
         &self,
-        principal: &str,
+        principal: &PrincipalGenesis,
         bundle: &WireBundle,
         parent: Option<&WireBundle>,
     ) -> Result<(), PeerError> {
         let mut body = serde_json::to_value(bundle).map_err(|e| self.malformed(e.to_string()))?;
-        body["principal_id"] = principal.into();
+        body["principal_id"] = principal.to_string().into();
         if let Some(parent) = parent {
             body["parent"] =
                 serde_json::to_value(parent).map_err(|e| self.malformed(e.to_string()))?;
@@ -283,7 +288,7 @@ impl Peer {
     /// [`PeerError`] when the peer is unreachable or refuses the proof.
     pub async fn post_resync(
         &self,
-        principal: &str,
+        principal: &PrincipalGenesis,
         coz: &Value,
         line: &[WireBundle],
     ) -> Result<Value, PeerError> {
@@ -304,7 +309,7 @@ impl Peer {
     /// answers without a token.
     pub async fn login(
         &self,
-        request: &cyphr_client::login::LoginRequest,
+        request: &cyphr_net::login::LoginRequest,
     ) -> Result<String, PeerError> {
         let bytes = serde_json::to_vec(request).map_err(|e| self.malformed(e.to_string()))?;
         let answer = self.send(&Request::post("/auth/login", bytes)).await?;

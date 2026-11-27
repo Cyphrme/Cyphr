@@ -14,7 +14,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
-use cyphr_client::HttpConnector;
+use cyphr_net::HttpConnector;
 use cyphr_server::gossip::Peer;
 use cyphr_server::{AppState, build_router};
 
@@ -72,7 +72,7 @@ async fn line(base: &cyphr::Principal, names: &[&str], now: i64) -> Vec<WireBund
     out
 }
 
-async fn push(app: &axum::Router, id: &str, bundle: &WireBundle) -> StatusCode {
+async fn push(app: &axum::Router, id: &cyphr::PrincipalGenesis, bundle: &WireBundle) -> StatusCode {
     post_json(app.clone(), "/push", common::push_body(id, bundle))
         .await
         .0
@@ -96,7 +96,10 @@ async fn serve(state: &Arc<AppState>) -> String {
 }
 
 /// (is Error, fork point (height, pre)).
-async fn verdict(state: &Arc<AppState>, id: &str) -> (bool, Option<(u64, Option<String>)>) {
+async fn verdict(
+    state: &Arc<AppState>,
+    id: &cyphr::PrincipalGenesis,
+) -> (bool, Option<(u64, Option<String>)>) {
     let a = state.engine.assess(id).await.expect("assess");
     (
         a.consensus == cyphr_storage::engine::Consensus::Error,

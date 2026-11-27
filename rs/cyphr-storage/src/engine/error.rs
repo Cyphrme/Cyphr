@@ -109,7 +109,7 @@ pub enum EngineError {
     #[error("principal {principal_id} is in Error: only a fork resolution is admitted")]
     Errored {
         /// The principal's storage key.
-        principal_id: String,
+        principal_id: cyphr::PrincipalGenesis,
     },
 
     /// The engine's commit-tree storage factory failed to produce a fresh

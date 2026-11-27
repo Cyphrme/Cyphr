@@ -73,7 +73,11 @@ async fn blob_and_eml_partitions_are_isolated() {
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
     let eml_storage = EmlLogs::new(db.clone())
         .expect("logs")
-        .open("SHA-256:partition", 0)
+        .open(
+            &cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![1; 32])
+                .expect("valid id"),
+            0,
+        )
         .expect("eml storage");
 
     let blob_a = blob_store.put(b"blob-partition-marker-a").await.unwrap();

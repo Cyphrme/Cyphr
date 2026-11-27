@@ -51,7 +51,7 @@ fuzz_target!(|data: &[u8]| {
             digest(&mut u)
         };
         json!({
-            "pg": b64(&pr),
+            "pg": format!("SHA-256:{}", b64(&pr)),
             "commit_id": digest(&mut u),
             "sequence": u64::arbitrary(&mut u).unwrap_or_default(),
             "roots": {

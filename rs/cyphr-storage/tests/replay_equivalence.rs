@@ -167,7 +167,7 @@ async fn principal(genesis: &Genesis) -> cyphr::Principal {
 /// PG its genesis commit establishes (a nonce in it is part of the PG). A
 /// chain of data actions alone forms no commit and is keyed by its genesis
 /// PR.
-async fn principal_id(chain: &Chain) -> String {
+async fn principal_id(chain: &Chain) -> cyphr::PrincipalGenesis {
     let mut p = principal(&chain.genesis).await;
     core_replay(&mut p, &chain.bundles[0])
         .await
@@ -175,10 +175,11 @@ async fn principal_id(chain: &Chain) -> String {
     match p.pg() {
         Some(pg) => {
             let alg = p.active_algs()[0];
-            format!(
-                "{alg}:{}",
-                Base64UrlUnpadded::encode_string(pg.as_multihash().get(alg).expect("pg variant"))
+            cyphr::PrincipalGenesis::from_digest(
+                alg,
+                pg.as_multihash().get(alg).expect("pg variant").to_vec(),
             )
+            .expect("a PG variant is a PG")
         },
         None => genesis_principal_id(&chain.genesis).expect("principal id"),
     }
@@ -188,7 +189,7 @@ async fn principal_id(chain: &Chain) -> String {
 /// data action goes in before a later commit (a freeze, a delete) that
 /// would refuse it as a new submission. Commits keep their order: their
 /// `now`s never decrease.
-async fn ingest(engine: &Engine, chain: &Chain) -> String {
+async fn ingest(engine: &Engine, chain: &Chain) -> cyphr::PrincipalGenesis {
     let id = principal_id(chain).await;
     let mut bundles: Vec<&WireBundle> = chain.bundles.iter().collect();
     bundles.sort_by_key(|b| {
@@ -443,7 +444,7 @@ async fn check_chain(chain: &Chain) {
                         .await
                         .expect("holders")
                         .iter()
-                        .any(|h| h.principal_id.as_deref() == Some(id.as_str())),
+                        .any(|h| h.principal_id.as_ref() == Some(&id)),
                     "{}: TR variant {digest} is indexed",
                     chain.name
                 );
@@ -494,7 +495,7 @@ fn history(p: &cyphr::Principal) -> (String, Vec<String>, Vec<String>) {
 /// The principal the engine replays from its store holds `core`'s history.
 async fn same_history(
     engine: &Engine,
-    id: &str,
+    id: &cyphr::PrincipalGenesis,
     chain: &Chain,
     core: &cyphr::Principal,
     path: &str,
@@ -516,7 +517,7 @@ async fn same_history(
 /// blob into `forged_store`, replacing the manifest of commit 1 with one
 /// that records commit 0's PR for the same blobs. Returns the principal id
 /// and commit 0's PR.
-async fn forge_into(forged_store: &impl BlobStore) -> (String, String) {
+async fn forge_into(forged_store: &impl BlobStore) -> (cyphr::PrincipalGenesis, String) {
     let chain = corpus()
         .into_iter()
         .find(|c| c.name.ends_with("transaction_sequence_replay.json"))
@@ -583,7 +584,7 @@ async fn forged_manifest_is_quarantined_by_the_scratch_rebuild() {
     let reasons: Vec<_> = report
         .quarantined
         .iter()
-        .filter(|q| q.principal_id.as_deref() == Some(id.as_str()))
+        .filter(|q| q.principal_id.as_ref() == Some(&id))
         .map(|q| &q.reason)
         .collect();
     assert!(
@@ -651,7 +652,7 @@ struct FailsAfterClear {
 impl Indexer for FailsAfterClear {
     fn get_tip(
         &self,
-        id: &str,
+        id: &cyphr::PrincipalGenesis,
     ) -> impl std::future::Future<
         Output = Result<Option<cyphr_storage::index::TipState>, cyphr_storage::index::IndexerError>,
     > + Send {
@@ -660,7 +661,7 @@ impl Indexer for FailsAfterClear {
 
     fn is_pg_established(
         &self,
-        id: &str,
+        id: &cyphr::PrincipalGenesis,
     ) -> impl std::future::Future<Output = Result<bool, cyphr_storage::index::IndexerError>> + Send
     {
         self.inner.is_pg_established(id)
@@ -668,7 +669,7 @@ impl Indexer for FailsAfterClear {
 
     fn get_commit_chain(
         &self,
-        id: &str,
+        id: &cyphr::PrincipalGenesis,
         from: Option<u64>,
         to: Option<u64>,
     ) -> impl std::future::Future<
@@ -751,7 +752,7 @@ impl cyphr_storage::index::IndexerWrite for FailsAfterClear {
 
     fn replace_chain_from(
         &self,
-        id: &str,
+        id: &cyphr::PrincipalGenesis,
         sequence: u64,
         commits: &[cyphr_storage::index::IndexableCommit],
         token: &cyphr_storage::index::DeriveToken,
@@ -1059,13 +1060,9 @@ async fn genesis_order_is_read_alike_by_ingest_and_the_scratch_rebuild() {
     };
 
     let alg = writer.active_algs()[0];
-    let pg = writer
-        .pg()
-        .expect("pg")
-        .as_multihash()
-        .get(alg)
-        .expect("pg variant");
-    let id = format!("{alg}:{}", Base64UrlUnpadded::encode_string(pg));
+    let pg = writer.pg().expect("pg").as_multihash();
+    let id = cyphr::PrincipalGenesis::from_digest(alg, pg.get(alg).expect("pg variant").to_vec())
+        .expect("a PG variant is a PG");
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     engine
         .submit_commit(&id, None, &blobs)
@@ -1144,7 +1141,12 @@ fn record(writer: &mut cyphr::Principal, blob: &[u8]) {
         .expect("action records");
 }
 
-async fn push(engine: &Engine, id: &str, genesis: &Genesis, bundle: &WireBundle) {
+async fn push(
+    engine: &Engine,
+    id: &cyphr::PrincipalGenesis,
+    genesis: &Genesis,
+    bundle: &WireBundle,
+) {
     engine
         .submit_commit(id, Some(genesis.clone()), bundle)
         .await
@@ -1361,7 +1363,7 @@ async fn copy_store(store: &MemoryBlobStore) -> MemoryBlobStore {
 /// into `store`, as a forged store would hold it; returns its hash.
 async fn forge_action_manifest(
     store: &MemoryBlobStore,
-    id: &str,
+    id: &cyphr::PrincipalGenesis,
     after: u64,
     blobs: &[Vec<u8>],
 ) -> cyphr_storage::blob::Blake3Hash {
@@ -1509,7 +1511,7 @@ async fn actions_at_one_position_rebuild_in_now_order() {
     // The action manifests' hashes in `now` order, as an engine writes
     // them for `actions` pushed one bundle each after the genesis.
     async fn manifest_order(
-        id: &str,
+        id: &cyphr::PrincipalGenesis,
         genesis: &Genesis,
         commit: &WireBundle,
         actions: &[Vec<u8>],

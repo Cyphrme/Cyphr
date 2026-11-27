@@ -42,6 +42,7 @@
 
 mod common;
 
+use cyphr::PrincipalGenesis;
 use tempfile::TempDir;
 
 // A distinct, deterministic `now` per principal keeps genesis blob bytes (and
@@ -211,15 +212,22 @@ fn some_429(statuses: &[u16]) -> bool {
 // Push bodies
 // ========================================================================
 
+/// A well-formed labelled id derived from `tag`: distinct tags give
+/// distinct ids, none of them a real principal's.
+fn id_of(tag: &str) -> PrincipalGenesis {
+    let digest = tag.bytes().cycle().take(32).collect();
+    PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, digest).expect("32-byte digest")
+}
+
 /// A brand-new principal's genesis push body (its genesis commit: golden
 /// creates itself and `key_a`).
-async fn genesis_body(principal_id: &str, now: i64) -> String {
+async fn genesis_body(principal_id: &PrincipalGenesis, now: i64) -> String {
     let pool = common::load_pool();
     common::build_genesis_push_body(&pool, principal_id, now).await
 }
 
 /// A push body's blob list, base64url-encoded, wrapped with `principal_id`.
-fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
+fn push_body(pid: &PrincipalGenesis, blobs: &[Vec<u8>]) -> String {
     common::push_blobs(pid, blobs)
 }
 
@@ -228,7 +236,7 @@ fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
 /// itself and `key_a`); the follow-on is a non-genesis "golden adds key_b"
 /// commit chained onto it, which the protocol accepts once the principal is
 /// resident -- so the ONLY thing that can refuse it is the count quota.
-async fn genesis_and_followon(pid: &str, now: i64) -> (String, String) {
+async fn genesis_and_followon(pid: &PrincipalGenesis, now: i64) -> (String, String) {
     let pool = common::load_pool();
     (
         common::build_genesis_push_body(&pool, pid, now).await,
@@ -322,7 +330,7 @@ async fn per_operation_push_bucket_limits_reads_independent() {
             server
                 .post(
                     "/push",
-                    &genesis_body(&format!("perop-{i}"), NOW_BASE + i as i64).await,
+                    &genesis_body(&id_of(&format!("perop-{i}")), NOW_BASE + i as i64).await,
                 )
                 .await
                 .status,
@@ -335,7 +343,10 @@ async fn per_operation_push_bucket_limits_reads_independent() {
 
     // Reads have their OWN (generous) bucket; the push flood must not have
     // drained them, and per-IP is generous so nothing collateral-throttles.
-    let read = server.get("/tip?pg=nobody").await.status;
+    let read = server
+        .get(&format!("/tip?pg={}", id_of("nobody")))
+        .await
+        .status;
     assert_ne!(
         read, 429,
         "reads must bucket independently of pushes -- a push flood must not throttle a read: \
@@ -356,7 +367,7 @@ async fn push_bucket_limits_action_only_pushes() {
 
     let action = br#"{"pay":{"alg":"ES256","now":1,"typ":"cyphr.me/action"},"sig":"AA"}"#;
     let body = common::push_body(
-        "action-flood",
+        &id_of("action-flood"),
         &cyphr::replay::WireBundle::actions(vec![action.to_vec()]),
     );
     let pushes = server
@@ -491,7 +502,10 @@ async fn request_size_cap_rejects_oversized_body() {
 
     // A normal genesis body is far under the cap and must still be admitted.
     let under = server
-        .post("/push", &genesis_body("size-ok", NOW_BASE + 5).await)
+        .post(
+            "/push",
+            &genesis_body(&id_of("size-ok"), NOW_BASE + 5).await,
+        )
         .await;
     assert_ne!(
         under.status, 413,
@@ -622,7 +636,7 @@ async fn both_fences_compose_in_serve() {
     let denied = server
         .post(
             "/push",
-            &genesis_body("coexist-admission", NOW_BASE + 200).await,
+            &genesis_body(&id_of("coexist-admission"), NOW_BASE + 200).await,
         )
         .await;
     assert_eq!(

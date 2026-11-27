@@ -8,6 +8,7 @@
 
 use std::path::Path;
 
+use cyphr::PrincipalGenesis;
 use cyphr_storage::blob::{Blake3Hash, BlobStore, BlobStoreError};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 /// Re-exported so a caller wiring up a shared-database
@@ -86,7 +87,7 @@ pub struct EmlLogs {
     /// can only leave an older generation behind in a process that has
     /// since died, so one sweep per principal per process recovers it, and
     /// later opens skip the prefix scans a sweep costs.
-    swept: std::sync::Mutex<std::collections::HashSet<String>>,
+    swept: std::sync::Mutex<std::collections::HashSet<PrincipalGenesis>>,
 }
 
 /// Why [`EmlLogs::new`] failed.
@@ -126,32 +127,33 @@ impl EmlLogs {
 
     /// Whether this process has swept `principal_id`'s older generations.
     /// The set only skips work; a poisoned lock holds a usable set.
-    fn has_swept(&self, principal_id: &str) -> bool {
+    fn has_swept(&self, principal_id: &PrincipalGenesis) -> bool {
         self.swept
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(principal_id)
     }
 
-    fn mark_swept(&self, principal_id: &str) {
+    fn mark_swept(&self, principal_id: &PrincipalGenesis) {
         self.swept
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(principal_id.to_owned());
+            .insert(principal_id.clone());
     }
 
     /// The key scope of generation `generation` of `principal_id`'s log.
     /// Fixed-width tail, so injective; `FjallStorage` length-prefixes it.
-    fn scope(principal_id: &str, generation: u64) -> Vec<u8> {
-        let mut scope = Vec::with_capacity(principal_id.len() + 8);
-        scope.extend_from_slice(principal_id.as_bytes());
+    fn scope(principal_id: &PrincipalGenesis, generation: u64) -> Vec<u8> {
+        let id = principal_id.to_string();
+        let mut scope = Vec::with_capacity(id.len() + 8);
+        scope.extend_from_slice(id.as_bytes());
         scope.extend_from_slice(&generation.to_be_bytes());
         scope
     }
 
     fn scoped(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         generation: u64,
     ) -> Result<storage_fjall::FjallStorage, String> {
         storage_fjall::FjallStorage::scoped(&self.keyspaces, &Self::scope(principal_id, generation))
@@ -159,7 +161,7 @@ impl EmlLogs {
     }
 
     /// Delete generation `generation` of `principal_id`'s log, if held.
-    fn retire(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+    fn retire(&self, principal_id: &PrincipalGenesis, generation: u64) -> Result<(), String> {
         self.scoped(principal_id, generation)?
             .drop_scope()
             .map_err(|e| format!("retiring log generation {generation}: {e}"))
@@ -167,10 +169,10 @@ impl EmlLogs {
 }
 
 impl cyphr_storage::engine::LogFactory<storage_fjall::FjallStorage> for EmlLogs {
-    fn generation(&self, principal_id: &str) -> Result<u64, String> {
+    fn generation(&self, principal_id: &PrincipalGenesis) -> Result<u64, String> {
         let held = self
             .generations
-            .get(principal_id.as_bytes())
+            .get(principal_id.to_string().as_bytes())
             .map_err(|e| format!("reading the log generation of {principal_id}: {e}"))?;
         match held {
             None => Ok(0),
@@ -182,7 +184,7 @@ impl cyphr_storage::engine::LogFactory<storage_fjall::FjallStorage> for EmlLogs 
 
     fn open(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         generation: u64,
     ) -> Result<storage_fjall::FjallStorage, String> {
         let current = self.generation(principal_id)?;
@@ -206,10 +208,13 @@ impl cyphr_storage::engine::LogFactory<storage_fjall::FjallStorage> for EmlLogs 
         self.scoped(principal_id, generation)
     }
 
-    fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+    fn retire_below(&self, principal_id: &PrincipalGenesis, generation: u64) -> Result<(), String> {
         let retired = self.generation(principal_id)?;
         self.generations
-            .insert(principal_id.as_bytes(), generation.to_be_bytes())
+            .insert(
+                principal_id.to_string().as_bytes(),
+                generation.to_be_bytes(),
+            )
             .map_err(|e| format!("recording the log generation of {principal_id}: {e}"))?;
         // Older generations were retired when their successors became
         // current, or are swept by the next open if a crash intervened.

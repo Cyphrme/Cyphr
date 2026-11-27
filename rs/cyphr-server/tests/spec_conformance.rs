@@ -28,7 +28,7 @@ const NOW: i64 = 1_700_100_000;
 /// `golden`.
 async fn second_commit_push_adding(
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    principal_id: &cyphr::PrincipalGenesis,
     new_key: &str,
 ) -> String {
     let principal = genesis_pushed_principal(pool, "golden", "key_a", NOW).await;
@@ -36,7 +36,7 @@ async fn second_commit_push_adding(
     common::push_body(principal_id, &blobs)
 }
 
-async fn commit_count(app: &axum::Router, id: &str) -> u64 {
+async fn commit_count(app: &axum::Router, id: &cyphr::PrincipalGenesis) -> u64 {
     let (status, env) = get_json(app.clone(), &format!("/tip?pg={id}")).await;
     assert_eq!(status, StatusCode::OK, "tip of {id}: {env:?}");
     let payload = envelope_payload(&env);

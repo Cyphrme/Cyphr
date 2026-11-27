@@ -16,7 +16,7 @@ This document describes what a relying party does, in two parts. The first part 
 the decision procedure off the relying party built into the Cyphr server, which is
 co-located with the record it checks against. The second part establishes what changes
 when the relying party is separated from that record, which is the ordinary deployment.
-`cyphr_client::RelyingParty` (`rs/cyphr-client/src/relying_party.rs`) is that separated
+`cyphr_net::RelyingParty` (`rs/cyphr-net/src/relying_party.rs`) is that separated
 relying party: it replays the principal's chain from peers it chose, pinned at the
 principal's genesis key, and decides a sign-in only from the key set that replay produced.
 
@@ -198,8 +198,8 @@ call**. It must obtain the same key set over a channel it does not control.
 
 This is the one thing the co-located relying party does that a separated one cannot, and
 every difference between the two is downstream of it. The separated case is
-`cyphr_client::RelyingParty`, which the rest of this part describes, and
-`rs/cyphr-client/examples/relying_party.rs` runs it against a server.
+`cyphr_net::RelyingParty`, which the rest of this part describes, and
+`rs/cyphr-net/examples/relying_party.rs` runs it against a server.
 
 ### How it obtains the key set
 
@@ -426,10 +426,10 @@ marker comment at a test names the requirement id and the command that runs the 
 a requirement's claim block never names a test. Prose may still cite tests that carry no
 marker of their own, as several requirements below do. The requirements from
 [separated-key-set-by-replay](#separated-key-set-by-replay) on
-are satisfied by `cyphr_client::RelyingParty`, except
+are satisfied by `cyphr_net::RelyingParty`, except
 [currency-unmet](#currency-unmet), which nothing in the record can meet. Docket registers those
 requirements with `evaluator: none` because no test carries an `@docket:` marker for them yet;
-`rs/cyphr-client/tests/relying_party.rs` and `rs/cyphr-scenarios/tests/relying_party_signin.rs`
+`rs/cyphr-net/tests/relying_party.rs` and `rs/cyphr-scenarios/tests/relying_party_signin.rs`
 exercise them.
 
 ### [signon-audience-binding]
@@ -438,7 +438,7 @@ A relying party MUST verify that the audience named inside the signed login payl
 own identity, and MUST NOT take the audience from any unsigned transport detail. Traces to
 row 7. The MUST NOT clause is closed structurally rather than by a test, which is a
 stronger closure than a test: `parse_login` derives the audience from the signed
-payload's `typ` (`parse_request` in `rs/cyphr-client/src/login.rs`) and compares it to the
+payload's `typ` (`parse_request` in `rs/cyphr-net/src/login.rs`) and compares it to the
 configured `server_audience` (`parse_login`), so no transport value reaches the comparison and there is no path a test
 could exercise.
 

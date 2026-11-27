@@ -27,10 +27,9 @@ mod common;
 
 use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post_json};
 
-/// The id a `/tip` response reports for `principal_id`: its bare digest
-/// (routes report the stored PG without its algorithm label).
-fn reported_id(principal_id: &str) -> &str {
-    cyphr_storage::engine::bare_digest(principal_id)
+/// The id a `/tip` response reports for `principal_id`: its labelled form.
+fn reported_id(principal_id: &cyphr::PrincipalGenesis) -> String {
+    principal_id.to_string()
 }
 
 // ========================================================================
@@ -145,7 +144,7 @@ async fn syncs_from_authority() {
 
     let pool = load_pool();
     let principal_id_owned = common::golden_principal_id(&load_pool()).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
@@ -218,7 +217,7 @@ async fn rejects_unverifiable_delta() {
 
     let pool = load_pool();
     let principal_id_owned = common::golden_principal_id(&load_pool()).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_000;
 
     // 1. Establish valid principal on authority
@@ -255,7 +254,7 @@ async fn rejects_unverifiable_delta() {
     let corrupt_commit = IndexableCommit {
         pg: Vec::new(),
         manifest: None,
-        principal_id: principal_id.to_string(),
+        principal_id: principal_id.clone(),
         commit_ids: vec!["SHA-256:CORRUPTED_COMMIT_999999999999999999999999".to_string()],
         sequence: 99,
         pre: None,
@@ -391,8 +390,11 @@ async fn responses_carry_freshness() {
     );
 
     // 2. GET /tip state read query on witness node MUST carry freshness metadata
-    let (_tip_status, tip_json) =
-        get_json(witness_app.clone(), "/tip?pg=n2-freshness-principal").await;
+    let (_tip_status, tip_json) = get_json(
+        witness_app.clone(),
+        "/tip?pg=SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .await;
     let tip_payload = common::envelope_payload(&tip_json);
     let tip_timestamp = tip_payload
         .get("now")
@@ -536,7 +538,7 @@ async fn append_key_create(
 /// post-genesis state. The two-entry patch the truncation test needs.
 async fn build_two_commit_push_bodies(
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    principal_id: &cyphr::PrincipalGenesis,
     now: i64,
 ) -> (String, String) {
     let mut bodies = build_chained_push_bodies(pool, principal_id, now, &["key_a", "key_b"]).await;
@@ -634,7 +636,10 @@ impl RunningAuthority {
 
 /// Stand up a real attestor authority on TCP and push a genuine genesis for
 /// `principal_id` over HTTP.
-async fn authority_with_genesis(principal_id: &str, now: i64) -> RunningAuthority {
+async fn authority_with_genesis(
+    principal_id: &cyphr::PrincipalGenesis,
+    now: i64,
+) -> RunningAuthority {
     let (state, identity, dir) = attestor_server().await;
     let app = build_app_router(state.clone()).expect("authority router");
     let mut instance = common::multi::Instance {
@@ -669,7 +674,10 @@ async fn authority_with_genesis(principal_id: &str, now: i64) -> RunningAuthorit
 /// principal, pushed over HTTP (genesis + a chaining second commit). The
 /// witness syncs HTTP-pushed principals; a fixture bootstrapped directly into
 /// the engine does NOT round-trip through the witness's genesis auto-detection.
-async fn authority_with_two_commits(principal_id: &str, now: i64) -> RunningAuthority {
+async fn authority_with_two_commits(
+    principal_id: &cyphr::PrincipalGenesis,
+    now: i64,
+) -> RunningAuthority {
     let (state, identity, dir) = attestor_server().await;
     let app = build_app_router(state.clone()).expect("authority router");
     let mut instance = common::multi::Instance {
@@ -721,7 +729,7 @@ async fn seed_server_chain(witness: &AppState, authority: &AppState) {
         .as_ref()
         .expect("the authority holds a server principal")
         .pg()
-        .to_string();
+        .clone();
     let chain = authority
         .engine
         .get_patch(&pg, None, None)
@@ -989,7 +997,7 @@ fn sign_report(identity: &ServerIdentity, pay: serde_json::Value) -> coz::CozJso
 /// claim set the accept-direction test derives its one-field-emptied fixture
 /// from.
 async fn genuine_entries_and_identity(
-    principal: &str,
+    principal: &cyphr::PrincipalGenesis,
     now: i64,
 ) -> (
     serde_json::Value,
@@ -1515,7 +1523,7 @@ async fn stripped_statement_fails_closed_when_configured() {
 /// from one construction.
 async fn build_chained_push_bodies(
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    principal_id: &cyphr::PrincipalGenesis,
     now: i64,
     key_names: &[&str],
 ) -> Vec<String> {
@@ -1630,7 +1638,7 @@ async fn spawn_observing_patch_proxy(
 async fn sync_resumes_from_digest_anchor() {
     let pool = load_pool();
     let principal_id_owned = common::golden_principal_id(&load_pool()).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_100_000;
     let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]).await;
 
@@ -1716,7 +1724,7 @@ async fn sync_resumes_from_digest_anchor() {
 async fn fork_shares_sequence_rejected_by_digest_anchor() {
     let pool = load_pool();
     let principal_id_owned = common::golden_principal_id(&load_pool()).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     // The fork lives on a SEPARATE authority and shares the canonical genesis
     // (hence the genesis-derived id); it diverges only at sequence 1.
     let fork_principal_id = principal_id;
@@ -1842,7 +1850,7 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
 async fn sequence_only_anchor_does_not_resume() {
     let pool = load_pool();
     let principal_id_owned = common::golden_principal_id(&load_pool()).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_300_000;
 
     let bodies =
@@ -1913,7 +1921,7 @@ async fn sequence_only_anchor_does_not_resume() {
 async fn anchor_digest_rejects_malformed() {
     let pool = load_pool();
     let principal_id_owned = common::golden_principal_id(&load_pool()).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_400_000;
 
     let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]).await;

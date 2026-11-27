@@ -108,8 +108,84 @@ impl StateDigest for PrincipalRoot {
 /// Principal Genesis (PG) - SPEC §3.7.1
 ///
 /// The first PR ever computed. Permanent, never changes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrincipalGenesis(pub MultihashDigest);
+///
+/// The digest is private, so no caller outside this crate can hold a
+/// genesis with no variants: each constructor refuses one, and `Display`
+/// never prints an empty string. Neither of these builds one:
+///
+/// ```compile_fail,E0423
+/// use cyphr::{MultihashDigest, PrincipalGenesis};
+/// let _ = PrincipalGenesis(MultihashDigest::default());
+/// ```
+///
+/// ```compile_fail,E0616
+/// use cyphr::{PrincipalGenesis, state::HashAlg};
+/// let pg = PrincipalGenesis::from_digest(HashAlg::Sha256, vec![0u8; 32]).unwrap();
+/// let _ = &pg.0;
+/// ```
+///
+/// # Equality
+///
+/// A principal id is its canonical spelling, the single `ALG:digest` that
+/// `Display` prints: the first variant in the digest's own order, which is
+/// the algorithm `active_algs` names. `Eq`, `Hash` and `Ord` are defined on
+/// that spelling alone, so a genesis holding several variants equals the id
+/// parsed from its own printed form, hashes the same, and sorts with it.
+/// Whether two ids name one principal by a shared hash variant is a
+/// question about roots, [`MultihashDigest::matches`], which is not an
+/// equivalence and so is not `Eq`.
+#[derive(Debug, Clone)]
+pub struct PrincipalGenesis(MultihashDigest);
+
+impl PrincipalGenesis {
+    /// The canonical variant: what `Display` prints and equality compares.
+    /// A genesis is never empty (every constructor refuses it).
+    fn canonical(&self) -> Option<(&HashAlg, &[u8])> {
+        self.0.variants().iter().next().map(|(alg, d)| (alg, &**d))
+    }
+}
+
+impl PrincipalGenesis {
+    /// Whether `claimed`, a labelled id, is one of this genesis's variants:
+    /// its label and digest are the label and digest of a variant held here,
+    /// with no width matching. SPEC 12.1 treats every hash variant of a
+    /// genesis as equivalent, so a claim made by any of them names this
+    /// genesis. This is a relation between an id and a genesis, used where
+    /// a claim is judged; it is not `Eq`, which compares canonical
+    /// spellings and keys maps.
+    #[must_use]
+    pub fn has_variant(&self, claimed: &PrincipalGenesis) -> bool {
+        claimed
+            .canonical()
+            .is_some_and(|(alg, digest)| self.0.get(*alg) == Some(digest))
+    }
+}
+
+impl PartialEq for PrincipalGenesis {
+    fn eq(&self, other: &Self) -> bool {
+        self.canonical() == other.canonical()
+    }
+}
+
+impl Eq for PrincipalGenesis {}
+
+impl std::hash::Hash for PrincipalGenesis {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.canonical().hash(state);
+    }
+}
+
+impl PartialOrd for PrincipalGenesis {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PrincipalGenesis {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.canonical().cmp(&other.canonical())
+    }
+}
 
 impl PrincipalGenesis {
     /// A PG from a digest `bytes` taken under `alg`, the hash that produced
@@ -125,9 +201,41 @@ impl PrincipalGenesis {
         Ok(Self(MultihashDigest::from_single(alg, bytes)?))
     }
 
+    /// A PG from a digest holding one variant per algorithm, as a
+    /// principal with a mixed-algorithm keyset has.
+    ///
+    /// # Errors
+    ///
+    /// `EmptyMultihash` if `digest` has no variants.
+    pub fn from_multihash(digest: MultihashDigest) -> crate::error::Result<Self> {
+        if digest.is_empty() {
+            return Err(crate::error::Error::EmptyMultihash);
+        }
+        Ok(Self(digest))
+    }
+
     /// Create PG from the initial PR (at genesis).
-    pub fn from_initial(pr: &PrincipalRoot) -> Self {
-        Self(pr.0.clone())
+    ///
+    /// # Errors
+    ///
+    /// `EmptyMultihash` if `pr` has no variants.
+    pub fn from_initial(pr: &PrincipalRoot) -> crate::error::Result<Self> {
+        Self::from_multihash(pr.0.clone())
+    }
+}
+
+impl serde::Serialize for PrincipalGenesis {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PrincipalGenesis {
+    /// The labelled spelling only, parsed by [`FromStr`](std::str::FromStr):
+    /// every edge that deserializes an id refuses a bare one the same way.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -151,16 +259,15 @@ impl std::str::FromStr for PrincipalGenesis {
 
 impl std::fmt::Display for PrincipalGenesis {
     /// The one canonical spelling: a single `ALG:digest`. A value holding
-    /// several variants prints the first in [`HASH_ALGS`] order, so the
+    /// several variants prints the first in the digest's own order, so the
     /// spelling is deterministic; equality across spellings is
     /// [`MultihashDigest::matches`], not string comparison.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        let variants = self.0.variants();
-        match HASH_ALGS
-            .into_iter()
-            .find_map(|alg| variants.get(&alg).map(|d| (alg, d)))
-        {
+        // The first variant in the digest's own order, the order
+        // `active_algs` names an id's algorithm by, so a printed id is the
+        // id the engine keys the principal under.
+        match self.0.variants().iter().next() {
             Some((alg, digest)) => {
                 write!(f, "{alg}:{}", Base64UrlUnpadded::encode_string(digest))
             },

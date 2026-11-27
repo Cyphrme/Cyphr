@@ -133,18 +133,22 @@ struct Logs {
 }
 
 impl LogFactory<Eml> for Logs {
-    fn generation(&self, principal_id: &str) -> Result<u64, String> {
+    fn generation(&self, principal_id: &cyphr::PrincipalGenesis) -> Result<u64, String> {
         self.inner.generation(principal_id)
     }
 
-    fn open(&self, principal_id: &str, generation: u64) -> Result<Eml, String> {
+    fn open(&self, principal_id: &cyphr::PrincipalGenesis, generation: u64) -> Result<Eml, String> {
         Ok(Eml {
             inner: self.inner.open(principal_id, generation)?,
             fail_writes: self.fail_writes.clone(),
         })
     }
 
-    fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+    fn retire_below(
+        &self,
+        principal_id: &cyphr::PrincipalGenesis,
+        generation: u64,
+    ) -> Result<(), String> {
         self.inner.retire_below(principal_id, generation)
     }
 }
@@ -183,7 +187,7 @@ fn stack(config: &ServerConfig) -> Stack {
 }
 
 /// How many leaves the principal's durable EML holds.
-async fn eml_leaves(db: &fjall::Database, principal_id: &str) -> u64 {
+async fn eml_leaves(db: &fjall::Database, principal_id: &cyphr::PrincipalGenesis) -> u64 {
     let logs = cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs");
     let generation = logs.generation(principal_id).expect("generation");
     let storage = logs.open(principal_id, generation).expect("open EML");
@@ -200,7 +204,7 @@ async fn eml_leaves(db: &fjall::Database, principal_id: &str) -> u64 {
 /// The standard principal (`golden` with `key_a`) and the blobs of its
 /// genesis commit and of two further commits (golden creates `key_b`,
 /// then `alice`), each wire-ready.
-async fn chain(pool: &test_fixtures::Pool) -> (String, [WireBundle; 3]) {
+async fn chain(pool: &test_fixtures::Pool) -> (cyphr::PrincipalGenesis, [WireBundle; 3]) {
     let id = common::golden_principal_id(pool).await;
     let mut p = cyphr::Principal::implicit(pool.get("golden").expect("golden").key().expect("key"))
         .await
@@ -228,12 +232,16 @@ async fn chain(pool: &test_fixtures::Pool) -> (String, [WireBundle; 3]) {
     (id, [genesis, second, third])
 }
 
-fn push_body(id: &str, bundle: &WireBundle) -> String {
+fn push_body(id: &cyphr::PrincipalGenesis, bundle: &WireBundle) -> String {
     common::push_body(id, bundle)
 }
 
 /// Reopen the data directory as a real server and push `blobs` over HTTP.
-async fn push_through_server(config: &ServerConfig, id: &str, blobs: &WireBundle) -> StatusCode {
+async fn push_through_server(
+    config: &ServerConfig,
+    id: &cyphr::PrincipalGenesis,
+    blobs: &WireBundle,
+) -> StatusCode {
     let state = Arc::new(cyphr_server::AppState::new(config.clone()).expect("server opens"));
     let app = cyphr_server::build_router(state);
     let (status, body) = common::post_json(app, "/push", push_body(id, blobs)).await;

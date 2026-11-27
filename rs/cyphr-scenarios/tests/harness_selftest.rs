@@ -190,12 +190,14 @@ async fn harness_peer_view_reads_the_peer_itself() {
     );
 
     let envelope = serde_json::json!({"v": 1, "payload": {
-        "principal_id": "x", "pr": "PR", "sr": "SR", "ar": "AR", "cr": "CR",
+        "principal_id": "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "pr": "PR", "sr": "SR", "ar": "AR", "cr": "CR",
         "commit_id": "C2", "commit_count": 2, "last_updated": 5, "now": 9}});
     assert_eq!(
         PeerTip::parse(&envelope),
         Some(PeerTip {
-            principal_id: "x".into(),
+            principal_id: "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                .parse()
+                .expect("labelled id"),
             tip: Tip("C2".into()),
             heads: vec![Tip("C2".into())],
             head_heights: vec![2],
@@ -210,7 +212,7 @@ async fn harness_peer_view_reads_the_peer_itself() {
     // An Error answer names no single tip: every tied head is a head, and
     // there is no root to read.
     let error = serde_json::json!({"v": 1, "payload": {
-        "state": "error", "principal_id": "x", "now": 9,
+        "state": "error", "principal_id": "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "now": 9,
         "fork_point": {"height": 1, "pre": "PRE"},
         "heads": [
             {"commit_id": "C3", "sequence": 2, "held_since": 5},
@@ -218,7 +220,9 @@ async fn harness_peer_view_reads_the_peer_itself() {
     assert_eq!(
         PeerTip::parse(&error),
         Some(PeerTip {
-            principal_id: "x".into(),
+            principal_id: "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                .parse()
+                .expect("labelled id"),
             tip: Tip("C3".into()),
             heads: vec![Tip("C3".into()), Tip("D3".into())],
             head_heights: vec![3, 3],
@@ -228,26 +232,6 @@ async fn harness_peer_view_reads_the_peer_itself() {
             pr: String::new(),
             ar: String::new()
         })
-    );
-}
-
-// Claim: a principal handle compares in one spelling. Peers report a bare
-// digest while handles may carry an algorithm tag, and a mismatch there
-// would make every "the peer holds Alice's principal" assertion fail or,
-// worse, pass on the wrong string.
-// (Pure logic: no scenario reaches the spelling cases cheaply.)
-#[test]
-fn harness_principal_handles_compare_by_bare_digest() {
-    use cyphr_scenarios::actions::Principal;
-
-    let tagged = Principal("SHA-512:abcDEF_-123".into());
-    assert_eq!(tagged.bare(), "abcDEF_-123");
-    assert!(tagged.same_as("abcDEF_-123"));
-    assert!(tagged.same_as("SHA-512:abcDEF_-123"));
-    assert!(!tagged.same_as("abcDEF_-124"));
-    assert!(
-        !tagged.same_as("SHA-256:abcDEF_-123"),
-        "the same text under another algorithm is another digest"
     );
 }
 
@@ -479,13 +463,18 @@ async fn harness_evidence_items_are_verified_offline() {
         commit_ids: vec!["C0".into(), "C1".into(), "C2".into()],
         ..ChainView::default()
     };
-    let ok = async |item: &Value| verify_evidence(item, "PG", &keys, &peers, &chain).await;
+    let requested = cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![1; 32])
+        .expect("labelled id");
+    let ok = async |item: &Value| verify_evidence(item, &requested, &keys, &peers, &chain).await;
 
-    let fork = json!({"kind": "principal-fork", "pg": "PG", "height": 0, "pre": null,
+    let fork = json!({"kind": "principal-fork", "pg": requested.to_string(), "height": 0, "pre": null,
                       "a": {"txs": [["AA"]]}, "b": {"txs": [["BB"]]}});
     assert!(ok(&fork).await.is_err(), "no chain to replay a fork from");
     let mut other = fork.clone();
-    other["pg"] = "OTHER".into();
+    other["pg"] = cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![2; 32])
+        .expect("labelled id")
+        .to_string()
+        .into();
     assert!(ok(&other).await.is_err(), "another principal's item");
 
     let view = |size: u64, id: &str, signer: (&str, &str, &[u8])| {
@@ -498,9 +487,9 @@ async fn harness_evidence_items_are_verified_offline() {
         )
     };
     let peer = (peer_tmb.as_str(), peer_pub.as_str(), peer_prv.as_slice());
-    let equiv = |a: Value, b: Value| json!({"kind": "peer-equivocation", "pg": "PG", "peer": "PEER", "a": a, "b": b});
+    let equiv = |a: Value, b: Value| json!({"kind": "peer-equivocation", "pg": requested.to_string(), "peer": "PEER", "a": a, "b": b});
     let proven = Ok(Proven::PeerEquivocation {
-        pg: "PG".into(),
+        pg: requested.clone(),
         peer: "PEER".into(),
     });
     assert_eq!(
@@ -617,8 +606,9 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
     let mut base = cyphr::Principal::implicit(key_of(&g))
         .await
         .expect("genesis");
-    // A single-key genesis: the PG is the genesis key's thumbprint.
-    let id = g.tmb.to_b64();
+    // A single-key genesis: the id is the genesis key's thumbprint under
+    // its own hash (Ed25519: SHA-512), labelled.
+    let id = format!("SHA-512:{}", g.tmb.to_b64());
     base.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb),
         &[],
@@ -816,7 +806,7 @@ async fn harness_oracle_refuses_an_error_verdict_that_is_not_the_forks() {
         create_commit(&mut cur, &k, &signer(), 1_700_000_000 + i).await;
         states.push(cur.fork().await.expect("fork"));
     }
-    let id = k.tmb.to_b64();
+    let id = format!("SHA-512:{}", k.tmb.to_b64());
     let pr = Principal(id.clone());
     let bundle = |p: &cyphr::Principal| {
         cyphr::replay::WireBundle::of_commit(p.commits().last().expect("commit")).expect("bundle")

@@ -339,7 +339,7 @@ pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn st
     let admission_record_dir = state.config.record_dir();
     let probe_state = state.clone();
     let health_state = state.clone();
-    let resident: admission::ResidentProbe = Arc::new(move |id: String| {
+    let resident: admission::ResidentProbe = Arc::new(move |id: cyphr::PrincipalGenesis| {
         let state = probe_state.clone();
         Box::pin(async move {
             state
@@ -353,7 +353,7 @@ pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn st
 
     let limits = state.config.limits.clone();
     let count_state = state.clone();
-    let count_probe: rate_limit::CountProbe = Arc::new(move |id: String| {
+    let count_probe: rate_limit::CountProbe = Arc::new(move |id: cyphr::PrincipalGenesis| {
         let state = count_state.clone();
         Box::pin(async move {
             state

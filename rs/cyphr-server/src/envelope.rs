@@ -39,7 +39,7 @@ pub struct Envelope<T> {
 // The statement slot is defined once, in the client crate every verifier
 // already depends on, so the wire type the server writes and the one a
 // client reads cannot drift apart.
-pub use cyphr_client::Statement;
+pub use cyphr_net::Statement;
 
 /// Why an envelope could not be read.
 #[derive(Debug, thiserror::Error)]

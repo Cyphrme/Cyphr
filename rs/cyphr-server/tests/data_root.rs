@@ -11,10 +11,10 @@
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::Principal;
 use cyphr::replay::WireBundle;
 use cyphr::signer::SoftwareSigner;
 use cyphr::state::HashAlg;
+use cyphr::{Principal, PrincipalGenesis};
 use cyphr_server::build_router;
 
 mod common;
@@ -165,7 +165,7 @@ async fn finalize(scope: cyphr::CommitScope<'_>, signer: &SoftwareSigner, now: i
         .expect("commit finalizes");
 }
 
-fn body(principal_id: &str, bundle: &WireBundle) -> String {
+fn body(principal_id: &PrincipalGenesis, bundle: &WireBundle) -> String {
     common::push_body(principal_id, bundle)
 }
 
@@ -193,7 +193,7 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
     let mut p = Principal::implicit(g.key().expect("golden key"))
         .await
         .expect("implicit genesis");
-    let id = p.pr_tagged().expect("PG");
+    let id = p.pr_id().expect("PG");
     let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T)
         .await
         .expect("genesis");
