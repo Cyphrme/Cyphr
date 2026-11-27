@@ -847,7 +847,7 @@ async fn revoke_eve(state: &cyphr_server::AppState, now: i64) {
     let envelope = serde_json::json!({
         "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {"alg": e.alg, "pub": Base64UrlUnpadded::encode_string(&e.pubb)},
+        "keys": [{"alg": e.alg, "pub": Base64UrlUnpadded::encode_string(&e.pubb)}],
     });
     state
         .engine
@@ -1470,7 +1470,7 @@ async fn a4_resigned_revokes_store_nothing() {
         serde_json::json!({
             "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
             "sig": Base64UrlUnpadded::encode_string(&sig),
-            "key": {"alg": e.alg, "pub": Base64UrlUnpadded::encode_string(&e.pubb)},
+            "keys": [{"alg": e.alg, "pub": Base64UrlUnpadded::encode_string(&e.pubb)}],
         })
     };
     state

@@ -6,11 +6,11 @@
 #[cfg(any(test, feature = "test-utils"))]
 use std::collections::BTreeMap;
 
+use coz::Czd;
 // `Thumbprint` is only referenced by test-support-only oracle functions
 // (compute_kr, derive_auth_state) and unit tests below.
 #[cfg(test)]
 use coz::Thumbprint;
-use coz::{Cad, Czd};
 
 use crate::multihash::MultihashDigest;
 
@@ -85,14 +85,6 @@ impl StateDigest for StateRoot {
 /// Holds a [`MultihashDigest`] with one variant per active hash algorithm.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DataRoot(pub MultihashDigest);
-
-impl DataRoot {
-    /// Get the inner Cad for a specific algorithm.
-    pub fn to_cad(&self, alg: HashAlg) -> crate::error::Result<Cad> {
-        let bytes = self.0.get_or_err(alg)?;
-        Ok(Cad::from_bytes(bytes.to_vec()))
-    }
-}
 
 impl StateDigest for DataRoot {
     fn as_multihash(&self) -> &MultihashDigest {

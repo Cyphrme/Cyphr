@@ -867,7 +867,7 @@ async fn a_naked_revoked_initiator_key_is_refused() {
     let body = serde_json::json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": { "alg": key_a.alg, "pub": key_a.pub_key },
+        "keys": [{ "alg": key_a.alg, "pub": key_a.pub_key }],
     });
     let (status, resp) = post_json(app.clone(), "/revoke", body.to_string()).await;
     assert!(
@@ -904,10 +904,10 @@ fn naked_revoke_body(kp: &coz::KeyPair, tmb: &coz::Thumbprint, disclosed: &coz::
     serde_json::json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {
+        "keys": [{
             "alg": disclosed.alg.name(),
             "pub": Base64UrlUnpadded::encode_string(&disclosed.pub_bytes),
-        },
+        }],
     })
     .to_string()
 }

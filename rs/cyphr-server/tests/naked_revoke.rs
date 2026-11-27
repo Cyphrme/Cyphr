@@ -24,9 +24,9 @@
 //!
 //! - `POST /revoke`
 //! - request body: the signed `key/revoke` coz PLUS its disclosed public key -- `{ "pay": {..},
-//!   "sig": "<b64url>", "key": { "alg": "..", "pub": "<b64url>" } }`. The `key` field is REQUIRED:
-//!   a body that discloses no key is rejected (400). There is NO `principal_id` field and NO
-//!   `RevokeRequest` wrapper: death is global-by-thumbprint, so no principal is named or loaded.
+//!   "sig": "<b64url>", "keys": [{ "alg": "..", "pub": "<b64url>" }] }`. The `keys` field is
+//!   REQUIRED: a body that discloses no key is rejected (400). There is NO `principal_id` field and
+//!   NO `RevokeRequest` wrapper: death is global-by-thumbprint, so no principal is named or loaded.
 //! - on acceptance: a 2xx whose payload names `revoked_tmb` (no `principal_id`, no `kind`).
 //!
 //! ### Verification order (each a distinct rejection)
@@ -34,7 +34,7 @@
 //! 1. the payload parses and its `typ` is a `key/revoke`;
 //! 2. `rvk` is a positive integer below 2^53-1; the timestamp value is NOT checked, so a pre-signed
 //!    `rvk`=1 is valid;
-//! 3. the body discloses a `key` (else 400) and the serialized revoke is within `RVK_MAX_SIZE`;
+//! 3. the body discloses a `keys` (else 400) and the serialized revoke is within `RVK_MAX_SIZE`;
 //! 4. PRESENCE fence: `tmb` is a key this server has indexed (`Some`) -- the indexed CONTENT is
 //!    never read; an unknown `tmb` is refused (400);
 //! 5. BIND: the disclosed key hashes back to the named `tmb` (`tmb = H(pub)`), else 400 -- this
@@ -135,7 +135,7 @@ fn sign_pay(pool: &Pool, signer_name: &str, pay: &serde_json::Value) -> String {
 }
 
 /// The disclosed `{ "alg", "pub" }` key block for pool key `name` -- the
-/// REQUIRED `key` field of a disclosed-key naked revoke, in the wire shape the
+/// REQUIRED `keys` field of a disclosed-key naked revoke, in the wire shape the
 /// server parses (`pub` is the base64url public key).
 fn disclosed_key(pool: &Pool, name: &str) -> serde_json::Value {
     let k = pool.get(name).expect("disclosed key in pool");
@@ -150,7 +150,7 @@ fn sign_coz(pool: &Pool, signer_name: &str, pay: serde_json::Value) -> serde_jso
 }
 
 /// As [`sign_coz`], additionally disclosing `disclosed_name`'s `{alg, pub}` as
-/// the REQUIRED `key` field -- the disclosed-key request shape.
+/// the REQUIRED `keys` field -- the disclosed-key request shape.
 fn sign_coz_disclosed(
     pool: &Pool,
     signer_name: &str,
@@ -158,16 +158,17 @@ fn sign_coz_disclosed(
     disclosed_name: &str,
 ) -> serde_json::Value {
     let mut body = sign_coz(pool, signer_name, pay);
-    body.as_object_mut()
-        .unwrap()
-        .insert("key".to_string(), disclosed_key(pool, disclosed_name));
+    body.as_object_mut().unwrap().insert(
+        "keys".to_string(),
+        serde_json::json!([disclosed_key(pool, disclosed_name)]),
+    );
     body
 }
 
 /// A `key/revoke` request naming `named_tmb_b64` as the revoked key, signed by
-/// `signer_name`. `disclosed` selects the `key` field: `Some(name)` discloses
+/// `signer_name`. `disclosed` selects the `keys` field: `Some(name)` discloses
 /// that pool key's `{alg, pub}` (the required disclosed-key shape); `None`
-/// omits `key` entirely (the bare shape the model must reject).
+/// omits `keys` entirely (the bare shape the model must reject).
 ///
 /// The three axes -- named `tmb`, signing key, disclosed key -- are independent
 /// so the forge and availability tests can drive each rejection path in
@@ -205,7 +206,7 @@ fn self_revoke_coz(pool: &Pool, signer_name: &str, rvk: serde_json::Value) -> se
 
 /// A self-signed naked revoke that discloses NO key -- the pre-disclosure bare
 /// `{pay, sig}` shape. Otherwise valid (correct self-signature, valid `rvk`);
-/// the disclosed-key model must reject it for lacking the required `key`.
+/// the disclosed-key model must reject it for lacking the required `keys`.
 fn self_revoke_coz_bare(
     pool: &Pool,
     signer_name: &str,
@@ -394,7 +395,7 @@ async fn accepts_valid_self_signed_naked_revoke() {
 // 2 -- The disclosed-key defenses: keyless body, forge paths, availability
 // ========================================================================
 
-/// A revoke body that discloses NO `key` is rejected (the disclosed key is
+/// A revoke body that discloses NO `keys` is rejected (the disclosed key is
 /// REQUIRED under the reworked model): a bare `{pay, sig}`, otherwise a valid
 /// self-signed revoke, must be refused for lacking the disclosed key.
 ///
@@ -416,6 +417,21 @@ async fn keyless_revoke_body_is_rejected() {
         &json,
         "naked revoke body that discloses no public key",
     );
+}
+
+/// SPEC 4.6.1 prohibits the singular `key`: an otherwise valid self-signed
+/// revoke that carries `key` beside `keys` is refused (400), because the route
+/// hands the body to core's rule as received.
+#[tokio::test]
+async fn singular_key_beside_keys_is_rejected() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    bootstrap_golden_key_a(&state, &pool).await;
+
+    let mut coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
+    coz["key"] = coz["keys"][0].clone();
+    let (status, json) = post_revoke(&state, coz).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "key beside keys: {json:?}");
 }
 
 /// FORGE STAYS CLOSED (bind path): a revoke naming the victim's `tmb` but
@@ -1109,8 +1125,8 @@ async fn keyless_server_accepts_naked_revoke() {
 /// its disclosed `pub` hashes to its `tmb`.
 ///
 /// Behavior: green on both servers -- the merged server ignores the disclosed
-/// `key` and resolves `key_a` from the index; the reworked server binds and
-/// verifies against the disclosed `key`.
+/// `keys` and resolves `key_a` from the index; the reworked server binds and
+/// verifies against the disclosed `keys`.
 #[tokio::test]
 async fn golden_naked_revoke_vector_is_accepted() {
     let (state, _dir) = fresh_keyed_state();
@@ -1128,7 +1144,7 @@ async fn golden_naked_revoke_vector_is_accepted() {
         "the golden fixture must name key_a's thumbprint (self-signed)"
     );
     assert_eq!(
-        coz["key"]["pub"].as_str(),
+        coz["keys"][0]["pub"].as_str(),
         Some(pool.get("key_a").expect("key_a").pub_key.as_str()),
         "the golden fixture must disclose key_a's real public key"
     );
@@ -1273,7 +1289,7 @@ async fn poison_genesis_push_body(
 /// The BLOCKING R1 exploit, mounted end-to-end: an unauthenticated attacker
 /// poisons the global key index so the victim's thumbprint V resolves to the
 /// ATTACKER's public key, then forges a naked revoke of V. Under the
-/// disclosed-key model the attacker must disclose a `key`; disclosing their own
+/// disclosed-key model the attacker must disclose a `keys`; disclosing their own
 /// key fails the BIND (`H(attacker pub) != V`). The forge MUST be rejected and
 /// the victim's real key MUST stay alive.
 ///
@@ -1586,7 +1602,7 @@ fn state_with_ceiling_one() -> (Arc<AppState>, TempDir) {
     (Arc::new(AppState::new(config).expect("open")), dir)
 }
 
-/// The verified `{pay, sig, key}` envelope for `name` self-revoking, and its
+/// The verified `{pay, sig, keys}` envelope for `name` self-revoking, and its
 /// thumbprint, as a gossip or witness-sync caller hands them over.
 fn revoke_of(pool: &Pool, name: &str) -> (coz::Thumbprint, serde_json::Value) {
     let body = self_revoke_coz(pool, name, serde_json::json!(RVK));

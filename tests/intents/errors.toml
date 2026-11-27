@@ -206,6 +206,56 @@ tx = [
 [test.expected]
 error = "DuplicateKey"
 
+# A key/replace removes the signer and adds the new key (SPEC 6.3), and a
+# create of a key that exists is DUPLICATE (SPEC 7.6). Naming another key the
+# principal already holds would only delete the signer, so it is refused.
+[[test]]
+name      = "key_replace_onto_held_key_fails"
+principal = ["golden", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+error = "DuplicateKey"
+
+# Naming the signer itself would add nothing and then remove it, leaving the
+# principal with no key; it is refused for the same reason.
+[[test]]
+name      = "key_replace_onto_signer_fails"
+principal = ["golden", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+error = "DuplicateKey"
+
+# SPEC 7.6: a create of an item that exists is DUPLICATE, and the principal
+# is among them. A multi-key principal's genesis ran its principal/create, so
+# one in a later commit is refused before its id is compared.
+[[test]]
+name      = "principal_create_repeated_fails"
+principal = ["golden", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error = "DuplicatePrincipal"
+
 # ============================================================================
 # Unknown key test (signer not in principal)
 # ============================================================================

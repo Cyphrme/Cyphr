@@ -2,8 +2,9 @@
 
 use std::sync::OnceLock;
 
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use coz::{ES256, SigningKey};
-use cyphr_server::revoke::{DisclosedKey, NakedRevokeEnvelope, interpret};
+use cyphr_server::revoke::interpret;
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use serde_json::json;
@@ -65,7 +66,7 @@ fn int_field(u: &mut Unstructured<'_>) -> i64 {
 }
 
 // Mode 0 fuzzes the request body as sent: deserialized to
-// `NakedRevokeEnvelope` and handed to `interpret`.
+// JSON and handed to `interpret`.
 //
 // Mode 1 signs a revoke naming the process key, with the fuzzer choosing
 // `rvk`, `now` and padding. Blind mutation cannot forge a key-bound
@@ -77,7 +78,7 @@ fuzz_target!(|data: &[u8]| {
     };
 
     let envelope = if mode % 2 == 0 {
-        match serde_json::from_slice::<NakedRevokeEnvelope>(rest) {
+        match serde_json::from_slice::<serde_json::Value>(rest) {
             Ok(e) => e,
             Err(_) => return,
         }
@@ -101,14 +102,11 @@ fuzz_target!(|data: &[u8]| {
         let Some((sig, _cad)) = coz::sign_json(&pay_bytes, "ES256", prv, pubk) else {
             return;
         };
-        NakedRevokeEnvelope {
-            pay,
-            sig,
-            key: Some(DisclosedKey {
-                alg: "ES256".into(),
-                pub_key: pubk.clone(),
-            }),
-        }
+        json!({
+            "pay": pay,
+            "sig": Base64UrlUnpadded::encode_string(&sig),
+            "keys": [{"alg": "ES256", "pub": Base64UrlUnpadded::encode_string(pubk)}],
+        })
     };
 
     let _ = runtime().block_on(interpret(&envelope));

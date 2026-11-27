@@ -230,10 +230,10 @@ fn naked_revoke(victim: &Kp, signer: &Kp, rvk: i64) -> Value {
     json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {
+        "keys": [{
             "alg": victim.kp.alg.name(),
             "pub": Base64UrlUnpadded::encode_string(&victim.kp.pub_bytes),
-        },
+        }],
     })
 }
 

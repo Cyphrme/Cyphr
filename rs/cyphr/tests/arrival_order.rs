@@ -69,7 +69,6 @@ async fn commit(
         .expect("finalizes");
     let txs: Vec<Vec<StoredCoz>> = commit
         .transactions()
-        .iter()
         .map(|tx| {
             tx.0.iter()
                 .map(|vc| StoredCoz::new(&vc.raw().pay, vc.raw().sig.clone()).expect("coz"))

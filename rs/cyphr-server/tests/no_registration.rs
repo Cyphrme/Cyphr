@@ -48,7 +48,7 @@ fn signed_register_create(pool: &Pool, principal_id: &str, witness_url: &str) ->
     serde_json::json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": { "alg": signer.alg, "pub": signer.pub_key },
+        "keys": [{ "alg": signer.alg, "pub": signer.pub_key }],
     })
     .to_string()
 }

@@ -21,6 +21,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::HashAlg;
 use crate::commit_root::u64_to_hash_alg;
+use crate::state::TaggedDigest;
 
 /// Largest decoded Principal Tree cell, leaf map and coz. An honest cell is a
 /// map of at most three variants of at most 64 bytes, each as a JSON list
@@ -40,10 +41,6 @@ const MAX_PEAKS: usize = 64;
 /// A digest's width in bytes.
 pub(super) fn width(alg: HashAlg) -> usize {
     alg.digest_size()
-}
-
-fn alg_of_width(w: usize) -> Option<HashAlg> {
-    crate::state::HASH_ALGS.into_iter().find(|&a| width(a) == w)
 }
 
 fn alg_named(name: &str) -> Result<HashAlg, String> {
@@ -195,9 +192,9 @@ pub(super) enum Terminal {
 pub(super) struct OpeningW {
     /// The commit's log leaf: its transaction root's variants.
     pub tr_map: Vec<u8>,
-    /// The czds of each mutation transaction, in order: what the leaf's
+    /// The labelled czds of each mutation transaction, in order: what the leaf's
     /// transaction root and the arrow's mutation root are both made of.
-    pub txs: Vec<Vec<Vec<u8>>>,
+    pub txs: Vec<Vec<TaggedDigest>>,
     /// The closing coz, in its wire form.
     pub coz: Vec<u8>,
     /// The forward State Root's variants, empty when the commit leaves none.
@@ -241,7 +238,7 @@ struct RawPath {
 #[derive(Serialize, Deserialize)]
 struct RawOpening {
     tr_map: Capped<MAX_LEAF>,
-    txs: Vec<Vec<Capped<64>>>,
+    txs: Vec<Vec<TaggedDigest>>,
     coz: Capped<MAX_COZ>,
     fwd_variants: Lim<(String, Capped<64>), 3>,
     pt_cells: Vec<Capped<MAX_CELL>>,
@@ -363,13 +360,7 @@ impl TryFrom<RawCert> for Cert {
                         if tx.is_empty() {
                             return Err("a transaction of no coz".to_owned());
                         }
-                        tx.into_iter()
-                            .map(|c| {
-                                alg_of_width(c.0.len())
-                                    .map(|_| c.0)
-                                    .ok_or_else(|| "a czd of no family's width".to_owned())
-                            })
-                            .collect::<Result<Vec<_>, _>>()
+                        Ok(tx)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let mut fwd: Vec<(HashAlg, Vec<u8>)> = Vec::new();
@@ -491,11 +482,7 @@ impl From<&Cert> for RawCert {
                     leaf: raw_path(&s.leaf),
                     opening: RawOpening {
                         tr_map: Capped(o.tr_map.clone()),
-                        txs: o
-                            .txs
-                            .iter()
-                            .map(|tx| tx.iter().cloned().map(Capped).collect())
-                            .collect(),
+                        txs: o.txs.clone(),
                         coz: Capped(o.coz.clone()),
                         fwd_variants: Lim(o
                             .fwd

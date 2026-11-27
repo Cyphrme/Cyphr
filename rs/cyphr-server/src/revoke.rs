@@ -25,37 +25,8 @@
 
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use serde::Deserialize;
 
 use crate::error::AppError;
-
-/// A naked-revoke request in the disclosed-key wire shape: the signed
-/// `key/revoke` coz PLUS the public key it names. `key` is REQUIRED; it is
-/// typed `Option` only so an absent key yields a controlled 400 through
-/// [`AppError`] rather than an axum extractor rejection whose body is not the
-/// `{"error": ..}` shape clients parse.
-#[derive(Debug, Deserialize)]
-pub struct NakedRevokeEnvelope {
-    /// The `key/revoke` payload, as raw JSON (signed verbatim).
-    pub pay: serde_json::Value,
-    /// The detached signature over `pay` (base64url in JSON).
-    #[serde(with = "coz::b64")]
-    pub sig: Vec<u8>,
-    /// The disclosed public key the revoke names. Absent => the request is
-    /// rejected (a naked revoke must disclose its key).
-    pub key: Option<DisclosedKey>,
-}
-
-/// The disclosed public key of a naked revoke, in the wire shape the rest of
-/// the protocol uses (`{ "alg", "pub" }`, `pub` base64url).
-#[derive(Debug, Deserialize)]
-pub struct DisclosedKey {
-    /// The key's algorithm (e.g. `ES256`).
-    pub alg: String,
-    /// The public key bytes (base64url in JSON, wire field `pub`).
-    #[serde(rename = "pub", with = "coz::b64")]
-    pub pub_key: Vec<u8>,
-}
 
 /// A verified naked revoke: its self-signature checked out against the
 /// disclosed key, which hashes back to the named `tmb`.
@@ -65,7 +36,7 @@ pub struct VerifiedRevoke {
     pub revoked_tmb: Thumbprint,
     /// The revocation timestamp the coz declared.
     pub rvk: i64,
-    /// The full `{pay, sig, key}` envelope as verified -- self-contained,
+    /// The full `{pay, sig, keys}` envelope as verified -- self-contained,
     /// independently re-verifiable evidence to store in the death-set (needs no
     /// index to re-check).
     pub evidence: serde_json::Value,
@@ -74,36 +45,31 @@ pub struct VerifiedRevoke {
 /// Verify a naked-revoke request against its DISCLOSED key -- replay-free,
 /// self-signed-only, and reading no server state.
 ///
-/// The rule is core's ([`cyphr::revoke::verify_naked_revoke`]), the same
-/// one the client's verifier and the engine apply; this adds only the
-/// request's own requirement to disclose a key. A missing key, malformed
-/// payload, bad `rvk`, oversize payload, wrong `typ`, or a disclosed key
-/// that does not hash to its `tmb` is a 400; a signature that does not
-/// verify is a 401.
-pub async fn interpret(envelope: &NakedRevokeEnvelope) -> Result<VerifiedRevoke, AppError> {
+/// The request is handed to core's [`cyphr::revoke::verify_naked_revoke`] as
+/// received, so the one rule decides its shape (`keys` of exactly one key,
+/// the singular `key` prohibited), its payload and its signature. A
+/// malformed envelope, bad `rvk`, oversize payload, wrong `typ`, or a
+/// disclosed key that does not hash to its `tmb` is a 400; a signature that
+/// does not verify is a 401.
+pub async fn interpret(envelope: &serde_json::Value) -> Result<VerifiedRevoke, AppError> {
     use cyphr::revoke::RevokeFailure;
 
-    let key = envelope
-        .key
-        .as_ref()
-        .ok_or_else(|| AppError::bad_request("naked revoke must disclose its public key"))?;
-
-    // The full envelope is self-contained, independently re-verifiable evidence:
-    // storing it lets any later reader re-check the death with no index.
-    let evidence = serde_json::json!({
-        "pay": envelope.pay,
-        "sig": Base64UrlUnpadded::encode_string(&envelope.sig),
-        "key": {
-            "alg": key.alg,
-            "pub": Base64UrlUnpadded::encode_string(&key.pub_key),
-        },
-    });
-
     // The refusal text is the sender's own material, never reflected back.
-    let revoke = cyphr::revoke::verify_naked_revoke(&evidence).map_err(|e| match e {
+    let revoke = cyphr::revoke::verify_naked_revoke(envelope).map_err(|e| match e {
         RevokeFailure::BadSignature => AppError::unauthorized("revoke signature does not verify"),
         other => AppError::bad_request(other.to_string()),
     })?;
+
+    // The stored evidence is self-contained and re-verifiable by any later
+    // reader with no index. Core has accepted exactly one key with a string
+    // `alg` and `pub`; only those fields, and the signed pay and its sig,
+    // are kept, so nothing else the sender added is stored.
+    let key = &envelope["keys"][0];
+    let evidence = serde_json::json!({
+        "pay": envelope["pay"],
+        "sig": envelope["sig"],
+        "keys": [{"alg": key["alg"], "pub": key["pub"]}],
+    });
 
     Ok(VerifiedRevoke {
         revoked_tmb: revoke.tmb,

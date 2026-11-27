@@ -368,7 +368,6 @@ impl WireBundle {
             actions: Vec::new(),
             txs: commit
                 .transactions()
-                .iter()
                 .map(|tx| tx.0.iter().map(|c| serde_json::to_vec(c.raw())).collect())
                 .collect::<Result<_, _>>()?,
             keys: commit
@@ -569,8 +568,8 @@ impl Bundle {
     }
 
     /// The signer of the commit the bundle forms: the closing
-    /// `commit/create`'s, else the last coz's ([`commit_signer`]); `None`
-    /// for a bundle of no coz.
+    /// `commit/create`'s ([`commit_signer`]); `None` for a bundle with no
+    /// `commit/create`.
     #[must_use]
     pub fn commit_signer(&self) -> Option<&coz::Thumbprint> {
         commit_signer(
@@ -646,20 +645,15 @@ impl Bundle {
 }
 
 /// The signer of the commit whose cozies, in signed order, are `cozies`
-/// (each a `typ` and its signer): the closing `commit/create`'s, else the
-/// last coz's. The one rule, whether the cozies are a bundle's or a stored
-/// commit's.
-pub fn commit_signer<'a, T>(cozies: impl DoubleEndedIterator<Item = (&'a str, T)>) -> Option<T> {
-    let mut last = None;
-    for (coz_typ, signer) in cozies.rev() {
-        if typ::has_suffix(coz_typ, typ::COMMIT_CREATE) {
-            return Some(signer);
-        }
-        if last.is_none() {
-            last = Some(signer);
-        }
-    }
-    last
+/// (each a `typ` and its signer): the last `commit/create`'s, and `None`
+/// when there is none. The one rule, whether the cozies are a bundle's or
+/// a stored commit's.
+pub fn commit_signer<'a, T>(
+    mut cozies: impl DoubleEndedIterator<Item = (&'a str, T)>,
+) -> Option<T> {
+    cozies
+        .rfind(|(coz_typ, _)| typ::has_suffix(coz_typ, typ::COMMIT_CREATE))
+        .map(|(_, signer)| signer)
 }
 
 /// What one replayed bundle was: the digests of its cozies in bundle

@@ -15,7 +15,8 @@ use crate::state::{AuthRoot, PrincipalRoot, StateRoot};
 /// A finalized, atomic bundle of cozies.
 ///
 /// Per SPEC §4:
-/// - `Commit ID = MR(sort(czd₀, czd₁, ...))` for cozies in this commit only
+/// - `TR = MR(TX₀, TX₁, ...)` over this commit's transactions "in order as given by the principal",
+///   the commit transaction last (§3.7.5)
 /// - `CS = MR(AS, Commit ID)` binds the auth state to the commit
 /// - `arrow = MR(pre, fwd, TMR)` on the closing `commit/create` cz references the previous commit's
 ///   CS (or promoted AS for genesis)
@@ -24,8 +25,10 @@ use crate::state::{AuthRoot, PrincipalRoot, StateRoot};
 #[derive(Debug)]
 #[cfg_attr(not(any(test, feature = "test-utils")), derive(Clone))]
 pub struct Commit {
-    /// Transactions in this commit.
-    pub(crate) transactions: Vec<crate::transaction::Transaction>,
+    /// The mutation transactions, in signed order.
+    mutations: Vec<crate::transaction::Transaction>,
+    /// The commit transaction, the last of the bundle.
+    commit_tx: crate::transaction::Transaction,
     /// Transaction Root: Merkle root of coz czds.
     tr: crate::transaction_root::TransactionRoot,
     /// Auth Root at the end of this commit; `None` when the commit left no
@@ -49,7 +52,8 @@ impl Clone for Commit {
     fn clone(&self) -> Self {
         crate::probe::commit_cloned();
         Self {
-            transactions: self.transactions.clone(),
+            mutations: self.mutations.clone(),
+            commit_tx: self.commit_tx.clone(),
             tr: self.tr.clone(),
             ar: self.ar.clone(),
             sr: self.sr.clone(),
@@ -64,7 +68,8 @@ impl Commit {
     ///
     /// # Errors
     ///
-    /// Returns `EmptyCommit` if `transactions` is empty.
+    /// Returns `EmptyCommit` if `transactions` is empty and `MissingCommit`
+    /// if the last is not a commit transaction.
     pub(crate) fn new(
         transactions: Vec<crate::transaction::Transaction>,
         tr: crate::transaction_root::TransactionRoot,
@@ -73,11 +78,14 @@ impl Commit {
         pr: PrincipalRoot,
         pt_cells: Vec<Vec<u8>>,
     ) -> crate::error::Result<Self> {
-        if transactions.is_empty() {
-            return Err(crate::error::Error::EmptyCommit);
+        let mut mutations = transactions;
+        let commit_tx = mutations.pop().ok_or(crate::error::Error::EmptyCommit)?;
+        if !commit_tx.is_commit() {
+            return Err(crate::error::Error::MissingCommit);
         }
         Ok(Self {
-            transactions,
+            mutations,
+            commit_tx,
             tr,
             ar,
             sr,
@@ -91,18 +99,25 @@ impl Commit {
         &self.pt_cells
     }
 
-    /// Get the cozies in this commit.
-    pub fn transactions(&self) -> &[crate::transaction::Transaction] {
-        &self.transactions
+    /// The mutation transactions, in signed order, without the commit
+    /// transaction.
+    pub fn mutations(&self) -> &[crate::transaction::Transaction] {
+        &self.mutations
+    }
+
+    /// Every transaction of the bundle in signed order: the mutations,
+    /// then the commit transaction.
+    pub fn transactions(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &crate::transaction::Transaction> {
+        self.mutations
+            .iter()
+            .chain(std::iter::once(&self.commit_tx))
     }
 
     /// Returns the commit transaction, which is the final logical transaction of the atomic bundle.
-    ///
-    /// `Commit::new` (the only constructor) rejects an empty `transactions`
-    /// with `Error::EmptyCommit`, and nothing mutates `transactions` after
-    /// construction -- a live `Commit` always has at least one.
     pub fn commit_tx(&self) -> &crate::transaction::Transaction {
-        self.transactions.last().unwrap()
+        &self.commit_tx
     }
 
     /// Returns a flat vector of all cozies (mutations + commit).
@@ -113,7 +128,7 @@ impl Commit {
     /// Iterates over all cozies in this commit bundle (mutations followed by the commit/create
     /// synthetic coz).
     pub fn iter_all_cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
-        self.transactions.iter().flat_map(|tx| tx.0.iter())
+        self.transactions().flat_map(|tx| tx.0.iter())
     }
 
     /// Get the Commit ID (Merkle root of this commit's czds).
@@ -311,13 +326,6 @@ impl PendingCommit {
             .ok_or(crate::error::Error::EmptyCommit)?;
 
         Commit::new(self.transactions, tr, ar, sr, pr, pt.cells(active_algs)?)
-    }
-
-    /// Consume the pending commit and return the cozies.
-    ///
-    /// Use this for rollback or when abandoning a pending commit.
-    pub fn into_transactions(self) -> Vec<VerifiedCoz> {
-        self.iter_all_cozies().cloned().collect()
     }
 }
 

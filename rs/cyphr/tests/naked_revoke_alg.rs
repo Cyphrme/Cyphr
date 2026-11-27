@@ -8,7 +8,9 @@
 //! `pay.alg` is present and equals the disclosed key's algorithm; absent
 //! is `Malformed("pay has no alg")`, different is `KeyMismatch`.
 //!
-//! Red before the `verify_signed` split: both refusals were accepted.
+//! Red before the `verify_signed` split: both refusals were accepted. The
+//! envelope carries the disclosed key as `keys: [{alg, pub}]` (SPEC 4.6.1),
+//! so these also fail until the field is renamed.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::revoke::{RevokeFailure, verify_naked_revoke};
@@ -45,7 +47,7 @@ fn envelope(alg: Option<&str>) -> Value {
     json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {"alg": golden.alg, "pub": golden.pub_key},
+        "keys": [{"alg": golden.alg, "pub": golden.pub_key}],
     })
 }
 

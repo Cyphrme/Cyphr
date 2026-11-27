@@ -888,7 +888,7 @@ pub struct RevokedKey {
     pub rvk: i64,
     /// The first peer that served the revoke.
     pub peer: String,
-    /// The verified envelope (`{pay, sig, key}`), for a holder that keeps
+    /// The verified envelope (`{pay, sig, keys}`), for a holder that keeps
     /// revokes and serves them on.
     pub envelope: Value,
 }

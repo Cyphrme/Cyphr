@@ -98,7 +98,6 @@ async fn author(p: &mut Principal, txs: &[Vec<Coz<'_>>], closer: &str) -> Result
 fn wire(commit: &Commit) -> Value {
     let txs: Vec<Vec<String>> = commit
         .transactions()
-        .iter()
         .map(|tx| {
             tx.0.iter()
                 .map(|c| b64(&serde_json::to_vec(c.raw()).expect("coz")))
@@ -147,7 +146,6 @@ fn shape(bundle: &Value) -> Vec<usize> {
 fn czds(commit: &Commit) -> Vec<Vec<Vec<u8>>> {
     commit
         .transactions()
-        .iter()
         .map(|tx| tx.0.iter().map(|c| c.czd().as_bytes().to_vec()).collect())
         .collect()
 }

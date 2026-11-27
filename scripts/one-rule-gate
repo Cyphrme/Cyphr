@@ -24,6 +24,9 @@
 #   unsigned-claims  none            K3, K4
 #   crate-name       none            ID
 #   in-memory-state  none            K2
+#   labelled-digests    P            (cyphr only)
+#   core-cuts           P            (cyphr only)
+#   no-panic-sites      P            (cyphr only)
 #
 # Excluded everywhere: tests/, tests.rs, benches/, cyphr-scenarios,
 # test-fixtures, fuzz, and any hit after a line-start `#[cfg(test)]` in
@@ -39,12 +42,14 @@ TESTS=(':(exclude,glob)**/tests/**' ':(exclude,glob)**/tests.rs'
   ':(exclude)rs/test-fixtures' ':(exclude)rs/fuzz')
 
 # drop_inline_tests: stdin is `git grep -n` output; drop hits that follow
-# their file's first `^#[cfg(test)]` that is directly followed by a `mod`
-# line (a `#[cfg(test)]` on a lone `use` or fn hides nothing after it).
+# their file's first `^#[cfg(test)]` that is directly followed by an inline
+# `mod NAME {` (a `#[cfg(test)]` on a lone `use`, fn, or `mod NAME;`
+# declaration hides nothing after it: lib.rs declares `mod restructure_props;`
+# at line 73 and its re-exports follow).
 drop_inline_tests() {
   while IFS= read -r hit; do
     f=${hit%%:*}; rest=${hit#*:}; n=${rest%%:*}
-    cut=$(awk '/^#\[cfg\(test\)\]/ {a=NR; next} a && NR==a+1 && /^(pub(\([a-z]+\))? )?mod / {print a; exit} {a=0}' "$f" 2>/dev/null)
+    cut=$(awk '/^#\[cfg\(test\)\]/ {a=NR; next} a && NR==a+1 && /^(pub(\([a-z]+\))? )?mod [A-Za-z_0-9]+ *\{/ {print a; exit} {a=0}' "$f" 2>/dev/null)
     if [ -z "$cut" ] || [ "$n" -lt "$cut" ]; then printf '%s\n' "$hit"; fi
   done
 }
@@ -66,9 +71,20 @@ rule_unsigned_claims() { git grep -nE 'fn fetch_payload|BindingPolicy::NotRequir
 rule_crate_name()    { git grep -nE 'cyphr-client|cyphr_client' -- rs packaging .github; }
 rule_in_memory_state() { git grep -nE 'Mutex<HashMap<String, Vec<Retained>>>|struct Revoked\(HashMap|struct Resyncs\(HashMap' -- rs/cyphr-storage/src; }
 
+# Node P. Each is one grep over rs/cyphr/src that must print nothing.
+# Every hash is labelled; a bare digest is refused, never matched to a
+# family by its width.
+rule_labelled_digests() { git grep -nE 'alg_of_width|width\(a\) == czd' -- rs/cyphr/src "${TESTS[@]}"; }
+# Decided cuts and the two `Cutoff` helpers only `timeline` calls.
+rule_core_cuts() { git grep -nE 'fn into_transactions|fn to_cad|pub fn runs_past|pub fn end_of_period_from' -- rs/cyphr/src; }
+# F13: `commit_tx` is a field, not `last().unwrap()`; and the genesis
+# guard `DuplicatePrincipal` made dead.
+rule_no_panic_sites() { git grep -nE '\.last\(\)\.unwrap\(\)' -- rs/cyphr/src/commit.rs; git grep -n 'already established' -- rs/cyphr/src/principal/genesis.rs; }
+
 RULES=(signature key_authority revoke_cutoff lifecycle parent_walk
   wire_decoding czd error_names wall_clock id_spelling unsigned_claims
-  crate_name in_memory_state)
+  crate_name in_memory_state labelled_digests core_cuts
+  no_panic_sites)
 
 crate=''; list=0; sel=()
 while [ $# -gt 0 ]; do
@@ -79,7 +95,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ ${#sel[@]} -eq 0 ] && sel=("${RULES[@]}")
-if [ $list -eq 1 ]; then sed -n '/^# Which node/,/^#   in-memory/p' "$0"; exit 0; fi
+if [ $list -eq 1 ]; then sed -n '/^# Which node/,/^#   no-panic-sites/p' "$0"; exit 0; fi
 
 fail=0
 for r in "${sel[@]}"; do

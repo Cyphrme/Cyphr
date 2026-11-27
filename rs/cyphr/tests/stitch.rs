@@ -1393,8 +1393,8 @@ async fn a_two_component_arrow_is_not_misread() {
         if let Some(sr) = c.sr() {
             cat.extend(sr.0.arrow_component_bytes(g).expect("fwd").as_ref());
         }
-        let txs = c.transactions();
-        let mds: Vec<_> = txs[..txs.len() - 1]
+        let mds: Vec<_> = c
+            .mutations()
             .iter()
             .map(|tx| {
                 let czds: Vec<_> =
@@ -1449,7 +1449,7 @@ async fn a_two_component_arrow_is_not_misread() {
 async fn a_stitch_at_a_multi_coz_commit_is_provable() {
     for grouped in [true, false] {
         let p = multi_coz(grouped).await;
-        let txs = p.commit_at(1).expect("commit").transactions();
+        let txs: Vec<_> = p.commit_at(1).expect("commit").transactions().collect();
         assert_eq!(
             txs.iter().map(|t| t.0.len()).collect::<Vec<_>>(),
             if grouped {

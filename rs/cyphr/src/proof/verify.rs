@@ -153,22 +153,16 @@ fn derive_pre(cells: &Cells, g: HashAlg) -> Result<(Vec<u8>, Vec<HashAlg>), Proo
     Ok((hash_sorted_concat_bytes(g, &all), cells.families.clone()))
 }
 
-fn convert(czd: &[u8], to: HashAlg) -> Result<Vec<u8>, ProofError> {
-    let from = crate::state::HASH_ALGS
-        .into_iter()
-        .find(|&a| width(a) == czd.len())
-        .ok_or(ProofError::Arrow)?;
-    let czd = coz::Czd::from_bytes(czd.to_vec());
-    Ok(TaggedCzd::new(&czd, from).convert_to(to))
+/// A labelled czd as its digest in family `to`.
+fn convert(czd: &TaggedDigest, to: HashAlg) -> Vec<u8> {
+    let bytes = coz::Czd::from_bytes(czd.as_bytes().to_vec());
+    TaggedCzd::new(&bytes, czd.alg()).convert_to(to)
 }
 
 /// A transaction's id in family `alg` (SPEC 3.7.5): a lone coz's czd
 /// promoted, else the hash of the czds in order.
-fn tx_id(czds: &[Vec<u8>], alg: HashAlg) -> Result<Vec<u8>, ProofError> {
-    let converted: Vec<Vec<u8>> = czds
-        .iter()
-        .map(|c| convert(c, alg))
-        .collect::<Result<_, _>>()?;
+fn tx_id(czds: &[TaggedDigest], alg: HashAlg) -> Result<Vec<u8>, ProofError> {
+    let converted: Vec<Vec<u8>> = czds.iter().map(|c| convert(c, alg)).collect();
     if let [one] = converted.as_slice() {
         return Ok(one.clone());
     }

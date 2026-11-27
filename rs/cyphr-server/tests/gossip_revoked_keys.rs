@@ -44,7 +44,7 @@ async fn key_delete_by(p: &mut cyphr::Principal, signer: &str, name: &str, now: 
     WireBundle::of_commit(p.commits().last().expect("a commit")).expect("bundle")
 }
 
-/// `name`'s self-signed naked revoke as of `rvk`: `{pay, sig, key}`.
+/// `name`'s self-signed naked revoke as of `rvk`: `{pay, sig, keys}`.
 fn revoke_of(name: &str, rvk: i64) -> serde_json::Value {
     let pool = load_pool();
     let k = pool.get(name).expect("pool key");
@@ -59,7 +59,7 @@ fn revoke_of(name: &str, rvk: i64) -> serde_json::Value {
     serde_json::json!({
         "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {"alg": k.alg, "pub": k.pub_key},
+        "keys": [{"alg": k.alg, "pub": k.pub_key}],
     })
 }
 

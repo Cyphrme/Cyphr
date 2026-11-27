@@ -37,7 +37,7 @@ pub struct RevokedQuery {
 /// Response for `GET /revoked`.
 #[derive(Debug, Serialize)]
 pub struct RevokedResponse {
-    /// The self-signed revoke envelope (`{pay, sig, key}`) of each asked
+    /// The self-signed revoke envelope (`{pay, sig, keys}`) of each asked
     /// key this server holds one for; keys it holds none for are absent.
     pub revoked: Vec<serde_json::Value>,
 }
@@ -1298,7 +1298,7 @@ async fn push_response(
 ///
 /// A naked revoke is an uncommitted, self-signed `key/revoke` coz: the key
 /// named by the coz's `tmb` signs its own revoke. The request body is the
-/// signed coz PLUS its disclosed public key (`{pay, sig, key}`), naming no
+/// signed coz PLUS its disclosed public key (`{pay, sig, keys}`), naming no
 /// principal. This handler verifies it replay-free against the DISCLOSED key
 /// (via [`crate::revoke::interpret`]) -- no principal load, no chain replay,
 /// and never reading the index's content -- and records the full self-signing
@@ -1309,7 +1309,7 @@ async fn push_response(
 #[tracing::instrument(skip(state, envelope))]
 pub async fn revoke(
     State(state): State<Arc<AppState>>,
-    AppJson(envelope): AppJson<crate::revoke::NakedRevokeEnvelope>,
+    AppJson(envelope): AppJson<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     let verified = crate::revoke::interpret(&envelope).await?;

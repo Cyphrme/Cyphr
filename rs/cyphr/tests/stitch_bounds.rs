@@ -124,7 +124,7 @@ async fn chain(shape: Shape) -> Principal {
 async fn proves_and_verifies(shape: Shape) {
     let p = chain(shape).await;
     let n = p.commit_count() as u64;
-    let txs = p.commit_at(1).expect("commit").transactions().len();
+    let txs = p.commit_at(1).expect("commit").transactions().count();
     match shape {
         Shape::Grouped => assert_eq!(txs, 3, "a group, the replace, the closing coz"),
         Shape::Separate => assert_eq!(txs, MANY + 2, "every nonce its own transaction"),

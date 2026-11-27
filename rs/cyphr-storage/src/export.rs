@@ -104,7 +104,6 @@ fn roots_line<S: eml::Storage>(principal: &Principal<S>) -> Result<CommitEntry, 
 fn commit_line(commit: &cyphr::Commit) -> Result<CommitEntry, ExportError> {
     let txs = commit
         .transactions()
-        .iter()
         .map(|tx| {
             tx.0.iter()
                 .map(|cz| serde_json::to_value(cz.raw()))

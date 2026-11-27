@@ -545,7 +545,7 @@ pub async fn key_commit_by(
     WireBundle::of_commit(p.commits().last().expect("a commit")).expect("bundle")
 }
 
-/// `eve`'s self-signed naked revoke (SPEC 6.4) as of `rvk`: `{pay, sig, key}`.
+/// `eve`'s self-signed naked revoke (SPEC 6.4) as of `rvk`: `{pay, sig, keys}`.
 pub fn eve_revoke(rvk: i64) -> serde_json::Value {
     let pool = load_pool();
     let e = pool.get("eve_ed25519").expect("eve");
@@ -560,7 +560,7 @@ pub fn eve_revoke(rvk: i64) -> serde_json::Value {
     serde_json::json!({
         "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {"alg": e.alg, "pub": e.pub_key},
+        "keys": [{"alg": e.alg, "pub": e.pub_key}],
     })
 }
 

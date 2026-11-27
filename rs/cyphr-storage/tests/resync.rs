@@ -43,7 +43,7 @@ fn revoke_of(k: &Kp, rvk: i64) -> serde_json::Value {
     serde_json::json!({
         "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {"alg": k.alg, "pub": Base64UrlUnpadded::encode_string(&k.pubb)},
+        "keys": [{"alg": k.alg, "pub": Base64UrlUnpadded::encode_string(&k.pubb)}],
     })
 }
 

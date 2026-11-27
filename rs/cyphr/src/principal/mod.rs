@@ -249,7 +249,8 @@ pub struct PrincipalCore {
 ///
 /// A principal is Nascent (Levels 1 and 2) until its `principal/create`
 /// applies, then Established (Level 3+): `pg` is `None`, then frozen at
-/// `Some`. `establish_pg` is the only writer and refuses a second call, so
+/// `Some`. `establish_pg` is the only writer and its one caller refuses a second
+/// call (`DuplicatePrincipal`), so
 /// a PG can be neither fabricated for a Nascent principal nor removed from
 /// an Established one. This is a struct with an `Option`, not a two-variant
 /// enum, because both states carry the same core and the transition runs

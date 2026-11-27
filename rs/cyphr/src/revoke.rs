@@ -42,14 +42,14 @@ impl Cutoff {
     /// open) runs past this cutoff and so is cut short by it. A period
     /// ending exactly at the cutoff is not.
     #[must_use]
-    pub fn runs_past(self, until: Option<i64>) -> bool {
+    pub(crate) fn runs_past(self, until: Option<i64>) -> bool {
         until.is_none_or(|u| u > self.0)
     }
 
     /// Where a period that began at `from` ends when this cutoff cuts it:
     /// at the cutoff, but no earlier than the period began.
     #[must_use]
-    pub fn end_of_period_from(self, from: i64) -> i64 {
+    pub(crate) fn end_of_period_from(self, from: i64) -> i64 {
         self.0.max(from)
     }
 
@@ -76,7 +76,7 @@ pub struct NakedRevoke {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum RevokeFailure {
-    /// The envelope is not `{pay, sig, key: {alg, pub}}`.
+    /// The envelope is not `{pay, sig, keys: [{alg, pub}]}`.
     #[error("naked revoke is malformed: {0}")]
     Malformed(&'static str),
     /// The coz is not a `key/revoke`.
@@ -107,7 +107,8 @@ fn text<'a>(v: Option<&'a Value>, what: &'static str) -> Result<&'a str, RevokeF
         .ok_or(RevokeFailure::Malformed(what))
 }
 
-/// Verify one naked-revoke envelope `{pay, sig, key: {alg, pub}}`.
+/// Verify one naked-revoke envelope `{pay, sig, keys: [{alg, pub}]}`: the
+/// signer is disclosed in `keys`, an array of exactly one key (SPEC 4.6.1).
 ///
 /// # Errors
 ///
@@ -118,9 +119,19 @@ pub fn verify_naked_revoke(envelope: &Value) -> Result<NakedRevoke, RevokeFailur
         .ok_or(RevokeFailure::Malformed("no pay"))?;
     let sig = Base64UrlUnpadded::decode_vec(text(envelope.get("sig"), "no sig")?)
         .map_err(|_| RevokeFailure::Malformed("sig is not base64url"))?;
-    let key = envelope
-        .get("key")
-        .ok_or(RevokeFailure::Malformed("no disclosed key"))?;
+    // SPEC 4.6.1 lists the singular `key` as prohibited, with or without
+    // `keys`.
+    if envelope.get("key").is_some() {
+        return Err(RevokeFailure::Malformed("key is prohibited; use keys"));
+    }
+    let key = match envelope
+        .get("keys")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    {
+        Some([key]) => key,
+        _ => return Err(RevokeFailure::Malformed("keys is not an array of one key")),
+    };
     let alg = text(key.get("alg"), "key has no alg")?;
     let public = Base64UrlUnpadded::decode_vec(text(key.get("pub"), "key has no pub")?)
         .map_err(|_| RevokeFailure::Malformed("pub is not base64url"))?;

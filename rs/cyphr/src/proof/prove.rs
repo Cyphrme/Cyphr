@@ -5,6 +5,7 @@
 use super::wire::{Cells, Cert, ConsW, OpeningW, PathW, StitchW, Terminal};
 use super::{Cause as ProofError, Certificate, Claim, ProveError, Root};
 use crate::commit_root::hash_alg_to_u64;
+use crate::state::TaggedDigest;
 use crate::{Commit, HashAlg, Principal};
 
 /// One hop of a plan: the stitch at leaf `s` in `family`'s tree of `size`
@@ -193,10 +194,7 @@ impl<S: eml::Storage> Principal<S> {
     /// Commit `s` opened for a stitch.
     fn opening_at(&self, s: u64) -> Result<OpeningW, ProofError> {
         let commit = self.held(s)?;
-        let (closing_tx, mutations) = commit
-            .transactions()
-            .split_last()
-            .ok_or_else(|| unprovable(format!("commit {s} has no transactions")))?;
+        let (closing_tx, mutations) = (commit.commit_tx(), commit.mutations());
         // Admission refuses every commit transaction of several cozies.
         let [closing] = closing_tx.0.as_slice() else {
             return Err(unprovable(format!(
@@ -225,8 +223,15 @@ impl<S: eml::Storage> Principal<S> {
                 .map_err(|e| unprovable(e.to_string()))?,
             txs: mutations
                 .iter()
-                .map(|tx| tx.0.iter().map(|c| c.czd().as_bytes().to_vec()).collect())
-                .collect(),
+                .map(|tx| {
+                    tx.0.iter()
+                        .map(|c| {
+                            TaggedDigest::new(c.hash_alg(), c.czd().as_bytes().to_vec())
+                                .map_err(|e| unprovable(e.to_string()))
+                        })
+                        .collect()
+                })
+                .collect::<Result<_, _>>()?,
             coz: serde_json::to_vec(closing.raw()).map_err(|e| unprovable(e.to_string()))?,
             fwd,
             cells: self.cells_of(s - 1)?,
