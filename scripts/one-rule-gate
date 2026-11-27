@@ -21,6 +21,8 @@
 #   error-names      golden_fixtures K-test-fixtures lane (P or later)
 #   wall-clock       API only        K2, K3, K4
 #   id-spelling      none            ID
+#   principal-id-type none           ID
+#   pg-private       none            ID
 #   unsigned-claims  none            K3, K4
 #   crate-name       none            ID
 #   in-memory-state  none            K2
@@ -66,9 +68,23 @@ rule_wire_decoding() { git grep -nE '\["pay"\]|pay\["[a-z]+"\]|"/pay/' -- "$SRC"
 rule_czd()           { git grep -nE 'czd_for_alg|canonical_hash_for_alg|fn canonicalize' -- "$SRC" ':(exclude,glob)rs/cyphr/src/**' "${TESTS[@]}"; }
 rule_error_names()   { git grep -n '"UnknownError"' -- rs; }
 rule_wall_clock()    { git grep -nE 'UNIX_EPOCH|SystemTime::now' -- "$SRC" ':(exclude)rs/cyphr/src/principal/mod.rs' "${TESTS[@]}"; }
-rule_id_spelling()   { git grep -nE "split_once\(':'\)|fn bare_digest|fn bare_id|fn bare_principal" -- "$SRC" ':(exclude)rs/cyphr/src/state.rs' "${TESTS[@]}"; }
+rule_id_spelling()   { git grep -nE "split_once\(':'\)|fn bare_digest|fn bare_id|fn bare_principal|ID_LABELS" -- "$SRC" ':(exclude)rs/cyphr/src/state.rs' "${TESTS[@]}"; }
 rule_unsigned_claims() { git grep -nE 'fn fetch_payload|BindingPolicy::NotRequired, None|PeerEntry::Url|pg: Option<' -- rs/cyphr-client/src rs/cyphr-net/src rs/cyphr-cli/src rs/cyphr-server/src "${TESTS[@]}"; }
-rule_crate_name()    { git grep -nE 'cyphr-client|cyphr_client' -- rs packaging .github; }
+rule_crate_name()    { git grep -nE 'cyphr-client|cyphr_client' -- rs packaging .github; git ls-files -- rs/cyphr-client | sed 's|$|:1: crate directory not renamed|'; }
+# D5: no principal id travels as text inside the workspace. `&str` is never
+# a wire DTO, so every parameter spelled `principal_id: &str` (or the
+# short names `pg`, `principal`, `own_principal`, `id` for one) is a place
+# the type was not adopted. Plain `rs/*/src` would match nothing; the
+# `:(glob)` form is the one that selects files.
+rule_principal_id_type() { git grep -nE 'principal_id: &str|\b(pg|principal|own_principal): &str' -- "$SRC" "${TESTS[@]}"; }
+# The field of `PrincipalGenesis` is private and nothing outside
+# `rs/cyphr/src/state.rs` builds one as a tuple. Tests count here: the
+# frame's grep names tests, and a tuple construction in a test is the
+# same bypass of the empty-value refusal.
+rule_pg_private() {
+  git grep -nE 'struct PrincipalGenesis\(pub' -- rs/cyphr/src/state.rs
+  git grep -n 'PrincipalGenesis(' -- ':(glob)rs/*/src/**' ':(glob)rs/*/tests/**' ':(exclude)rs/cyphr/src/state.rs'
+}
 rule_in_memory_state() { git grep -nE 'Mutex<HashMap<String, Vec<Retained>>>|struct Revoked\(HashMap|struct Resyncs\(HashMap' -- rs/cyphr-storage/src; }
 
 # Node P. Each is one grep over rs/cyphr/src that must print nothing.
@@ -83,7 +99,7 @@ rule_no_panic_sites() { git grep -nE '\.last\(\)\.unwrap\(\)' -- rs/cyphr/src/co
 
 RULES=(signature key_authority revoke_cutoff lifecycle parent_walk
   wire_decoding czd error_names wall_clock id_spelling unsigned_claims
-  crate_name in_memory_state labelled_digests core_cuts
+  crate_name principal_id_type pg_private in_memory_state labelled_digests core_cuts
   no_panic_sites)
 
 crate=''; list=0; sel=()
