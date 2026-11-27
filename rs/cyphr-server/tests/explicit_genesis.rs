@@ -86,7 +86,7 @@ async fn genesis_bundle(kps: &[coz::KeyPair]) -> (String, Vec<Vec<u8>>) {
     );
     blobs.push(cc);
     assert_eq!(
-        p.pg().map(|pg| pg.0.tagged_first().unwrap().to_string()),
+        p.pg().map(|pg| pg.to_string()),
         Some(pg.clone())
     );
     (pg, blobs)

@@ -22,6 +22,7 @@
 
 use std::collections::BTreeMap;
 
+use cyphr::StateDigest;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::state::{HASH_ALGS, HashAlg};
 use cyphr::{Error, MultihashDigest, PrincipalGenesis};
@@ -93,7 +94,7 @@ proptest! {
                 .into_iter()
                 .map(|(alg, d)| (alg, d.clone().into_boxed_slice()))
                 .collect();
-            PrincipalGenesis(MultihashDigest::new(map).expect("variants"))
+            PrincipalGenesis::from_multihash(MultihashDigest::new(map).expect("variants")).expect("non-empty")
         };
         for (pg, first, first_bytes) in [
             (multi((HashAlg::Sha256, &d256), (HashAlg::Sha512, &d512)), HashAlg::Sha256, &d256),
@@ -105,11 +106,11 @@ proptest! {
                 &format!("{}:{}", first, Base64UrlUnpadded::encode_string(first_bytes))
             );
             let parsed = text.parse::<PrincipalGenesis>().expect("parses");
-            prop_assert!(parsed.0.matches(&pg.0));
+            prop_assert!(parsed.as_multihash().matches(pg.as_multihash()));
             let mut other = first_bytes.clone();
             other[0] ^= 1;
             let other = PrincipalGenesis::from_digest(first, other).expect("width");
-            prop_assert!(!other.0.matches(&pg.0));
+            prop_assert!(!other.as_multihash().matches(pg.as_multihash()));
         }
     }
 }

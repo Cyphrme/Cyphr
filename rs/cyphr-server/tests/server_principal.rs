@@ -146,7 +146,7 @@ async fn single_key_explicit_genesis_establishes_pg() {
     let pg = client
         .pg()
         .expect("single-key explicit genesis MUST establish a PG");
-    let pg_from_chain = pg.0.tagged_first().unwrap().to_string();
+    let pg_from_chain = pg.to_string();
     assert_eq!(
         pg_from_chain, pg_tagged,
         "PG equals the nascent PR declared as principal/create's id"

@@ -124,7 +124,7 @@ impl StateDigest for PrincipalRoot {
 /// let _ = &pg.0;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrincipalGenesis(pub MultihashDigest);
+pub struct PrincipalGenesis(MultihashDigest);
 
 impl PrincipalGenesis {
     /// A PG from a digest `bytes` taken under `alg`, the hash that produced
@@ -140,9 +140,26 @@ impl PrincipalGenesis {
         Ok(Self(MultihashDigest::from_single(alg, bytes)?))
     }
 
+    /// A PG from a digest holding one variant per algorithm, as a
+    /// principal with a mixed-algorithm keyset has.
+    ///
+    /// # Errors
+    ///
+    /// `EmptyMultihash` if `digest` has no variants.
+    pub fn from_multihash(digest: MultihashDigest) -> crate::error::Result<Self> {
+        if digest.is_empty() {
+            return Err(crate::error::Error::EmptyMultihash);
+        }
+        Ok(Self(digest))
+    }
+
     /// Create PG from the initial PR (at genesis).
-    pub fn from_initial(pr: &PrincipalRoot) -> Self {
-        Self(pr.0.clone())
+    ///
+    /// # Errors
+    ///
+    /// `EmptyMultihash` if `pr` has no variants.
+    pub fn from_initial(pr: &PrincipalRoot) -> crate::error::Result<Self> {
+        Self::from_multihash(pr.0.clone())
     }
 }
 
