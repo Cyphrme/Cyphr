@@ -145,6 +145,22 @@ impl PrincipalGenesis {
     }
 }
 
+impl PrincipalGenesis {
+    /// Whether `claimed`, a labelled id, is one of this genesis's variants:
+    /// its label and digest are the label and digest of a variant held here,
+    /// with no width matching. SPEC 12.1 treats every hash variant of a
+    /// genesis as equivalent, so a claim made by any of them names this
+    /// genesis. This is a relation between an id and a genesis, used where
+    /// a claim is judged; it is not `Eq`, which compares canonical
+    /// spellings and keys maps.
+    #[must_use]
+    pub fn has_variant(&self, claimed: &PrincipalGenesis) -> bool {
+        claimed
+            .canonical()
+            .is_some_and(|(alg, digest)| self.0.get(*alg) == Some(digest))
+    }
+}
+
 impl PartialEq for PrincipalGenesis {
     fn eq(&self, other: &Self) -> bool {
         self.canonical() == other.canonical()

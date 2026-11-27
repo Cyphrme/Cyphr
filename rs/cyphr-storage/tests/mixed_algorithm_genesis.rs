@@ -2,13 +2,12 @@
 //! and SHA-512) names its principal by two variants of one PG. The engine
 //! keys the principal by the canonical one (the first, SHA-256).
 //!
-//! Regression for the claim check in `submit_commit`: the id a caller claims
-//! is compared with the id the genesis derives by the one equality, the
-//! canonical spelling. The multi-variant value a client holds (the CLI
-//! passes `Principal::pg()` itself) equals its canonical id and is accepted;
-//! the SHA-512 variant alone is another spelling and is not the genesis's
-//! id. (Once stored, either variant reads the principal through the index's
-//! aliases.)
+//! Regression for the claim check in `submit_commit` (SPEC 12.1: every hash
+//! variant of a genesis is equivalent): a claim by any variant of the
+//! genesis the bundle derives is accepted, and the principal is stored under
+//! the canonical id. A digest that is no variant of that genesis is refused.
+//! Once stored, either variant reads the principal through the index's
+//! aliases.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::state::HashAlg;
@@ -43,7 +42,7 @@ fn raw_blob(pay: &[u8], sig: &[u8]) -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn a_mixed_algorithm_genesis_is_claimed_by_its_canonical_id() {
+async fn a_mixed_algorithm_genesis_is_claimed_by_any_of_its_variants() {
     let key_a = pool_key("golden");
     let key_b = pool_key("eve_ed25519");
     let now = 1_700_000_000i64;
@@ -112,30 +111,39 @@ async fn a_mixed_algorithm_genesis_is_claimed_by_its_canonical_id() {
         keys: keys.iter().map(KeyEntry::of).collect(),
         ..Default::default()
     };
-    let engine = StorageEngine::new(
-        cyphr_storage::blob::MemoryBlobStore::new(),
-        MemoryIndexer::new(),
-    );
-    let refused = engine
+    let new_engine = || {
+        StorageEngine::new(
+            cyphr_storage::blob::MemoryBlobStore::new(),
+            MemoryIndexer::new(),
+        )
+    };
+    // SPEC 12.1: any variant of the derived genesis names it. Claimed by
+    // the SHA-512 variant alone, the principal is stored under the
+    // canonical id and read back by either variant.
+    let engine = new_engine();
+    let stored = engine
         .submit_commit(&second, Some(Genesis::Disclosed(keys.clone())), &bundle)
         .await
-        .expect_err("the SHA-512 variant alone is not the id the genesis derives");
-    assert!(
-        matches!(refused, cyphr_storage::engine::EngineError::InvalidInput(_)),
-        "{refused:?}"
-    );
-    let stored = engine
-        .submit_commit(&pg, Some(Genesis::Disclosed(keys)), &bundle)
-        .await
-        .expect("the two-variant value a client holds is the genesis's id");
+        .expect("a claim by the SHA-512 variant of the genesis names it");
 
     assert_eq!(stored.principal_id, pg, "stored under the canonical id");
     assert_eq!(
         stored.principal_id, first_variant,
         "which is the first variant"
     );
-    for id in [&pg, &second] {
+    for id in [&pg, &first_variant, &second] {
         let tip = engine.get_tip(id).await.expect("tip").expect("stored");
         assert_eq!(tip.principal_id, pg, "read by {id}");
     }
+
+    // A digest that is no variant of the genesis still names nothing.
+    let other = PrincipalGenesis::from_digest(HashAlg::Sha512, vec![9u8; 64]).expect("width");
+    let refused = new_engine()
+        .submit_commit(&other, Some(Genesis::Disclosed(keys)), &bundle)
+        .await
+        .expect_err("a digest that is no variant of the genesis names nothing");
+    assert!(
+        matches!(refused, cyphr_storage::engine::EngineError::InvalidInput(_)),
+        "{refused:?}"
+    );
 }

@@ -153,3 +153,22 @@ fn a_mixed_algorithm_genesis_equals_its_printed_then_parsed_form() {
     let second = PrincipalGenesis::from_digest(HashAlg::Sha512, vec![2u8; 64]).expect("width");
     assert_ne!(pg, second);
 }
+
+/// `has_variant` is label and bytes of one held variant, nothing else: each
+/// variant of a mixed genesis is one, the genesis value itself is one (its
+/// canonical variant is), and the same bytes under another label, another
+/// digest of the same width, and a digest of a family the genesis lacks are
+/// not.
+#[test]
+fn has_variant_is_label_and_bytes_of_a_held_variant() {
+    let pg = mixed();
+    let v = |alg: HashAlg, byte: u8| {
+        PrincipalGenesis::from_digest(alg, vec![byte; alg.digest_size()]).expect("width")
+    };
+    assert!(pg.has_variant(&v(HashAlg::Sha256, 1)));
+    assert!(pg.has_variant(&v(HashAlg::Sha512, 2)));
+    assert!(pg.has_variant(&pg));
+    assert!(!pg.has_variant(&v(HashAlg::Sha256, 2)), "another digest");
+    assert!(!pg.has_variant(&v(HashAlg::Sha512, 1)), "another digest");
+    assert!(!pg.has_variant(&v(HashAlg::Sha384, 1)), "a family it lacks");
+}

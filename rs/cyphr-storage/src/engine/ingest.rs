@@ -947,8 +947,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     },
                     (None, None) => return Err(no_disclosed_genesis()),
                 };
-                let key = record_key(&genesis, bundle).await;
-                let names_key = key.as_ref().is_some_and(|key| claimed == key);
+                let derived = record_ids(&genesis, bundle).await;
+                // SPEC 12.1: every hash variant of the genesis is equivalent,
+                // so a claim by any of them names it; the principal is stored
+                // under the canonical id whichever variant claimed it.
+                let names_key = derived
+                    .as_ref()
+                    .is_some_and(|(pg, _)| pg.has_variant(claimed));
+                let key = derived.map(|(_, key)| key);
                 // A commit that is no genesis commit derives no key; the
                 // core refuses it with its own reason below.
                 if key.is_some() && !names_key {
@@ -1930,15 +1936,27 @@ pub(super) async fn record_key(
     genesis: &crate::Genesis,
     bundle: &WireBundle,
 ) -> Option<PrincipalGenesis> {
+    record_ids(genesis, bundle).await.map(|(_, key)| key)
+}
+
+/// The genesis a first bundle derives (every hash variant of it) and the
+/// storage key taken from it, [`record_key`]. `None` when the bundle does not
+/// replay.
+pub(super) async fn record_ids(
+    genesis: &crate::Genesis,
+    bundle: &WireBundle,
+) -> Option<(PrincipalGenesis, PrincipalGenesis)> {
     let principal = replay_first(genesis, bundle).await?;
     let Some(pg) = principal.pg() else {
-        return (principal.commits().next().is_none())
+        let id = (principal.commits().next().is_none())
             .then(|| genesis_principal_id(genesis).ok())
-            .flatten();
+            .flatten()?;
+        return Some((id.clone(), id));
     };
     let alg = principal.active_algs().first().copied()?;
     let digest = pg.as_multihash().get(alg)?;
-    PrincipalGenesis::from_digest(alg, digest.to_vec()).ok()
+    let key = PrincipalGenesis::from_digest(alg, digest.to_vec()).ok()?;
+    Some((pg.clone(), key))
 }
 
 /// Whether `bundle` carries a `principal/create`: a genesis commit (SPEC
