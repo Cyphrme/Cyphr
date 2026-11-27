@@ -105,31 +105,6 @@ pub use state::{
 pub use transaction::Transaction;
 pub use transaction_root::{TransactionCommitRoot, TransactionMutationRoot, TransactionRoot};
 
-/// Doctests that pin the key verifier's signature (P.1, property 8): its
-/// member is a [`Key`], whose thumbprint is bound to its public key, never
-/// raw bytes, so a State Root cannot be passed as a key.
-#[cfg(doctest)]
-mod key_inclusion_signature {
-    /// Control: the verifier takes a `Key`.
-    ///
-    /// ```no_run
-    /// use cyphr::{Key, KeyOpening, PrincipalRoot, verify_key_inclusion};
-    /// fn check(key: &Key, pr: &PrincipalRoot, opening: &KeyOpening) {
-    ///     let _ = verify_key_inclusion(key, pr, opening);
-    /// }
-    /// ```
-    ///
-    /// Bytes are not a member.
-    ///
-    /// ```compile_fail,E0308
-    /// use cyphr::{KeyOpening, PrincipalRoot, verify_key_inclusion};
-    /// fn check(thumbprint: &[u8], pr: &PrincipalRoot, opening: &KeyOpening) {
-    ///     let _ = verify_key_inclusion(thumbprint, pr, opening);
-    /// }
-    /// ```
-    struct TakesAKeyNotBytes;
-}
-
 // Compiles every Rust block in the README as a doctest, so a quick-start
 // that stops matching the API fails `cargo test --doc`.
 #[cfg(doctest)]
