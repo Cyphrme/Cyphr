@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use common::*;
 use cyphr::principal::Clock;
-use cyphr_client::{
+use cyphr_net::{
     Anchor, ChannelBinding, ConnectError, Connector, PeerStanding, PullPeer, Record, Request,
     peer_heads, pull,
 };

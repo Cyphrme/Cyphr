@@ -4,7 +4,7 @@ members = [
   "cyphr-storage",
   "cyphr-blob-fjall",
   "cyphr-index-fjall",
-  "cyphr-client",
+  "cyphr-net",
   "cyphr-server",
   "cyphr-cli",
   "cyphr-keystore",

@@ -1129,14 +1129,14 @@ fn login_signs_in_to_a_server_by_timestamp_and_by_challenge() {
         .build()
         .expect("runtime")
         .block_on(async {
-            let http = cyphr_client::HttpConnector::connect(
+            let http = cyphr_net::HttpConnector::connect(
                 &server.url,
-                &cyphr_client::HttpOptions::new(std::time::Duration::from_secs(10)),
+                &cyphr_net::HttpOptions::new(std::time::Duration::from_secs(10)),
             )
             .expect("connect");
-            cyphr_client::Connector::exchange(
+            cyphr_net::Connector::exchange(
                 &http,
-                &cyphr_client::Request::post("/auth/challenge", Vec::new()),
+                &cyphr_net::Request::post("/auth/challenge", Vec::new()),
             )
             .await
         })

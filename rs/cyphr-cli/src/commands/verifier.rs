@@ -1,6 +1,6 @@
 //! The verifier: `verify`, `watch`, `audit` and `gossip export|import`.
 //!
-//! All of them are one round of the pull step ([`cyphr_client::pull`])
+//! All of them are one round of the pull step ([`cyphr_net::pull`])
 //! over a peer set (HTTP peers, or a bundle file served as peers), against
 //! a record rebuilt from the local store. What the pull returns is what is
 //! persisted (new commits, rival branches and naked revokes into the store;
@@ -23,7 +23,7 @@ use std::time::Duration;
 use cyphr::Key;
 use cyphr::principal::system_clock;
 use cyphr::replay::WireBundle;
-use cyphr_client::{
+use cyphr_net::{
     Anchor, BindingPolicy, BundleError, Connector, ExchangeBundle, HttpConnector, HttpOptions,
     PatchFailure, PatchRequest, PeerFailure, PeerStanding, PullPeer, PullReport, Record,
     branch_bundles, fetch_patch, fetch_resyncs, opener_of, pull,
@@ -178,7 +178,7 @@ impl<'a> Round<'a> {
 
     /// The record the local store holds, replayed from the anchor.
     async fn record(&self) -> crate::Result<Record> {
-        use cyphr_client::{ActionBundle, PatchEntry};
+        use cyphr_net::{ActionBundle, PatchEntry};
         let patch = if self.store.get_tip(&self.principal_id).await?.is_some() {
             Some(self.store.get_patch(&self.principal_id, None, None).await?)
         } else {
@@ -968,10 +968,10 @@ pub fn export(cli: &Cli, identity: &str, file: &std::path::Path) -> crate::Resul
     if record.tip().is_none() {
         return Err(Error::EmptyHistory(identity.to_owned()));
     }
-    let forks: Vec<cyphr_client::ForkFinding> = held_forks
+    let forks: Vec<cyphr_net::ForkFinding> = held_forks
         .iter()
         .filter(|f| f.resolution.is_none())
-        .map(|f| cyphr_client::ForkFinding {
+        .map(|f| cyphr_net::ForkFinding {
             height: f.height,
             pre: f.pre.clone(),
             commits: f.commits.clone(),

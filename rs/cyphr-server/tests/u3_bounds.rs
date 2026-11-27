@@ -23,7 +23,7 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use axum::http::StatusCode;
 use common::Chain;
-use cyphr_client::HttpConnector;
+use cyphr_net::HttpConnector;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::config::ServerConfig;
 use cyphr_server::gossip::{Gossip, Peer};

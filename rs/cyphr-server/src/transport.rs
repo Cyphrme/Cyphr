@@ -1,5 +1,5 @@
 //! The server end of the principal-authenticated Noise transport
-//! (`cyphr_client::transport`): the responder, and the same router served
+//! (`cyphr_net::transport`): the responder, and the same router served
 //! over it.
 //!
 //! A session authenticates both ends as Cyphr principals before a single
@@ -25,8 +25,8 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
-use cyphr_client::Method;
-use cyphr_client::transport::{
+use cyphr_net::Method;
+use cyphr_net::transport::{
     BindStatement, Channel, MAX_MESSAGE, Role, TransportError, assemble_statement, decode_request,
     encode_ack, encode_response, statement_cad, statement_pay,
 };
@@ -457,7 +457,7 @@ async fn dispatch(
     router: &Router,
     peer: SocketAddr,
     identity: &AuthenticatedPeer,
-    request: cyphr_client::Request,
+    request: cyphr_net::Request,
 ) -> (u16, Vec<u8>) {
     let method = match request.method {
         Method::Get => axum::http::Method::GET,

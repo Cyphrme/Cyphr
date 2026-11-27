@@ -6,7 +6,7 @@
 //! string, and a client must read both back as absent roots.
 
 use axum::http::StatusCode;
-use cyphr_client::{PeerKey, verify_authenticated_envelope};
+use cyphr_net::{PeerKey, verify_authenticated_envelope};
 use cyphr_server::build_router;
 
 mod common;

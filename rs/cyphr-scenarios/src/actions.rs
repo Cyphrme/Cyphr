@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use cyphr_client::transport::NoiseConnector;
+use cyphr_net::transport::NoiseConnector;
 
 use crate::capability::Capability;
 use crate::cli::{self, Device, field};
@@ -302,7 +302,7 @@ pub struct Session {
     pub token: Token,
     /// The login the client signed, kept so a scenario can carry it to
     /// another channel.
-    pub login: cyphr_client::login::LoginRequest,
+    pub login: cyphr_net::login::LoginRequest,
     pub key: KeyRef,
     /// The canonical token subject: the principal, however the caller
     /// spelled it when signing in.
@@ -364,7 +364,7 @@ pub enum Channel {
 /// principal from its own pin and pulls from peers over its own route.
 pub struct RelyingParty<'h> {
     h: &'h Harness,
-    config: cyphr_client::RpConfig,
+    config: cyphr_net::RpConfig,
     /// The signed-in client's own Noise session, which its login was sent
     /// on: a real session with one of the peers, standing in for the
     /// session a relying party host would terminate. The relying party
@@ -377,7 +377,7 @@ pub struct RelyingParty<'h> {
 }
 
 struct Enrolled {
-    party: cyphr_client::RelyingParty,
+    party: cyphr_net::RelyingParty,
     peers: Vec<String>,
 }
 
@@ -568,12 +568,12 @@ impl Harness {
     pub async fn start_relying_party(&self) -> ActionResult<RelyingParty<'_>> {
         Ok(RelyingParty {
             h: self,
-            config: cyphr_client::RpConfig {
+            config: cyphr_net::RpConfig {
                 audience: RP_AUDIENCE.to_owned(),
                 // The relying party's own key, which a site would supply.
                 issuer: {
                     let site = coz::Alg::Ed25519.generate_keypair();
-                    std::sync::Arc::new(cyphr_client::login::SoftwareIssuer::new(
+                    std::sync::Arc::new(cyphr_net::login::SoftwareIssuer::new(
                         site.alg.name(),
                         &site.prv_bytes,
                         &site.pub_bytes,
@@ -582,7 +582,7 @@ impl Harness {
                 pull_age_bound: Duration::from_secs(30),
                 refresh_interval: Duration::from_secs(5),
                 session_ttl: Duration::from_secs(
-                    cyphr_client::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs(),
+                    cyphr_net::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs(),
                 ),
             },
             original: Mutex::new(None),
@@ -1408,9 +1408,9 @@ impl Client<'_> {
         if guard.is_none() {
             let genesis = key_of_entry(&self.h.genesis_of(&p)?)?;
             *guard = Some(Enrolled {
-                party: cyphr_client::RelyingParty::new(
+                party: cyphr_net::RelyingParty::new(
                     p.bare(),
-                    cyphr_client::Anchor::GenesisKey(genesis),
+                    cyphr_net::Anchor::GenesisKey(genesis),
                     rp.config.clone(),
                     cyphr::principal::system_clock,
                 ),
@@ -1422,7 +1422,7 @@ impl Client<'_> {
         // A native client signs in over its own authenticated transport and
         // signs that session's handshake hash into the login.
         let conn = rp.open_channel(enrolled).await?;
-        let h = cyphr_client::Connector::channel_binding(&conn)
+        let h = cyphr_net::Connector::channel_binding(&conn)
             .ok_or_else(|| ActionError::Failed("the session exposed no binding".into()))?
             .as_bytes()
             .to_vec();
@@ -1456,9 +1456,8 @@ impl Client<'_> {
                 &<coz::base64ct::Base64UrlUnpadded as coz::base64ct::Encoding>::encode_string(&h),
             ])
             .await?;
-        let login: cyphr_client::login::LoginRequest =
-            serde_json::from_value(signed["login"].clone())
-                .map_err(|e| ActionError::Failed(format!("login answer: {e}: {signed}")))?;
+        let login: cyphr_net::login::LoginRequest = serde_json::from_value(signed["login"].clone())
+            .map_err(|e| ActionError::Failed(format!("login answer: {e}: {signed}")))?;
         let session = enrolled
             .party
             .sign_in_on(&login, &conn)
@@ -1591,8 +1590,8 @@ fn key_of_entry(entry: &serde_json::Value) -> ActionResult<cyphr::Key> {
         .map_err(|e| ActionError::Failed(format!("keystore key: {e:?}")))
 }
 
-fn refusal_of(r: &cyphr_client::Refusal) -> Refusal {
-    use cyphr_client::Refusal as R;
+fn refusal_of(r: &cyphr_net::Refusal) -> Refusal {
+    use cyphr_net::Refusal as R;
     let kind = match r {
         R::KeyNotActive => RefusalKind::KeyNotActive,
         R::Malformed(_) => RefusalKind::Malformed,
@@ -1612,16 +1611,16 @@ impl RelyingParty<'_> {
         let mut connectors = Vec::new();
         for peer in &enrolled.peers {
             let url = format!("http://{}", self.h.route(RP_NODE, peer).await);
-            let c = cyphr_client::HttpConnector::connect(
+            let c = cyphr_net::HttpConnector::connect(
                 &url,
-                &cyphr_client::HttpOptions::new(Duration::from_secs(5)),
+                &cyphr_net::HttpOptions::new(Duration::from_secs(5)),
             )
             .map_err(|e| ActionError::Failed(format!("relying party to `{peer}`: {e}")))?;
             connectors.push((peer.clone(), c));
         }
         let peers: Vec<_> = connectors
             .iter()
-            .map(|(name, connector)| cyphr_client::PullPeer { name, connector })
+            .map(|(name, connector)| cyphr_net::PullPeer { name, connector })
             .collect();
         enrolled.party.refresh(&peers).await;
         Ok(())
@@ -1643,8 +1642,8 @@ impl RelyingParty<'_> {
     async fn on_channel<T>(
         &self,
         on: Channel,
-        f: impl FnOnce(&mut cyphr_client::RelyingParty, &NoiseConnector) -> T,
-        f_http: impl FnOnce(&mut cyphr_client::RelyingParty) -> T,
+        f: impl FnOnce(&mut cyphr_net::RelyingParty, &NoiseConnector) -> T,
+        f_http: impl FnOnce(&mut cyphr_net::RelyingParty) -> T,
     ) -> ActionResult<T> {
         let mut guard = self.enrolled.lock().await;
         let enrolled = guard
@@ -1671,7 +1670,7 @@ impl RelyingParty<'_> {
         self.on_channel(
             Channel::Original,
             |rp, conn| {
-                rp.check_session_on(&t.0, cyphr_client::Connector::channel_binding(conn))
+                rp.check_session_on(&t.0, cyphr_net::Connector::channel_binding(conn))
                     .is_ok()
             },
             |_| false,
@@ -1683,14 +1682,14 @@ impl RelyingParty<'_> {
     /// `Original` is the channel the sign-in used, `Other` a second
     /// authenticated session opened now, `Http` no channel at all.
     pub async fn present(&self, t: &Token, on: Channel) -> ActionResult<Presented> {
-        let verdict = |r: Result<cyphr_client::Trust, cyphr_client::Refusal>| match r {
+        let verdict = |r: Result<cyphr_net::Trust, cyphr_net::Refusal>| match r {
             Ok(_) => Presented::Accepted,
             Err(r) => Presented::Refused(refusal_of(&r)),
         };
         self.on_channel(
             on,
             |rp, conn| {
-                verdict(rp.check_session_on(&t.0, cyphr_client::Connector::channel_binding(conn)))
+                verdict(rp.check_session_on(&t.0, cyphr_net::Connector::channel_binding(conn)))
             },
             |rp| verdict(rp.check_session_on(&t.0, None)),
         )
@@ -1701,7 +1700,7 @@ impl RelyingParty<'_> {
     /// thief who captured it would: a login signed for one channel must not
     /// open a session on any other, or over HTTP.
     pub async fn replay_login(&self, s: &Session, on: Channel) -> ActionResult<Presented> {
-        let verdict = |r: Result<cyphr_client::Session, cyphr_client::Refusal>| match r {
+        let verdict = |r: Result<cyphr_net::Session, cyphr_net::Refusal>| match r {
             Ok(_) => Presented::Accepted,
             Err(r) => Presented::Refused(refusal_of(&r)),
         };
@@ -1721,7 +1720,7 @@ impl RelyingParty<'_> {
             .as_ref()
             .ok_or_else(|| ActionError::Failed("no principal is signed in".into()))?;
         match enrolled.party.anchor() {
-            cyphr_client::Anchor::GenesisKey(key) => Ok(key.tmb().to_b64()),
+            cyphr_net::Anchor::GenesisKey(key) => Ok(key.tmb().to_b64()),
             other => Err(ActionError::Failed(format!(
                 "the relying party is enrolled at {other:?}, not a genesis key"
             ))),

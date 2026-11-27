@@ -7,7 +7,7 @@
 use base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
 use cyphr::state::TaggedDigest;
-use cyphr_client::TipAnswer;
+use cyphr_net::TipAnswer;
 use cyphr_storage::blob::Blake3Hash;
 use cyphr_storage::engine::bare_digest;
 use serde_json::{Value, json};
@@ -786,7 +786,7 @@ fn adopt_remote(
 
 #[cfg(test)]
 mod tests {
-    use cyphr_client::{ReportedForkPoint, ReportedHead};
+    use cyphr_net::{ReportedForkPoint, ReportedHead};
 
     use super::*;
 

@@ -2,7 +2,7 @@
 //! against a shipped peer, and a hostile responder for the version check.
 //!
 //! Nothing here mocks the system under test. The client is
-//! `cyphr_client::transport::NoiseConnector`; the peer is the shipped
+//! `cyphr_net::transport::NoiseConnector`; the peer is the shipped
 //! `cyphr-server` process. The hostile responder is the other party of the
 //! one scenario that needs a peer misbehaving on purpose, and it speaks the
 //! same wire through the same `Channel`.
@@ -11,11 +11,11 @@ use std::net::SocketAddr;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::signer::SoftwareSigner;
-use cyphr_client::transport::{
+use cyphr_net::transport::{
     Channel, MAX_MESSAGE, NoiseConnector, Role, assemble_statement, decode_request, encode_ack,
     encode_response, statement_pay,
 };
-use cyphr_client::{
+use cyphr_net::{
     BindingKind, BindingPolicy, Connector, PatchFailure, PatchRequest, PeerChain, Request,
     fetch_patch,
 };
@@ -136,7 +136,7 @@ async fn connect_fresh(
     // The peer may have rotated its signing key since its genesis: a client
     // brings the chain it pinned up to the peer's own, from the peer's own
     // HTTP face, before it judges the key the peer signs the handshake with.
-    held.follow(&cyphr_client::HttpConnector::new(
+    held.follow(&cyphr_net::HttpConnector::new(
         http.clone(),
         &format!("http://{http_addr}"),
     ))
@@ -173,14 +173,14 @@ async fn serve_envelope(
     stream: tokio::net::TcpStream,
     me: &Identity,
     envelope: &[u8],
-) -> Result<(), cyphr_client::transport::TransportError> {
+) -> Result<(), cyphr_net::transport::TransportError> {
     let mut channel = Channel::respond(stream).await?;
     let h = channel.handshake_hash().to_vec();
     let alg = me.kp.alg.name();
     let pay = statement_pay(alg, &me.tmb, &me.pg(), Role::Responder, &h, 0)?;
     let sig = coz::sign_json(&pay, alg, &me.kp.prv_bytes, &me.kp.pub_bytes)
         .map(|(sig, _)| sig)
-        .ok_or(cyphr_client::transport::TransportError::BadBinding {
+        .ok_or(cyphr_net::transport::TransportError::BadBinding {
             what: "the hostile responder could not sign",
         })?;
     channel
@@ -222,7 +222,7 @@ fn is_version_refusal<T>(outcome: &Result<T, PatchFailure>, v: u64) -> bool {
 /// honestly authenticated hostile responder.
 async fn fetch_from_hostile(
     envelope: Vec<u8>,
-) -> Result<Result<cyphr_client::VerifiedPatch, PatchFailure>, String> {
+) -> Result<Result<cyphr_net::VerifiedPatch, PatchFailure>, String> {
     let (addr, mut pinned) = hostile_responder(envelope).await?;
     let me = Identity::generate()?;
     let conn = NoiseConnector::connect(addr, &mut pinned, &me.signer(), &me.pg())

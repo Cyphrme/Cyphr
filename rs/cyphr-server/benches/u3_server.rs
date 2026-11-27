@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use axum::http::StatusCode;
 use common::{Chain, bad_signature, median};
-use cyphr_client::HttpConnector;
+use cyphr_net::HttpConnector;
 use cyphr_server::gossip::{Gossip, Peer};
 use cyphr_server::{AppState, build_router};
 use support::*;

@@ -18,7 +18,7 @@ use axum::Router;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::{Commit, Principal};
-use cyphr_client::{ChannelBinding, ConnectError, Connector, PeerChain, Request};
+use cyphr_net::{ChannelBinding, ConnectError, Connector, PeerChain, Request};
 use cyphr_server::config::ServerConfig;
 use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;

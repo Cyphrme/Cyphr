@@ -291,7 +291,7 @@ proptest! {
         let text = resign_with_field(&identity, report, "now", serde_json::json!("1700000000"));
         prop_assert!(matches!(
             TipReport::parse(&text),
-            Err(cyphr_client::TipReportParseError::Now(_))
+            Err(cyphr_net::TipReportParseError::Now(_))
         ));
     }
 }
@@ -325,7 +325,7 @@ fn a_statement_of_another_typ_is_not_a_tip_report() {
     other.pay["typ"] = serde_json::json!(receipt::HELD_REPORT_TYP);
     assert!(matches!(
         TipReport::parse(&other),
-        Err(cyphr_client::TipReportParseError::WrongTyp)
+        Err(cyphr_net::TipReportParseError::WrongTyp)
     ));
 }
 

@@ -24,7 +24,7 @@
 //!   from the `tmb`.
 //!
 //! The wire contract (typs, claim names, build, parse, challenge) lives in
-//! `cyphr_client::login`, shared with the user's device and a relying
+//! `cyphr_net::login`, shared with the user's device and a relying
 //! party. This module adds what only the server decides: the audience it
 //! accepts, the principal's key and lifecycle checks, and the token it
 //! issues.
@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::Json;
 use axum::extract::State;
-use cyphr_client::login::{self, LoginRequest, ParsedRequest, SpentChallenges, VerifiedRequest};
+use cyphr_net::login::{self, LoginRequest, ParsedRequest, SpentChallenges, VerifiedRequest};
 use cyphr_storage::engine::{EngineError, bare_digest};
 use serde::Serialize;
 

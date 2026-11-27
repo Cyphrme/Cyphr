@@ -8,7 +8,7 @@
 //! with the spec author; actions travel as action-only bundles.
 
 use base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::TipAnswer;
+use cyphr_net::TipAnswer;
 use serde_json::{Value, json};
 
 use super::common::{

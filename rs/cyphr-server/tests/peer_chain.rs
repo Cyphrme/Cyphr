@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use axum::Router;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::{ChannelBinding, ConnectError, Connector, PeerChain, PeerFailure, Request};
+use cyphr_net::{ChannelBinding, ConnectError, Connector, PeerChain, PeerFailure, Request};
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::{AppState, build_router};

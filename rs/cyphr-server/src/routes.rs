@@ -700,7 +700,7 @@ pub async fn proof(
 /// commit `height - 1` (`null` at height 0). One of the two is the
 /// canonical commit at `height`. A verifier replays the principal's chain
 /// to `height`, checks its root is `pre`, and replays each commit from
-/// there (`cyphr_client::evidence`); no server signature takes part, so
+/// there (`cyphr_net::evidence`); no server signature takes part, so
 /// nothing here asks to be believed (arch-evidence-is-portable).
 ///
 /// Only forks of principals are served: the server keeps no peer
@@ -753,7 +753,7 @@ pub async fn evidence(
 /// A naked revoke mutates no chain, so a verifier that replays commits can
 /// never learn of one from `/patch`; it asks here, for the keys its own
 /// record holds. Each answer is the stored self-signed envelope, which the
-/// reader re-verifies (`cyphr_client::verify_naked_revoke`): the peer is a
+/// reader re-verifies (`cyphr_net::verify_naked_revoke`): the peer is a
 /// mirror of the revoke, not its authority.
 #[tracing::instrument(skip(state))]
 pub async fn revoked(

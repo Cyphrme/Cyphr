@@ -13,7 +13,7 @@ use common::*;
 use cyphr::Principal;
 use cyphr::eml::MemoryStorage;
 use cyphr::proof::Claim;
-use cyphr_client::{ExtensionFailure, ExtensionOffer, confirm_extension, verify_extension};
+use cyphr_net::{ExtensionFailure, ExtensionOffer, confirm_extension, verify_extension};
 use serde_json::json;
 
 const T0: i64 = 1_700_000_000;

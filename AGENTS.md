@@ -331,7 +331,7 @@ resolved unilaterally.
   forge issue #40. Signpost: the campaign after the MVP.
 - **U5 — Transport.** Decided: Noise NN, with each side signing the
   Noise handshake hash with a key of its own principal
-  (`rs/cyphr-client/src/transport.rs`, feature `noise`). No long-lived
+  (`rs/cyphr-net/src/transport.rs`, feature `noise`). No long-lived
   key exists outside Cyphr: the Noise keys are per-handshake ephemerals,
   which is why the static-key patterns (XX and the rest) were rejected.
   Open: nothing at the pattern level; the transport ships behind the

@@ -547,7 +547,7 @@ users need accounts that cannot be linked, this scheme does not provide it.
 
 The exchange above makes your app trust the Cyphr server's word: the token says
 the server found the key active. If your app is written in Rust, you can drop
-that trust. `cyphr_client::RelyingParty` (in `rs/cyphr-client`) holds its own
+that trust. `cyphr_net::RelyingParty` (in `rs/cyphr-net`) holds its own
 copy of one principal's record and decides a sign-in from the key set it
 replayed itself; the server is only a peer it pulls from.
 
@@ -570,7 +570,7 @@ replayed itself; the server is only a peer it pulls from.
   interval of the removal reaching a peer you pull from. A fork it cannot
   record, or one that abandoned its own branch, also refuses.
 
-`cargo run -p cyphr-client --example relying_party -- --server
+`cargo run -p cyphr-net --example relying_party -- --server
 http://127.0.0.1:3999` signs a fresh principal in this way against a running
 server. The login itself is the same signed request as above (`cyphr login`
 makes it), so a user's client does not change. The library does not run the
@@ -801,8 +801,8 @@ Named plainly, because finding these out mid-integration is worse than reading
 them here:
 
 - **Signing a login is not an SDK for your language.** `cyphr login` signs one
-  from the command line, and the Rust crate `cyphr-client` carries the login
-  contract (`cyphr_client::login`) and a relying party that checks sign-ins
+  from the command line, and the Rust crate `cyphr-net` carries the login
+  contract (`cyphr_net::login`) and a relying party that checks sign-ins
   without trusting this server's token (see [Skipping the server's
   token](#skipping-the-servers-token)). For any other stack, the code in this
   guide is the reference; port it.

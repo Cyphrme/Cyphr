@@ -219,7 +219,7 @@ impl ServerIdentity {
 }
 
 /// The server signs login challenges with its own key.
-impl cyphr_client::login::Issuer for ServerIdentity {
+impl cyphr_net::login::Issuer for ServerIdentity {
     fn alg(&self) -> &str {
         self.alg.name()
     }
@@ -228,11 +228,11 @@ impl cyphr_client::login::Issuer for ServerIdentity {
         &self.pub_bytes
     }
 
-    fn sign(&self, pay_bytes: &[u8]) -> Result<Vec<u8>, cyphr_client::login::IssuerError> {
+    fn sign(&self, pay_bytes: &[u8]) -> Result<Vec<u8>, cyphr_net::login::IssuerError> {
         ServerIdentity::sign(self, pay_bytes)
             .map(|(sig, _)| sig)
             .ok_or_else(|| {
-                cyphr_client::login::IssuerError("coz rejected the server's signing key".into())
+                cyphr_net::login::IssuerError("coz rejected the server's signing key".into())
             })
     }
 }
@@ -486,7 +486,7 @@ mod tests {
     /// wrong-typed payload field is a typed refusal that does not echo it.
     #[test]
     fn malformed_login_payload_does_not_echo_values() {
-        let request: cyphr_client::login::LoginRequest =
+        let request: cyphr_net::login::LoginRequest =
             serde_json::from_str(r#"{"pay":{"tmb":424242424242},"sig":"AAAA"}"#).expect("shape");
         let login = login::parse_login(&request, "cyphr.me").expect_err("tmb must be a string");
         assert!(matches!(login, login::LoginError::Malformed(_)));

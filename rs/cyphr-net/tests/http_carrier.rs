@@ -11,9 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cyphr_client::{
-    ConnectError, Connector, HttpConnector, HttpOptions, MAX_RESPONSE_BYTES, Request,
-};
+use cyphr_net::{ConnectError, Connector, HttpConnector, HttpOptions, MAX_RESPONSE_BYTES, Request};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;

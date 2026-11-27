@@ -9,7 +9,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::{
+use cyphr_net::{
     BindingError, BindingKind, BindingPolicy, ChannelBinding, ConnectError, Connector,
     HttpConnector, PatchFailure, PatchRequest, PeerKey, Request, fetch_patch,
     verify_authenticated_envelope,
@@ -300,8 +300,8 @@ impl Connector for EchoPipe {
 
     async fn exchange(&self, request: &Request) -> Result<Vec<u8>, ConnectError> {
         let method = match request.method {
-            cyphr_client::Method::Get => "GET",
-            cyphr_client::Method::Post => "POST",
+            cyphr_net::Method::Get => "GET",
+            cyphr_net::Method::Post => "POST",
         };
         let mut reply = format!("{method} {}\n", request.target).into_bytes();
         reply.extend_from_slice(&request.body);

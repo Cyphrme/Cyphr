@@ -8,7 +8,7 @@ mod common;
 
 use common::*;
 use cyphr::{EmbedStatus, Principal, Tip, TipSource, Tracking};
-use cyphr_client::{
+use cyphr_net::{
     Anchor, ChannelBinding, ConnectError, Connector, GossipTips, PullPeer, Record, Request,
 };
 use serde_json::{Value, json};

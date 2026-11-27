@@ -847,8 +847,8 @@ SPEC 10.3, line 1704. Disposition: `covered`.
 - disposition: covered
 - spec-text: retrieval is performed. However, any node of these types must be revealed
 - tests:
-  - `rs/cyphr-client/tests/embedded_tip.rs::pinned_and_opaque_digests_are_never_retrieved`
-  - `rs/cyphr-client/tests/embedded_tip.rs::gossip_follow_reports_pull_ages_and_authorizes_b`
+  - `rs/cyphr-net/tests/embedded_tip.rs::pinned_and_opaque_digests_are_never_retrieved`
+  - `rs/cyphr-net/tests/embedded_tip.rs::gossip_follow_reports_pull_ages_and_authorizes_b`
 - fails when: an opaque (never revealed) or pinned KT digest triggers a tip retrieval, or a revealed PR is not followed to the tip its source pulled.
 
 ```claim

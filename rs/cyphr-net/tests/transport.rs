@@ -5,7 +5,7 @@
 //! way, so each binding rule is exercised as a typed refusal over a real
 //! socket.
 //!
-//! Run: `cd rs && cargo test -p cyphr-client --test transport`
+//! Run: `cd rs && cargo test -p cyphr-net --test transport`
 //!
 //! Assumptions the implement brief must honour or amend here (a Noise
 //! suite and wire framing are free choices; the fake needs one):
@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::signer::SoftwareSigner;
-use cyphr_client::PeerChain;
-use cyphr_client::transport::{NoiseConnector, TransportError};
+use cyphr_net::PeerChain;
+use cyphr_net::transport::{NoiseConnector, TransportError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 

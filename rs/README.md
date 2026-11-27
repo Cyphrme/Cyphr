@@ -195,7 +195,7 @@ rs/
 ├── cyphr-storage/      # Storage engine over a blob store and an index
 ├── cyphr-blob-fjall/   # Durable blob store and commit logs (fjall)
 ├── cyphr-index-fjall/  # Durable key-value index (fjall)
-├── cyphr-client/       # Sync client: verify core, HTTP and Noise connectors
+├── cyphr-net/          # Network library: verify core, HTTP and Noise connectors
 ├── cyphr-server/       # HTTP server and witness
 ├── cyphr-cli/          # Command-line client
 ├── cyphr-keystore/     # Key backend seam and the software key store

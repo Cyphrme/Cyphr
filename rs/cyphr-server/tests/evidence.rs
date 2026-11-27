@@ -3,14 +3,14 @@
 //! checks them offline from signatures and the chain alone.
 //!
 //! Every test runs over real servers and real signed commits; the client
-//! side is `cyphr_client::evidence`, fed only what it fetched.
+//! side is `cyphr_net::evidence`, fed only what it fetched.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::evidence::{EvidenceFailure, verify_principal_fork};
+use cyphr_net::evidence::{EvidenceFailure, verify_principal_fork};
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::{AppState, build_router};
@@ -154,10 +154,10 @@ async fn attestor(key_from: Option<&Path>) -> (AppState, Arc<ServerIdentity>, Te
 }
 
 /// What a client holds of a principal after fetching `/patch` from `app`.
-async fn fetch_entries(app: &axum::Router, pr: &str) -> Vec<cyphr_client::PatchEntry> {
+async fn fetch_entries(app: &axum::Router, pr: &str) -> Vec<cyphr_net::PatchEntry> {
     let (status, body) = get_json(app.clone(), &format!("/patch?pg={pr}")).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
-    cyphr_client::verify_patch_body(&serde_json::to_vec(&body).expect("json"), pr, None)
+    cyphr_net::verify_patch_body(&serde_json::to_vec(&body).expect("json"), pr, None)
         .expect("patch decodes")
         .entries
 }
@@ -280,7 +280,7 @@ async fn fork_evidence_is_served_and_verified_offline() {
         .expect("the client verifies the fork from the chain it fetched");
     assert_eq!((proof.pg.as_str(), proof.height), (pr.id.as_str(), 1));
 
-    let refused = async |item: &serde_json::Value, pg: &str, held: &[cyphr_client::PatchEntry]| {
+    let refused = async |item: &serde_json::Value, pg: &str, held: &[cyphr_net::PatchEntry]| {
         verify_principal_fork(item, pg, genesis().await, held)
             .await
             .expect_err("must be refused")

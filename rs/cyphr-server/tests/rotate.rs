@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::{ConnectError, Connector, PeerChain, PeerFailure, Request};
+use cyphr_net::{ConnectError, Connector, PeerChain, PeerFailure, Request};
 use cyphr_server::AppState;
 use cyphr_server::auth::principal::{RotationStep, ServerPrincipal};
 use cyphr_server::auth::{ServerIdentity, next_key_path};
@@ -122,7 +122,7 @@ impl Http {
 }
 
 impl Connector for Http {
-    fn channel_binding(&self) -> Option<&cyphr_client::ChannelBinding> {
+    fn channel_binding(&self) -> Option<&cyphr_net::ChannelBinding> {
         None
     }
 

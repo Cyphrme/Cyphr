@@ -1,11 +1,11 @@
 //! `cyphr login`: sign in to a service (SPEC 17.2).
 //!
-//! The request is the one `cyphr_client::login` defines, signed through the
+//! The request is the one `cyphr_net::login` defines, signed through the
 //! keystore's signer so the private key never leaves it. The command names
 //! the audience it signed for and the peer it sent to, because a verifier's
 //! verdict names its choice and a signer should see theirs.
 
-use cyphr_client::login::{self, LoginRequest};
+use cyphr_net::login::{self, LoginRequest};
 use serde_json::json;
 
 use super::common::{block_on, current_timestamp, get_principal_id, parse_principal_genesis};

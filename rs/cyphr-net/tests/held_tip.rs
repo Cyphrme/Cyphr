@@ -4,7 +4,7 @@
 //! shape.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::{
+use cyphr_net::{
     HELD_REPORT_TYP, PatchFailure, PeerKey, TipAnswer, verify_authenticated_envelope,
     verify_held_envelope, verify_patch_body,
 };

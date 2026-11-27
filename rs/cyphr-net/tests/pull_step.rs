@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use common::*;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::principal::Clock;
-use cyphr_client::{
+use cyphr_net::{
     Anchor, ChannelBinding, ConnectError, Connector, PeerChain, PeerFailure, PeerStanding,
     PullPeer, Record, Request, fetch_revoked, pull,
 };
@@ -248,7 +248,7 @@ fn peer<'a>(name: &'a str, fake: &'a Fake) -> PullPeer<'a, Fake> {
     }
 }
 
-fn standing<'a>(report: &'a cyphr_client::PullReport, name: &str) -> &'a PeerStanding {
+fn standing<'a>(report: &'a cyphr_net::PullReport, name: &str) -> &'a PeerStanding {
     &report
         .peers
         .iter()
@@ -709,15 +709,15 @@ async fn a_second_pull_replays_only_what_is_new_and_agrees_with_a_cold_build() {
 }
 
 /// The chain a resumed record's state covers, as a store would serve it.
-struct Stored(Vec<cyphr_client::PatchEntry>);
+struct Stored(Vec<cyphr_net::PatchEntry>);
 
-impl cyphr_client::ChainSource for Stored {
+impl cyphr_net::ChainSource for Stored {
     fn first(
         &self,
         count: usize,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<Vec<cyphr_client::PatchEntry>, String>>
+            dyn std::future::Future<Output = Result<Vec<cyphr_net::PatchEntry>, String>>
                 + Send
                 + '_,
         >,

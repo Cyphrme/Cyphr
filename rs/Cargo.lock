@@ -664,9 +664,9 @@ dependencies = [
  "coz-rs",
  "cyphr",
  "cyphr-blob-fjall",
- "cyphr-client",
  "cyphr-index-fjall",
  "cyphr-keystore",
+ "cyphr-net",
  "cyphr-storage",
  "fjall",
  "indexmap",
@@ -679,30 +679,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "cyphr-client"
-version = "0.1.0"
-dependencies = [
- "coz-rs",
- "cyphr",
- "proptest",
- "rand 0.8.5",
- "reqwest",
- "serde",
- "serde_json",
- "snow",
- "thiserror 2.0.17",
- "tokio",
- "tokio-rustls",
- "zeroize",
-]
-
-[[package]]
 name = "cyphr-fuzz"
 version = "0.0.0"
 dependencies = [
  "coz-rs",
  "cyphr",
- "cyphr-client",
+ "cyphr-net",
  "cyphr-server",
  "cyphr-storage",
  "libfuzzer-sys",
@@ -739,12 +721,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyphr-net"
+version = "0.1.0"
+dependencies = [
+ "coz-rs",
+ "cyphr",
+ "proptest",
+ "rand 0.8.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "snow",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-rustls",
+ "zeroize",
+]
+
+[[package]]
 name = "cyphr-scenarios"
 version = "0.1.0"
 dependencies = [
  "coz-rs",
  "cyphr",
- "cyphr-client",
+ "cyphr-net",
  "futures",
  "libc",
  "rand 0.8.5",
@@ -766,8 +766,8 @@ dependencies = [
  "coz-rs",
  "cyphr",
  "cyphr-blob-fjall",
- "cyphr-client",
  "cyphr-index-fjall",
+ "cyphr-net",
  "cyphr-storage",
  "eml",
  "figment",

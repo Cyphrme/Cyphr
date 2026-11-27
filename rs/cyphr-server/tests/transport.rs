@@ -12,8 +12,8 @@
 //! Run: `cd rs && cargo test -p cyphr-server --test transport`
 //!
 //! APIs assumed (the implement brief provides them):
-//! - `cyphr_client::transport::{NoiseConnector, TransportError}`; `NoiseConnector::connect(addr,
-//!   &mut PeerChain, &impl Signer, &str)` is async; `peer()` gives `AuthenticatedPeer { pg, tmb,
+//! - `cyphr_net::transport::{NoiseConnector, TransportError}`; `NoiseConnector::connect(addr, &mut
+//!   PeerChain, &impl Signer, &str)` is async; `peer()` gives `AuthenticatedPeer { pg, tmb,
 //!   verified_at, anchor }`.
 //! - `cyphr_server::transport::serve_noise(listener, Arc<AppState>)`, and
 //!   `serve_noise_with(listener, state, router)`, which is `serve_noise` with the dispatch router
@@ -28,10 +28,10 @@ use axum::Router;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::signer::{Signer, SoftwareSigner};
-use cyphr_client::transport::{
+use cyphr_net::transport::{
     Channel, NoiseConnector, Role, TransportError, assemble_statement, decode_ack, statement_pay,
 };
-use cyphr_client::{
+use cyphr_net::{
     BindingKind, BindingPolicy, ChannelBinding, ConnectError, Connector, PatchFailure,
     PatchRequest, PeerChain, Request, fetch_patch,
 };
@@ -1207,11 +1207,11 @@ async fn a_peer_that_never_reads_is_cut_off() {
     let stream = tokio::net::TcpStream::from_std(socket.into()).expect("tokio stream");
     let mut channel = raw_session_over(stream).await;
 
-    let request = cyphr_client::transport::encode_request(&Request::get("/")).expect("request");
+    let request = cyphr_net::transport::encode_request(&Request::get("/")).expect("request");
     channel.send_message(&request).await.expect("ask");
     tokio::time::sleep(std::time::Duration::from_secs(14)).await;
     let late = channel
-        .recv_message(cyphr_client::transport::MAX_MESSAGE)
+        .recv_message(cyphr_net::transport::MAX_MESSAGE)
         .await;
     assert!(
         late.is_err(),

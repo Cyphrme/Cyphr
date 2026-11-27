@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use common::*;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::login::{self, LoginRequest, SoftwareIssuer};
-use cyphr_client::{
+use cyphr_net::login::{self, LoginRequest, SoftwareIssuer};
+use cyphr_net::{
     Anchor, BindingKind, ChannelBinding, ConnectError, Connector, PullPeer, Refusal, RelyingParty,
     Request, RpConfig, SessionBinding, UnmetCurrency,
 };
@@ -23,7 +23,7 @@ const AUDIENCE: &str = "rp.example";
 const BOUND: Duration = Duration::from_secs(30);
 const REFRESH: Duration = Duration::from_secs(10);
 const SESSION_TTL: Duration =
-    Duration::from_secs(cyphr_client::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs());
+    Duration::from_secs(cyphr_net::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs());
 
 fn config() -> RpConfig {
     let site = coz::Alg::Ed25519.generate_keypair();

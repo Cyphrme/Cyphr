@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex};
 
 use axum::http::StatusCode;
-use cyphr_client::HttpConnector;
+use cyphr_net::HttpConnector;
 use cyphr_server::gossip::{Gossip, Peer};
 use cyphr_server::{AppState, build_router};
 

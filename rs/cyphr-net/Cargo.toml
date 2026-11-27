@@ -1,12 +1,12 @@
 [package]
 categories             = ["authentication", "cryptography"]
 description            = "Carrier-independent Cyphr sync client: verify core plus transports"
-documentation          = "https://docs.rs/cyphr-client"
+documentation          = "https://docs.rs/cyphr-net"
 edition.workspace      = true
 homepage.workspace     = true
 keywords               = ["identity", "sync", "cryptography", "self-sovereign"]
 license-file.workspace = true
-name                   = "cyphr-client"
+name                   = "cyphr-net"
 repository.workspace   = true
 rust-version.workspace = true
 version                = "0.1.0"

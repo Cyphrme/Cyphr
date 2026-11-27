@@ -2,8 +2,8 @@
 //! step against the peers the operator chose.
 //!
 //! The timer is not a second protocol. Each round, for every principal the
-//! server holds, it opens a [`cyphr_client::Record`] over the engine's
-//! kept state of the principal and calls the same [`cyphr_client::pull`] a
+//! server holds, it opens a [`cyphr_net::Record`] over the engine's
+//! kept state of the principal and calls the same [`cyphr_net::pull`] a
 //! verifying client calls, then stores what verified:
 //!
 //! - the record starts from the verified state the engine already keeps, so a round verifies the
@@ -31,7 +31,7 @@
 //! A principal whose every peer is idle is not pulled: when each peer lists
 //! only heads this server holds (or does not hold the principal at all),
 //! there is nothing to fetch and the stored chain is not replayed. The
-//! idle test is [`cyphr_client::PeerHeads::idle`], the one the pull step
+//! idle test is [`cyphr_net::PeerHeads::idle`], the one the pull step
 //! itself uses. The revoke probe is never skipped: a naked revoke moves no
 //! head, so each round still asks every peer about the principal's active
 //! keys, remembered from the last round (see [`Gossip`]).
@@ -52,7 +52,7 @@ use std::time::Duration;
 
 use coz::Thumbprint;
 use cyphr::principal::system_clock;
-use cyphr_client::{
+use cyphr_net::{
     BindingPolicy, ChainSource, Connector, HttpConnector, PatchEntry, PatchFailure, PatchRequest,
     PeerKey, PullPeer, Record, TipReport, branch_bundles, fetch_patch, fetch_patch_keyed,
     fetch_resyncs, fetch_tip_body, peer_heads, pull, statement_signer, verified_revokes,
@@ -70,7 +70,7 @@ enum RoundError {
     #[error("reading the stored chain: {0}")]
     Store(#[from] cyphr_storage::engine::EngineError),
     #[error("the stored state is not a record of the principal: {0}")]
-    Replay(#[from] cyphr_client::PeerFailure),
+    Replay(#[from] cyphr_net::PeerFailure),
     #[error("the principal holds no commits")]
     Empty,
 }
@@ -559,7 +559,7 @@ fn refused(principal_id: &str, err: &cyphr_storage::engine::EngineError, what: &
 /// revoke the engine refuses reaches neither store. Each is recorded at
 /// this node's own receipt time, never the relayer's (#203). Gossip and a
 /// witness's sync both record through this.
-pub(crate) async fn record_revokes(state: &AppState, revoked: &[cyphr_client::RevokedKey]) {
+pub(crate) async fn record_revokes(state: &AppState, revoked: &[cyphr_net::RevokedKey]) {
     for revoked in revoked {
         if let Err(err) =
             crate::revoke::record_everywhere(state, &revoked.tmb, &revoked.envelope).await
@@ -657,7 +657,7 @@ async fn verify_peer_tip(
 /// heads.
 enum Attested {
     Tip(TipReport),
-    Held(cyphr_client::HeldReport),
+    Held(cyphr_net::HeldReport),
 }
 
 fn bare(id: &str) -> &str {
@@ -798,7 +798,7 @@ async fn apply_fetched(
     state: &Arc<AppState>,
     peer: &Peer,
     principal_id: &str,
-    patch: cyphr_client::VerifiedPatch,
+    patch: cyphr_net::VerifiedPatch,
 ) -> Result<usize, String> {
     // In Error `entries` ends with the canonical branch, which is handled
     // with the others below. The counts come off the wire: a peer

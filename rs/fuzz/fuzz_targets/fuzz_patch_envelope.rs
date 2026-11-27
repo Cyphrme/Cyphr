@@ -3,13 +3,13 @@
 use std::sync::OnceLock;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::{PeerKey, verify_patch_body};
+use cyphr_net::{PeerKey, verify_patch_body};
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
 
 // The witness's whole inbound surface: a peer-supplied `/patch` body,
-// verified by `cyphr_client::verify_patch_body` (envelope signature,
+// verified by `cyphr_net::verify_patch_body` (envelope signature,
 // canonical report parse, principal match, entry blob decoding). The claim
 // is that no body, however hostile, panics the verifier, and that a body
 // accepted with an authority key attests exactly the principal asked for.

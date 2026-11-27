@@ -162,8 +162,8 @@ fn now_secs() -> i64 {
 fn cyphr_server_login_request(
     coz: coz::CozJson,
     challenge: Option<&serde_json::Value>,
-) -> cyphr_client::login::LoginRequest {
-    cyphr_client::login::LoginRequest {
+) -> cyphr_net::login::LoginRequest {
+    cyphr_net::login::LoginRequest {
         coz,
         challenge: challenge.map(|c| serde_json::from_value(c.clone()).expect("challenge coz")),
     }
@@ -555,13 +555,10 @@ async fn login_refuses_a_challenge_another_issuer_signed() {
     let pid =
         bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
     let other = coz::Alg::Ed25519.generate_keypair();
-    let other = cyphr_client::login::SoftwareIssuer::new(
-        other.alg.name(),
-        &other.prv_bytes,
-        &other.pub_bytes,
-    );
+    let other =
+        cyphr_net::login::SoftwareIssuer::new(other.alg.name(), &other.prv_bytes, &other.pub_bytes);
     let foreign = serde_json::to_value(
-        cyphr_client::login::issue_challenge(&other, AUDIENCE, now_secs()).expect("issues"),
+        cyphr_net::login::issue_challenge(&other, AUDIENCE, now_secs()).expect("issues"),
     )
     .expect("json");
 

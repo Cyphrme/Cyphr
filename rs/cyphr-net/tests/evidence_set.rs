@@ -1,5 +1,5 @@
 //! Properties of fork-evidence verification as a set
-//! ([`cyphr_client::evidence::verify_fork_items`]), the one verifier the
+//! ([`cyphr_net::evidence::verify_fork_items`]), the one verifier the
 //! pull step and the scenario oracle share. A peer serves one item per
 //! commit it retains: a fork at a position of the holder's chain, then one
 //! item per commit extending the rival, whose `pre` is off that chain.
@@ -13,8 +13,8 @@ use std::sync::OnceLock;
 use common::*;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
-use cyphr_client::PatchEntry;
-use cyphr_client::evidence::verify_fork_items;
+use cyphr_net::PatchEntry;
+use cyphr_net::evidence::verify_fork_items;
 use proptest::prelude::*;
 use serde_json::{Value, json};
 

@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::{ChannelBinding, ConnectError, Connector, Request};
+use cyphr_net::{ChannelBinding, ConnectError, Connector, Request};
 
 pub fn b64(b: u8) -> String {
     Base64UrlUnpadded::encode_string(&[b; 32])

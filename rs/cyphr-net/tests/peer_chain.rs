@@ -15,7 +15,7 @@ use std::sync::atomic::AtomicI64;
 
 use common::*;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::{PeerChain, PeerFailure, PeerLimits};
+use cyphr_net::{PeerChain, PeerFailure, PeerLimits};
 
 /// Claim: a client that pinned a peer holds only what it has followed, so a
 /// statement signed by a key the peer introduced LATER is refused until the

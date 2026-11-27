@@ -130,7 +130,7 @@ _claim_arch_tip_reports_are_material=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation wrong_typ_pair_is_not_equivocation -- --exact"
 )
 _claim_arch_behind_is_not_fork=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-client --test pull_step pull_classifies_peers_from_the_own_record -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-net --test pull_step pull_classifies_peers_from_the_own_record -- --exact"
 )
 _claim_arch_signing_stays_stateless=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence signing_is_unchanged_by_held_evidence -- --exact"

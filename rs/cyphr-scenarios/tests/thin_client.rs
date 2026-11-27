@@ -80,16 +80,15 @@ async fn thin_client_end_to_end() {
     let alg = entry["alg"].as_str().expect("alg");
     let tmb = coz::compute_thumbprint_for_alg(alg, &public).expect("thumbprint");
     let genesis = cyphr::Key::new(alg.to_owned(), tmb, public).expect("genesis key");
-    let mut record =
-        cyphr_client::Record::new(pr.bare(), cyphr_client::Anchor::GenesisKey(genesis));
-    let connector = cyphr_client::HttpConnector::connect(
+    let mut record = cyphr_net::Record::new(pr.bare(), cyphr_net::Anchor::GenesisKey(genesis));
+    let connector = cyphr_net::HttpConnector::connect(
         &format!("http://{peer}"),
-        &cyphr_client::HttpOptions::new(Duration::from_secs(5)),
+        &cyphr_net::HttpOptions::new(Duration::from_secs(5)),
     )
     .expect("connector");
-    cyphr_client::pull(
+    cyphr_net::pull(
         &mut record,
-        &[cyphr_client::PullPeer {
+        &[cyphr_net::PullPeer {
             name: "p1",
             connector: &connector,
         }],

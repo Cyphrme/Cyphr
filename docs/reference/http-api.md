@@ -422,7 +422,7 @@ No SPEC text defines this route.
 Every principal fork the store holds, each item self-describing and
 checkable offline by replaying the principal's chain to `height`, checking
 its root is `pre`, then replaying each of `a` and `b` from there
-(`cyphr_client::evidence`). No server signature takes part.
+(`cyphr_net::evidence`). No server signature takes part.
 
 Query: `pg` (string, required): must parse as a tagged digest or a bare
 canonical genesis identifier.
@@ -475,7 +475,7 @@ most 128; empty elements are ignored.
 **200**, always `unsigned`: `{"revoked": [<envelope>, …]}`. Each element is
 the stored self-signed `{pay, sig, key}`; a key with no revoke on record is
 absent from the list. The reader re-verifies each element
-(`cyphr_client::verify_naked_revoke`); the server is a mirror, not the
+(`cyphr_net::verify_naked_revoke`); the server is a mirror, not the
 authority.
 
 | Status | When                                                     |
@@ -502,7 +502,7 @@ Query: `pg` (string, required): the principal.
 **200**, always `unsigned`: `{"resyncs": [<coz>, …]}`. Each element is the
 `{pay, sig}` coz as it was accepted, one per asserted tip. The reader
 re-verifies each against the branch it holds
-(`cyphr::resync::verify_resync`, `cyphr_client::Record::asserted`); the
+(`cyphr::resync::verify_resync`, `cyphr_net::Record::asserted`); the
 server is a mirror, not the authority. An unknown principal lists none.
 
 Example: `a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch`
@@ -815,7 +815,7 @@ Login follows `SPEC.md` §17.2 and the spec author's login design
 when the server has no signing key, or no configured `audience`;
 `GET /server` states which tier the server declared. The contract (the
 `typ` names, the claims, the signed challenge) is defined once in the
-`cyphr-client` crate, `cyphr_client::login`.
+`cyphr-net` crate, `cyphr_net::login`.
 
 ### `POST /auth/challenge`
 

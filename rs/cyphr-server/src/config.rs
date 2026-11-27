@@ -273,7 +273,7 @@ pub struct ServerConfig {
 }
 
 /// Peer-side anti-entropy (the `[gossip]` TOML table): a timer that runs
-/// the verifier's pull step (`cyphr_client::pull`) against configured
+/// the verifier's pull step (`cyphr_net::pull`) against configured
 /// peers for every principal this server holds, and stores what verifies.
 ///
 /// Peers are mirrors of principal-signed objects, so the list is this
@@ -614,7 +614,7 @@ pub const RECORD_DIR_NAME: &str = "record";
 pub const MAX_SESSION_TTL_SECS: i64 = 60 * 60;
 
 fn default_session_ttl_secs() -> i64 {
-    cyphr_client::login::DEFAULT_SESSION_TTL_SECS
+    cyphr_net::login::DEFAULT_SESSION_TTL_SECS
 }
 
 impl Default for ServerConfig {
@@ -762,9 +762,9 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         return Err(ConfigError::GossipIntervalZero);
     }
     for url in config.gossip.peers.iter().map(PeerEntry::url) {
-        cyphr_client::HttpConnector::check_url(url, config.allow_cleartext_upstream).map_err(
+        cyphr_net::HttpConnector::check_url(url, config.allow_cleartext_upstream).map_err(
             |source| match source {
-                cyphr_client::ConnectError::CleartextRefused { host } => {
+                cyphr_net::ConnectError::CleartextRefused { host } => {
                     ConfigError::CleartextUpstream {
                         url: url.to_owned(),
                         host,

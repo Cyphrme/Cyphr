@@ -2068,14 +2068,14 @@ async fn fresh_client_replays_after_thief_data_promotion() {
     let (status, served) = get_json(app.clone(), &format!("/patch?pg={}", enc(&id))).await;
     assert_eq!(status, StatusCode::OK, "{served:?}");
     let bytes = serde_json::to_vec(&served).expect("body");
-    let patch = cyphr_client::verify_patch_body(&bytes, &id, None).expect("well-formed patch");
+    let patch = cyphr_net::verify_patch_body(&bytes, &id, None).expect("well-formed patch");
     let genesis_commit = envelope_payload(&served)["entries"][0]["commit_id"]
         .as_str()
         .expect("genesis commit id")
         .to_owned();
-    let record = cyphr_client::Record::from_entries(
+    let record = cyphr_net::Record::from_entries(
         &id,
-        cyphr_client::Anchor::GenesisCommit(genesis_commit),
+        cyphr_net::Anchor::GenesisCommit(genesis_commit),
         cyphr::principal::system_clock,
         &patch.entries,
         &patch.actions,

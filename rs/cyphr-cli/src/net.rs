@@ -1,10 +1,10 @@
-//! The CLI's view of a peer: one [`cyphr_client::HttpConnector`] with the
+//! The CLI's view of a peer: one [`cyphr_net::HttpConnector`] with the
 //! bounds a peer deserves, and the typed ways an exchange can fail.
 
 use std::time::Duration;
 
 use cyphr::replay::WireBundle;
-use cyphr_client::{
+use cyphr_net::{
     ConnectError, Connector, HttpConnector, HttpOptions, PatchFailure, Request, TipAnswer,
     verify_patch_body,
 };
@@ -134,7 +134,7 @@ pub struct PeerHistory {
 }
 
 /// One peer reached over HTTP(S). The carrier bounds every request (total
-/// timeout, no redirect, at most [`cyphr_client::MAX_RESPONSE_BYTES`] read) and refuses
+/// timeout, no redirect, at most [`cyphr_net::MAX_RESPONSE_BYTES`] read) and refuses
 /// cleartext to a non-loopback host unless the user allowed it.
 pub struct Peer {
     connector: HttpConnector,
@@ -201,7 +201,7 @@ impl Peer {
     /// [`PeerError`] for a carrier failure, a refusal, or an answer that is
     /// not a well-formed patch.
     pub async fn chain(&self, principal: &str) -> Result<PeerHistory, PeerError> {
-        let target = cyphr_client::PatchRequest {
+        let target = cyphr_net::PatchRequest {
             principal_id: principal,
             anchor: None,
         }
@@ -304,7 +304,7 @@ impl Peer {
     /// answers without a token.
     pub async fn login(
         &self,
-        request: &cyphr_client::login::LoginRequest,
+        request: &cyphr_net::login::LoginRequest,
     ) -> Result<String, PeerError> {
         let bytes = serde_json::to_vec(request).map_err(|e| self.malformed(e.to_string()))?;
         let answer = self.send(&Request::post("/auth/login", bytes)).await?;

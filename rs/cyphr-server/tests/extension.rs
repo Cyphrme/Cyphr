@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::http::StatusCode;
 use cyphr::replay::WireBundle;
-use cyphr_client::{
+use cyphr_net::{
     Anchor, ChannelBinding, ConnectError, Connector, HttpConnector, PatchEntry, PeerStanding,
     PullPeer, Record, Request, pull,
 };
@@ -226,7 +226,7 @@ fn connector(w: &World) -> Watched {
     )
 }
 
-fn only_standing(report: &cyphr_client::PullReport) -> &PeerStanding {
+fn only_standing(report: &cyphr_net::PullReport) -> &PeerStanding {
     &report.peers.first().expect("one peer").standing
 }
 
@@ -314,7 +314,7 @@ async fn a_forked_peers_branch_is_handed_on_no_longer_than_ours() {
         );
         assert_eq!(report.forks.first().expect("a fork").height, 3);
         handed.push(
-            cyphr_client::branch_bundles(&record, &report, &peers)
+            cyphr_net::branch_bundles(&record, &report, &peers)
                 .await
                 .len(),
         );

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::principal::system_clock;
-use cyphr_client::{Anchor, HttpConnector, HttpOptions, PullPeer, RelyingParty, RpConfig};
+use cyphr_net::{Anchor, HttpConnector, HttpOptions, PullPeer, RelyingParty, RpConfig};
 use serde_json::json;
 
 const USAGE: &str = "usage: relying_party --server <URL> [--audience <NAME>]\n\nSigns a fresh \
@@ -93,16 +93,14 @@ async fn run(server: &str, audience: &str) -> Result<(), String> {
     let site = coz::Alg::Ed25519.generate_keypair();
     let config = RpConfig {
         audience: audience.to_owned(),
-        issuer: std::sync::Arc::new(cyphr_client::login::SoftwareIssuer::new(
+        issuer: std::sync::Arc::new(cyphr_net::login::SoftwareIssuer::new(
             site.alg.name(),
             &site.prv_bytes,
             &site.pub_bytes,
         )),
         pull_age_bound: Duration::from_secs(30),
         refresh_interval: Duration::from_secs(10),
-        session_ttl: Duration::from_secs(
-            cyphr_client::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs(),
-        ),
+        session_ttl: Duration::from_secs(cyphr_net::login::DEFAULT_SESSION_TTL_SECS.unsigned_abs()),
     };
     let mut rp = RelyingParty::new(&pg, Anchor::GenesisKey(genesis), config, system_clock);
     rp.refresh(&[PullPeer {
@@ -112,10 +110,9 @@ async fn run(server: &str, audience: &str) -> Result<(), String> {
     .await;
 
     let challenge = rp.challenge().map_err(|e| e.to_string())?;
-    let login =
-        cyphr_client::login::sign_request(&signer, audience, &pg, now, Some(&challenge), None)
-            .await
-            .map_err(|e| e.to_string())?;
+    let login = cyphr_net::login::sign_request(&signer, audience, &pg, now, Some(&challenge), None)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let session = rp.sign_in(&login).map_err(|r| r.to_string())?;
     let trust = rp

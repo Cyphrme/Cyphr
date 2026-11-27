@@ -39,7 +39,7 @@ async fn revoked_serves_the_accepted_naked_revoke_verifiably() {
         .as_array()
         .expect("revoked list");
     assert_eq!(served.len(), 1, "only the key with a revoke is served");
-    let revoke = cyphr_client::verify_naked_revoke(&served[0]).expect("verifies client-side");
+    let revoke = cyphr_net::verify_naked_revoke(&served[0]).expect("verifies client-side");
     assert_eq!(revoke.tmb.to_b64(), tmb);
     assert_eq!(revoke.rvk, 1_700_000_000);
 

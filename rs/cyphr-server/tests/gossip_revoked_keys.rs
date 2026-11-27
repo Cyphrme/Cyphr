@@ -9,7 +9,7 @@
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
-use cyphr_client::HttpConnector;
+use cyphr_net::HttpConnector;
 use cyphr_server::build_router;
 use cyphr_server::gossip::{Gossip, Peer};
 
