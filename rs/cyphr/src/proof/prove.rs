@@ -5,6 +5,7 @@
 use super::wire::{Cells, Cert, ConsW, OpeningW, PathW, StitchW, Terminal};
 use super::{Cause as ProofError, Certificate, Claim, ProveError, Root};
 use crate::commit_root::hash_alg_to_u64;
+use crate::state::TaggedDigest;
 use crate::{Commit, HashAlg, Principal};
 
 /// One hop of a plan: the stitch at leaf `s` in `family`'s tree of `size`
@@ -225,8 +226,15 @@ impl<S: eml::Storage> Principal<S> {
                 .map_err(|e| unprovable(e.to_string()))?,
             txs: mutations
                 .iter()
-                .map(|tx| tx.0.iter().map(|c| c.czd().as_bytes().to_vec()).collect())
-                .collect(),
+                .map(|tx| {
+                    tx.0.iter()
+                        .map(|c| {
+                            TaggedDigest::new(c.hash_alg(), c.czd().as_bytes().to_vec())
+                                .map_err(|e| unprovable(e.to_string()))
+                        })
+                        .collect()
+                })
+                .collect::<Result<_, _>>()?,
             coz: serde_json::to_vec(closing.raw()).map_err(|e| unprovable(e.to_string()))?,
             fwd,
             cells: self.cells_of(s - 1)?,

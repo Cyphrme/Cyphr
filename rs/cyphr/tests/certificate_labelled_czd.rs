@@ -205,24 +205,27 @@ async fn a_bare_czd_is_refused_not_matched_by_width() {
 #[tokio::test]
 async fn a_label_that_disagrees_with_the_digest_width_is_refused() {
     let (_, anchor, claim, wire) = certified().await;
-    let (s, t, c) = czds(&wire)[0];
-    let mut forged = wire.clone();
-    let slot = &mut forged["stitches"][s]["opening"]["txs"][t][c];
-    let digest = slot
-        .as_str()
-        .expect("string")
-        .split_once(':')
-        .map(|(_, d)| d.to_owned());
-    let Some(digest) = digest else {
-        panic!("czd is not labelled: {slot}");
-    };
-    // A 32-byte digest under the 64-byte family's label.
-    *slot = json!(format!("SHA-512:{digest}"));
-    let accepted = serde_json::from_value::<Certificate>(forged)
-        .ok()
-        .is_some_and(|cert| verify(&anchor, &cert, N, &claim).is_ok());
-    assert!(
-        !accepted,
-        "a SHA-512 label over a 32-byte digest was accepted"
-    );
+    for (s, t, c) in czds(&wire) {
+        let czd = wire["stitches"][s]["opening"]["txs"][t][c]
+            .as_str()
+            .expect("string")
+            .to_owned();
+        let (label, digest) = czd
+            .split_once(':')
+            .unwrap_or_else(|| panic!("czd is not labelled: {czd}"));
+        let width = |name: &str| WIDTHS.iter().find(|(n, _)| *n == name).expect("family").1;
+        // The same digest under every other family's label: its width
+        // is not that family's.
+        for (other, _) in WIDTHS.iter().filter(|(n, _)| width(n) != width(label)) {
+            let mut forged = wire.clone();
+            forged["stitches"][s]["opening"]["txs"][t][c] = json!(format!("{other}:{digest}"));
+            let accepted = serde_json::from_value::<Certificate>(forged)
+                .ok()
+                .is_some_and(|cert| verify(&anchor, &cert, N, &claim).is_ok());
+            assert!(
+                !accepted,
+                "{other} label over a {label}-width digest at {s}/{t}/{c} accepted"
+            );
+        }
+    }
 }
