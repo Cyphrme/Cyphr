@@ -595,7 +595,7 @@ async fn test_explicit_multi_key_genesis_second_commit_succeeds() {
     // exactly what `principal/create`'s `id` field must carry per SPEC §5.1.
     let id_tagged = scope1.genesis_id().expect("genesis id");
     let (pc_pay, pc_sig, pc_czd) =
-        arrow_signed_principal_create(key_a, &a_tmb_b64, &id_tagged, now);
+        arrow_signed_principal_create(key_a, &a_tmb_b64, &id_tagged.to_string(), now);
     scope1
         .verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)
         .expect("principal/create should apply to a fresh multi-key genesis");

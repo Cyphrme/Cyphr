@@ -123,7 +123,7 @@ impl StateDigest for PrincipalRoot {
 /// let pg = PrincipalGenesis::from_digest(HashAlg::Sha256, vec![0u8; 32]).unwrap();
 /// let _ = &pg.0;
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PrincipalGenesis(MultihashDigest);
 
 impl PrincipalGenesis {
@@ -163,6 +163,46 @@ impl PrincipalGenesis {
     }
 }
 
+impl PrincipalGenesis {
+    /// The digest of the spelling [`Display`](std::fmt::Display) prints,
+    /// without its label: the form the signed statements a server issues
+    /// carry for `pg` (their `alg` aligns it, SPEC 2.2.3). Output only; an
+    /// input is never read in this spelling.
+    #[must_use]
+    pub fn wire_digest(&self) -> String {
+        let text = self.to_string();
+        text.split_once(':')
+            .map_or(text.clone(), |(_, digest)| digest.to_owned())
+    }
+
+    /// Whether `digest`, a statement's unlabelled `pg`, is the digest of
+    /// one of this genesis's variants. The label is not read: the claim is
+    /// a statement field aligned by its `alg`, not an id.
+    #[must_use]
+    pub fn names_wire_digest(&self, digest: &str) -> bool {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        self.0
+            .variants()
+            .values()
+            .any(|bytes| Base64UrlUnpadded::encode_string(bytes) == digest)
+    }
+}
+
+impl serde::Serialize for PrincipalGenesis {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PrincipalGenesis {
+    /// The labelled spelling only, parsed by [`FromStr`](std::str::FromStr):
+    /// every edge that deserializes an id refuses a bare one the same way.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 impl std::str::FromStr for PrincipalGenesis {
     type Err = crate::error::Error;
 
@@ -183,16 +223,15 @@ impl std::str::FromStr for PrincipalGenesis {
 
 impl std::fmt::Display for PrincipalGenesis {
     /// The one canonical spelling: a single `ALG:digest`. A value holding
-    /// several variants prints the first in [`HASH_ALGS`] order, so the
+    /// several variants prints the first in the digest's own order, so the
     /// spelling is deterministic; equality across spellings is
     /// [`MultihashDigest::matches`], not string comparison.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        let variants = self.0.variants();
-        match HASH_ALGS
-            .into_iter()
-            .find_map(|alg| variants.get(&alg).map(|d| (alg, d)))
-        {
+        // The first variant in the digest's own order, the order
+        // `active_algs` names an id's algorithm by, so a printed id is the
+        // id the engine keys the principal under.
+        match self.0.variants().iter().next() {
             Some((alg, digest)) => {
                 write!(f, "{alg}:{}", Base64UrlUnpadded::encode_string(digest))
             },

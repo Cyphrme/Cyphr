@@ -22,10 +22,9 @@
 
 use std::collections::BTreeMap;
 
-use cyphr::StateDigest;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::state::{HASH_ALGS, HashAlg};
-use cyphr::{Error, MultihashDigest, PrincipalGenesis};
+use cyphr::{Error, MultihashDigest, PrincipalGenesis, StateDigest};
 use proptest::prelude::*;
 
 fn digest(alg: HashAlg) -> impl Strategy<Value = Vec<u8>> {
