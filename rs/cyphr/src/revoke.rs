@@ -119,7 +119,11 @@ pub fn verify_naked_revoke(envelope: &Value) -> Result<NakedRevoke, RevokeFailur
         .ok_or(RevokeFailure::Malformed("no pay"))?;
     let sig = Base64UrlUnpadded::decode_vec(text(envelope.get("sig"), "no sig")?)
         .map_err(|_| RevokeFailure::Malformed("sig is not base64url"))?;
-    let key = match envelope.get("keys").and_then(Value::as_array).map(Vec::as_slice) {
+    let key = match envelope
+        .get("keys")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    {
         Some([key]) => key,
         _ => return Err(RevokeFailure::Malformed("keys is not an array of one key")),
     };

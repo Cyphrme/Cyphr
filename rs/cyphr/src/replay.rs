@@ -652,7 +652,8 @@ impl Bundle {
 pub fn commit_signer<'a, T>(
     mut cozies: impl DoubleEndedIterator<Item = (&'a str, T)>,
 ) -> Option<T> {
-    cozies.rfind(|(coz_typ, _)| typ::has_suffix(coz_typ, typ::COMMIT_CREATE))
+    cozies
+        .rfind(|(coz_typ, _)| typ::has_suffix(coz_typ, typ::COMMIT_CREATE))
         .map(|(_, signer)| signer)
 }
 

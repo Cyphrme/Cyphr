@@ -6,11 +6,11 @@
 #[cfg(any(test, feature = "test-utils"))]
 use std::collections::BTreeMap;
 
+use coz::Czd;
 // `Thumbprint` is only referenced by test-support-only oracle functions
 // (compute_kr, derive_auth_state) and unit tests below.
 #[cfg(test)]
 use coz::Thumbprint;
-use coz::Czd;
 
 use crate::multihash::MultihashDigest;
 
