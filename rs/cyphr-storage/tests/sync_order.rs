@@ -636,7 +636,7 @@ fn revoke_evidence() -> serde_json::Value {
     serde_json::json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {"alg": alg, "pub": Base64UrlUnpadded::encode_string(&k.kp.pub_bytes)},
+        "keys": [{"alg": alg, "pub": Base64UrlUnpadded::encode_string(&k.kp.pub_bytes)}],
     })
 }
 

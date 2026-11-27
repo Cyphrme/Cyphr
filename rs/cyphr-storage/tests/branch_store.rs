@@ -505,7 +505,7 @@ fn naked_revoke(k: &Kp, rvk: i64) -> serde_json::Value {
     serde_json::json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {"alg": k.alg, "pub": Base64UrlUnpadded::encode_string(&k.pubb)},
+        "keys": [{"alg": k.alg, "pub": Base64UrlUnpadded::encode_string(&k.pubb)}],
     })
 }
 

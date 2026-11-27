@@ -1682,8 +1682,8 @@ async fn stored_actions_are_judged_at_their_own_now() {
             &serde_json::json!({
             "pay": revoke_pay,
             "sig": Base64UrlUnpadded::encode_string(&sig),
-            "key": {"alg": golden.alg, "pub": Base64UrlUnpadded::encode_string(&golden.pub_key),
-                    "tmb": golden.key.tmb().to_b64()},
+            "keys": [{"alg": golden.alg, "pub": Base64UrlUnpadded::encode_string(&golden.pub_key),
+                    "tmb": golden.key.tmb().to_b64()}],
             }),
             1_700_000_500,
         )
@@ -1864,7 +1864,7 @@ async fn a_revoke_rejudges_no_held_action() {
             &serde_json::json!({
                 "pay": revoke_pay,
                 "sig": Base64UrlUnpadded::encode_string(&sig),
-                "key": {"alg": golden.alg, "pub": Base64UrlUnpadded::encode_string(&golden.pub_key)},
+                "keys": [{"alg": golden.alg, "pub": Base64UrlUnpadded::encode_string(&golden.pub_key)}],
             }),
             1_700_000_500,
         )

@@ -868,7 +868,7 @@ async fn naked_revoke(state: &Arc<AppState>, pool: &test_fixtures::Pool, name: &
     let body = serde_json::json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": { "alg": key.alg, "pub": key.pub_key },
+        "keys": [{ "alg": key.alg, "pub": key.pub_key }],
     });
     let req = Request::builder()
         .method("POST")
