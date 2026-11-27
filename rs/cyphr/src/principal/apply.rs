@@ -560,7 +560,7 @@ impl PrincipalState {
                 }
                 // establish_pg() is the ONLY code path that transitions
                 // Nascent → Established.
-                self.establish_pg(PrincipalGenesis::from_initial(&pg))?;
+                self.establish_pg(PrincipalGenesis::from_initial(&pg));
                 self.core_unjudged_mut().genesis_pending = true;
             },
             // SPEC 11.5.1: a merge and its ack are each the signer's own

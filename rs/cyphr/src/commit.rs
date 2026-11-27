@@ -26,6 +26,8 @@ use crate::state::{AuthRoot, PrincipalRoot, StateRoot};
 pub struct Commit {
     /// Transactions in this commit.
     pub(crate) transactions: Vec<crate::transaction::Transaction>,
+    /// The last of `transactions`, held apart so reading it cannot fail.
+    commit_tx: crate::transaction::Transaction,
     /// Transaction Root: Merkle root of coz czds.
     tr: crate::transaction_root::TransactionRoot,
     /// Auth Root at the end of this commit; `None` when the commit left no
@@ -50,6 +52,7 @@ impl Clone for Commit {
         crate::probe::commit_cloned();
         Self {
             transactions: self.transactions.clone(),
+            commit_tx: self.commit_tx.clone(),
             tr: self.tr.clone(),
             ar: self.ar.clone(),
             sr: self.sr.clone(),
@@ -73,11 +76,13 @@ impl Commit {
         pr: PrincipalRoot,
         pt_cells: Vec<Vec<u8>>,
     ) -> crate::error::Result<Self> {
-        if transactions.is_empty() {
-            return Err(crate::error::Error::EmptyCommit);
-        }
+        let commit_tx = transactions
+            .last()
+            .cloned()
+            .ok_or(crate::error::Error::EmptyCommit)?;
         Ok(Self {
             transactions,
+            commit_tx,
             tr,
             ar,
             sr,
@@ -97,12 +102,8 @@ impl Commit {
     }
 
     /// Returns the commit transaction, which is the final logical transaction of the atomic bundle.
-    ///
-    /// `Commit::new` (the only constructor) rejects an empty `transactions`
-    /// with `Error::EmptyCommit`, and nothing mutates `transactions` after
-    /// construction -- a live `Commit` always has at least one.
     pub fn commit_tx(&self) -> &crate::transaction::Transaction {
-        self.transactions.last().unwrap()
+        &self.commit_tx
     }
 
     /// Returns a flat vector of all cozies (mutations + commit).
@@ -311,13 +312,6 @@ impl PendingCommit {
             .ok_or(crate::error::Error::EmptyCommit)?;
 
         Commit::new(self.transactions, tr, ar, sr, pr, pt.cells(active_algs)?)
-    }
-
-    /// Consume the pending commit and return the cozies.
-    ///
-    /// Use this for rollback or when abandoning a pending commit.
-    pub fn into_transactions(self) -> Vec<VerifiedCoz> {
-        self.iter_all_cozies().cloned().collect()
     }
 }
 

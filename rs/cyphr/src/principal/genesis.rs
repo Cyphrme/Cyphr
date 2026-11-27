@@ -66,14 +66,11 @@ impl PrincipalState {
     /// Transition from Nascent to Established by freezing PG.
     ///
     /// This is the only code path that can create an Established principal.
-    /// Called exclusively from the PrincipalCreate coz handler.
-    pub(super) fn establish_pg(&mut self, pg: PrincipalGenesis) -> Result<()> {
-        if self.pg.is_some() {
-            return Err(Error::StateMismatch); // already established
-        }
+    /// Called exclusively from the PrincipalCreate coz handler, which
+    /// refuses a repeat (`DuplicatePrincipal`) before reaching it.
+    pub(super) fn establish_pg(&mut self, pg: PrincipalGenesis) {
         self.pg = Some(pg);
         self.hidden.clear();
-        Ok(())
     }
 }
 
