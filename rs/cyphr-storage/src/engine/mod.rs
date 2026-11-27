@@ -99,8 +99,8 @@ fn key_entries(keys: &[crate::PublicKeyInfo]) -> Vec<KeyEntry> {
         .collect()
 }
 
-/// The key that signed a commit: its closing `commit/create` coz, else
-/// the last coz.
+/// The key that signed a commit: its closing `commit/create` coz's; empty
+/// when the commit has none.
 fn commit_signer(commit: &IndexableCommit) -> String {
     cyphr::replay::commit_signer(
         commit
