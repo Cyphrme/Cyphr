@@ -195,7 +195,7 @@ At genesis, the thumbprint of the signing key (`tmb`) _is_ the Key Root
 (KR), _is_ the Auth Root (AR), _is_ the Principal Root (PR), _is_ the
 Principal Genesis (PG). One value. One identity. No ceremony.[^implicit-promotion]
 
-## The Design Decisions: Why Coz, Why MALT
+## The Design Decisions: Why Coz, Why EML
 
 Two dependencies define Cyphr's architectural character. Neither is
 incidental.
@@ -221,15 +221,15 @@ signature stays valid. You can `cat` a Coz message, read the payload,
 and pipe it to a verifier without a decoding step. Both properties hold
 simultaneously, and neither requires leaving JSON.
 
-### MALT: The Commit Tree
+### EML: The Commit Tree
 
-MALT (Merkle Append-only Log Tree) is our implementation of the
+EML (Epoch Merkle Log) is our implementation of the
 append-only Merkle tree structure described in RFC 9162
 (Certificate Transparency v2.0, §2.1).[^rfc9162] Each commit produces a Transaction Root (TR),
 and those roots are appended to a dense, left-filled Merkle tree. Why a
 tree instead of a flat log? A flat sequential log
 requires $O(n)$ verification: to validate the current state, you
-replay every event from genesis. MALT provides $O(\log n)$ inclusion
+replay every event from genesis. EML provides $O(\log n)$ inclusion
 proofs: you can verify that a specific commit exists in the history
 without downloading or replaying the entire chain. For a principal with
 thousands of commits, this is the difference between seconds and
@@ -508,9 +508,9 @@ Your identity is yours.
 
 [^cbor]: CBOR (Concise Binary Object Representation, RFC 8949) provides deterministic serialization but produces binary output not human-readable without tooling. [RFC 8949](https://datatracker.ietf.org/doc/html/rfc8949).
 
-[^malt]: MALT (Merkle Append-only Log Tree) provides $O(\log n)$ inclusion proofs and deterministic state derivation. [GitHub](https://github.com/Cyphrme/malt).
+[^malt]: EML (Epoch Merkle Log) provides $O(\log n)$ inclusion proofs and deterministic state derivation, with a separate tree per hash algorithm. [EML paper](https://eml-paper.netlify.app).
 
-[^rfc9162]: B. Laurie, E. Messeri, R. Stradling, "Certificate Transparency Version 2.0," RFC 9162 (2021). MALT implements the append-only Merkle tree structure defined in §2.1 with Cyphr-specific extensions for identity state management. [RFC 9162](https://www.rfc-editor.org/rfc/rfc9162).
+[^rfc9162]: B. Laurie, E. Messeri, R. Stradling, "Certificate Transparency Version 2.0," RFC 9162 (2021). EML builds on the append-only Merkle tree structure defined in §2.1 with Cyphr-specific extensions for identity state management. [RFC 9162](https://www.rfc-editor.org/rfc/rfc9162).
 
 [^nist-pq]: NIST announced the finalization of ML-DSA (FIPS 204), ML-KEM (FIPS 203), and SLH-DSA (FIPS 205) on August 13, 2024. These are the first standardized post-quantum cryptographic algorithms. [NIST announcement](https://www.nist.gov/news-events/news/2024/08/nist-releases-first-3-finalized-post-quantum-encryption-standards).
 

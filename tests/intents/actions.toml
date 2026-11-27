@@ -1,8 +1,10 @@
 # Level 4 Action Test Vectors
-# Per SPEC §8.3 - Action recording and Data State computation
+# Per SPEC 4.8 - a data action is recorded in DT; DR enters PR only by a
+# signed ds/create whose id is the computed DR = MR(DT) (SPEC 4.8.2).
 
 # Test 1: Single action direct promotion
-# DS = czd for single action (no hash per SPEC §8.4)
+# DR = czd for a single action (a lone node is promoted), included by
+# ds/create
 [[test]]
 name      = "single_action_promotes_ds"
 principal = ["golden"]
@@ -13,11 +15,19 @@ now    = 1700000001
 signer = "golden"
 typ    = "cyphr.me/action"
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", typ = "cyphr.me/cyphr/ds/create" },
+  ],
+]
+
 [test.expected]
 level = 4
 
 # Test 2: Multiple actions sorted
-# DS = H(sort(czd₀, czd₁...)) per SPEC §8.4
+# DR = H(sort(czd₀, czd₁...)) (SPEC 4.8.1: ordered by now, then lexical),
+# included by ds/create
 [[test]]
 name      = "multiple_actions_sorted"
 principal = ["golden"]
@@ -34,14 +44,54 @@ now    = 1700000002
 signer = "golden"
 typ    = "cyphr.me/action"
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000003, signer = "golden", typ = "cyphr.me/cyphr/ds/create" },
+  ],
+]
+
 [test.expected]
 level = 4
 
-# Test 3: Action changes PS
-# PS includes DS after action recording
+# A ds/create sets DR to its signed id (SPEC 4.8.2), never checked against
+# the actions held (2.3.3: DT is a point-in-time snapshot). The id is the DR
+# over golden's "First action" of single_action_promotes_ds (a lone action's
+# czd, promoted), an action this principal never receives; DR, SR and PR
+# derive from it.
 [[test]]
-name      = "action_changes_ps"
+name      = "ds_create_sets_dr_to_signed_id"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", id = "SHA-256:MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4", typ = "cyphr.me/cyphr/ds/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+level     = 4
+
+# Test 3: An action alone leaves PR unchanged
+# DT/DR is first empty; without a ds/create the action is in DT but DR is
+# not in PR (SPEC 4.8.2), so PR stays the PR of the genesis commit
+[[test]]
+name      = "action_alone_leaves_pr"
+principal = ["golden"]
+
+# The genesis commit (SPEC 5.1): a data action needs a principal to
+# record into.
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 msg    = "First action"
@@ -58,6 +108,18 @@ level = 4
 name      = "action_updates_last_used"
 principal = ["golden"]
 
+# The genesis commit (SPEC 5.1): a data action needs a principal to
+# record into.
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "First action"
 now    = 1700000001
@@ -73,8 +135,54 @@ level = 4
 name      = "level_upgrades_to_4"
 principal = ["golden"]
 
+# The genesis commit (SPEC 5.1): a data action needs a principal to
+# record into.
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "First action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[test.expected]
+level = 4
+
+# Replayed data action is ignored (SPEC §7.6)
+# The identical signed action is submitted twice; the replay produces no
+# state change, so exactly one action is recorded.
+[[test]]
+name      = "replayed_action_is_ignored"
+principal = ["golden"]
+
+# The genesis commit (SPEC 5.1): a data action needs a principal to
+# record into.
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[[test.action]]
+msg    = "Replayed action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.action]]
+msg    = "Replayed action"
 now    = 1700000001
 signer = "golden"
 typ    = "cyphr.me/action"

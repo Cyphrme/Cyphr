@@ -6,22 +6,29 @@
 //! 3. TOML config file
 //! 4. Compiled defaults
 
-use std::path::PathBuf;
+use std::num::NonZeroU64;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
+use cyphr::PrincipalGenesis;
 use serde::Deserialize;
 
 // ========================================================================
 // CLI (clap)
 // ========================================================================
 
-/// Cyphr Protocol server — self-sovereign identity authority.
+/// The configuration file read, when present, if `--config` names none.
+const DEFAULT_CONFIG_FILE: &str = "cyphr-server.toml";
+
+/// Cyphr Protocol server.
 #[derive(Parser, Debug)]
 #[command(name = "cyphr-server", version, about)]
 pub struct Cli {
-    /// Path to TOML configuration file.
-    #[arg(short, long, default_value = "cyphr-server.toml")]
-    pub config: PathBuf,
+    /// Path to a TOML configuration file. Named, it must exist; left out,
+    /// `./cyphr-server.toml` is read when present and defaults apply when
+    /// not.
+    #[arg(short, long)]
+    pub config: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Command,
@@ -40,21 +47,79 @@ pub enum Command {
         data_dir: Option<PathBuf>,
     },
 
-    /// Export a principal's data.
-    Export {
-        /// Principal genesis identifier.
-        pr: String,
-
-        /// Data directory containing blob storage.
-        #[arg(long, env = "CYPHR_DATA_DIR")]
-        data_dir: Option<PathBuf>,
+    /// Copy the stopped server's `record/` tree to a new directory. The
+    /// signing key is never copied.
+    Backup {
+        /// Directory to create (must not exist).
+        dest: PathBuf,
+        #[command(flatten)]
+        ops: OpsArgs,
     },
+
+    /// Replace the stopped server's `record/` with a backup and report the
+    /// window of commits the restored store lost. The principals re-push
+    /// to fill it.
+    Restore {
+        /// A directory `backup` wrote.
+        from: PathBuf,
+        #[command(flatten)]
+        ops: OpsArgs,
+    },
+
+    /// Write every stored principal chain as bundles, one file each.
+    Export {
+        /// Directory to write into.
+        out: PathBuf,
+        #[command(flatten)]
+        ops: OpsArgs,
+    },
+
+    /// Replay every stored chain from the blob store; exits non-zero and
+    /// names each chain that fails. It rebuilds the index and rewrites the
+    /// quarantine set from the replay (both derived, never the record).
+    VerifyAll {
+        #[command(flatten)]
+        ops: OpsArgs,
+    },
+
+    /// Rotate the server's signing key (offline: the server must be
+    /// stopped).
+    RotateKey(RotateKeyArgs),
 
     /// Manage invite tokens (admission policy `invite`).
     Invite {
         #[command(subcommand)]
         action: InviteAction,
     },
+}
+
+/// Arguments shared by the offline operator commands (`backup`, `restore`,
+/// `export`, `verify-all`).
+#[derive(Debug, clap::Args)]
+pub struct OpsArgs {
+    /// Data directory of the stopped server.
+    #[arg(long, env = "CYPHR_DATA_DIR")]
+    pub data_dir: Option<PathBuf>,
+
+    /// The server's signing key file; only consulted so `backup` and
+    /// `restore` can refuse a key inside the tree they copy.
+    #[arg(long, env = "CYPHR_SIGNING_KEY_PATH")]
+    pub signing_key_path: Option<PathBuf>,
+}
+
+/// Arguments for the `rotate-key` subcommand.
+///
+/// Overrides layer over the TOML file like [`ServeArgs`], so the command
+/// reads the same data directory and key file `serve` does.
+#[derive(Debug, clap::Args)]
+pub struct RotateKeyArgs {
+    /// Data directory holding the server's chain.
+    #[arg(long, env = "CYPHR_DATA_DIR")]
+    pub data_dir: Option<PathBuf>,
+
+    /// Path to the server's signing key file; replaced in place.
+    #[arg(long, env = "CYPHR_SIGNING_KEY_PATH")]
+    pub signing_key_path: Option<PathBuf>,
 }
 
 /// `invite` subcommands.
@@ -80,6 +145,11 @@ pub struct ServeArgs {
     #[arg(long, env = "CYPHR_LISTEN")]
     pub listen: Option<String>,
 
+    /// Listen address for the Noise transport (e.g., 127.0.0.1:3100). When
+    /// unset the transport is off. A keyless server refuses it.
+    #[arg(long, env = "CYPHR_TRANSPORT_LISTEN")]
+    pub transport_listen: Option<String>,
+
     /// Data directory for blob and index storage.
     #[arg(long, env = "CYPHR_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
@@ -104,9 +174,36 @@ pub struct ServeArgs {
     #[arg(long, env = "CYPHR_AUDIENCE")]
     pub audience: Option<String>,
 
-    /// Target authority URL for witness mode sync.
-    #[arg(long, env = "CYPHR_AUTHORITY_URL")]
-    pub authority_url: Option<String>,
+    /// Lifetime of a login session's bearer token, in seconds (at most
+    /// [`MAX_SESSION_TTL_SECS`]). A session is never extended; a client
+    /// that wants a longer one signs in again.
+    #[arg(long, env = "CYPHR_SESSION_TTL_SECS")]
+    pub session_ttl_secs: Option<i64>,
+
+    /// A peer to gossip with (repeatable, or comma-separated): its base
+    /// URL, dialled exactly as given. Replaces the `[gossip] peers` list.
+    #[arg(
+        long = "gossip-peer",
+        env = "CYPHR_GOSSIP_PEERS",
+        value_delimiter = ','
+    )]
+    pub gossip_peers: Vec<String>,
+
+    /// Seconds between gossip rounds (`[gossip] interval_secs`).
+    #[arg(long, env = "CYPHR_GOSSIP_INTERVAL_SECS")]
+    pub gossip_interval_secs: Option<u64>,
+
+    /// Fetch a principal from the peers when a read asks for one this
+    /// server does not hold (`[gossip] fetch_on_read`). Unset, the mode
+    /// decides: on for `witness`, off for `service`.
+    #[arg(long, env = "CYPHR_GOSSIP_FETCH_ON_READ")]
+    pub gossip_fetch_on_read: Option<bool>,
+
+    /// Allow plain `http://` to a non-loopback upstream (the witness
+    /// authority and gossip peers). Off by default: every byte would cross
+    /// the network readable and forgeable.
+    #[arg(long, env = "CYPHR_ALLOW_CLEARTEXT_UPSTREAM")]
+    pub allow_cleartext_upstream: bool,
 }
 
 // ========================================================================
@@ -115,9 +212,15 @@ pub struct ServeArgs {
 
 /// Fully-resolved server configuration.
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     /// Listen address.
     pub listen: String,
+
+    /// Listen address for the principal-authenticated Noise transport
+    /// (`crate::transport`). `None` keeps the transport off.
+    #[serde(default)]
+    pub transport_listen: Option<String>,
 
     /// Data directory.
     pub data_dir: PathBuf,
@@ -139,22 +242,22 @@ pub struct ServerConfig {
     #[serde(default)]
     pub audience: Option<String>,
 
-    /// Target authority URL for witness mode sync.
-    #[serde(default)]
-    pub authority_url: Option<String>,
+    /// Lifetime of a login session's bearer token, in seconds, clamped to
+    /// `1..=`[`MAX_SESSION_TTL_SECS`]. Short because a bearer token is
+    /// good for whoever holds it until it expires (see `auth::token`).
+    #[serde(default = "default_session_ttl_secs")]
+    pub session_ttl_secs: i64,
 
-    /// The expected upstream-authority signing identity a witness verifies
-    /// a `GET /patch` envelope's signature against before consuming any
-    /// entry (the authenticated-channel identity, K10). `None` preserves the
-    /// legacy unauthenticated sync path; when set, an unsigned, mis-signed,
-    /// or entry-unbound patch response is a sync failure, never applied.
-    ///
-    /// Carries verifiable KEY MATERIAL (alg + public-key bytes), not a bare
-    /// thumbprint: `coz::verify_json` needs the actual public key, and a
-    /// thumbprint verifies nothing. Mirrors the disclosed-key `alg`/`pub`
-    /// pattern (`crate::revoke::DisclosedKey`).
+    /// Whether upstream calls (the gossip peers) may
+    /// use plain `http://` to a host that is not loopback. Off by default:
+    /// a tip report or a patch could be rewritten in transit. `https://`
+    /// and loopback never need it.
     #[serde(default)]
-    pub authority_identity: Option<AuthorityIdentity>,
+    pub allow_cleartext_upstream: bool,
+
+    /// Peer-side anti-entropy (the `[gossip]` TOML table).
+    #[serde(default)]
+    pub gossip: GossipConfig,
 
     /// Server-side admission policy (the `[admission]` TOML table). Gates
     /// new-principal residency only; defaults to `Open` (permissionless).
@@ -170,25 +273,142 @@ pub struct ServerConfig {
     pub limits: LimitsConfig,
 }
 
+/// Peer-side anti-entropy (the `[gossip]` TOML table): a timer that runs
+/// the verifier's pull step (`cyphr_net::pull`) against configured
+/// peers for every principal this server holds, and stores what verifies.
+///
+/// Peers are mirrors of principal-signed objects, so the list is this
+/// operator's choice of whom to ask, not a trust list. It is dialled at the
+/// address given, so a deployment (or the scenario proxy) can carry and cut
+/// that link.
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GossipConfig {
+    /// The peers to pull from, each a base URL or a `{ url, pg }` table.
+    /// Empty (the default) keeps gossip off.
+    pub peers: Vec<PeerEntry>,
+
+    /// Whether a read of a principal this server does not hold fetches it
+    /// from the peers. Unset, the mode decides ([`ServerConfig::fetches_on_read`]).
+    pub fetch_on_read: Option<bool>,
+
+    /// Seconds between rounds. A round resumes each held principal from the
+    /// engine's kept state and skips one every peer reports idle, so a round
+    /// costs the commits that are new; every round still makes a request
+    /// per peer, so the default is minutes of slack, not seconds, and a
+    /// deployment that wants faster convergence pays for it here.
+    pub interval_secs: u64,
+}
+
+impl Default for GossipConfig {
+    fn default() -> Self {
+        Self {
+            peers: Vec::new(),
+            fetch_on_read: None,
+            interval_secs: 60,
+        }
+    }
+}
+
+/// One configured gossip peer: a base URL dialled exactly as given, or a
+/// table that also names the Principal Genesis of the peer's server
+/// principal (the value its `GET /server` publishes). With a `pg` the peer's
+/// signed tip reports are checked against the keys of that principal's
+/// chain; without one they are not checked (R4: a verifier decides whose
+/// claims to accept).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(untagged)]
+pub enum PeerEntry {
+    /// A base URL.
+    Url(String),
+    /// A base URL and the PG of the peer's server principal.
+    Pinned {
+        /// The base URL.
+        url: String,
+        /// The Principal Genesis of the peer's server principal.
+        pg: PrincipalGenesis,
+    },
+}
+
+/// The table form of a peer, read by [`PeerEntry`]'s deserializer.
+#[derive(Deserialize)]
+struct PinnedPeer {
+    url: String,
+    pg: PrincipalGenesis,
+}
+
+impl<'de> Deserialize<'de> for PeerEntry {
+    /// A URL string or a `{ url, pg }` table. Not derived as untagged: an
+    /// untagged enum answers any failure with "did not match any variant",
+    /// which would hide why a `pg` was refused (an unlabelled one shows the
+    /// labelled form).
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = PeerEntry;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a peer URL or a { url, pg } table")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, url: &str) -> Result<PeerEntry, E> {
+                Ok(PeerEntry::Url(url.to_owned()))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<PeerEntry, A::Error> {
+                let PinnedPeer { url, pg } =
+                    PinnedPeer::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(PeerEntry::Pinned { url, pg })
+            }
+        }
+        deserializer.deserialize_any(Visit)
+    }
+}
+
+impl PeerEntry {
+    /// The base URL.
+    #[must_use]
+    pub fn url(&self) -> &str {
+        match self {
+            Self::Url(url) | Self::Pinned { url, .. } => url,
+        }
+    }
+
+    /// The PG of the peer's server principal, when configured.
+    #[must_use]
+    pub fn pg(&self) -> Option<&PrincipalGenesis> {
+        match self {
+            Self::Url(_) => None,
+            Self::Pinned { pg, .. } => Some(pg),
+        }
+    }
+}
+
 /// Resource-fence limits (the `[limits]` TOML table). Additive to
 /// `[admission]` and mirroring its structured-config pattern; consumed only by
 /// the `rate_limit` fences composed in [`crate::serve`], never by a protocol
 /// handler.
 ///
 /// `#[serde(default)]` makes every field independently omittable, so a partial
-/// `[limits]` table tunes one fence and inherits defaults for the rest.
+/// `[limits]` table tunes one fence and inherits defaults for the rest. The
+/// three caps are `NonZeroU64`: a zero would silently refuse every body,
+/// every principal's first commit or every naked revoke, so it does not
+/// deserialize.
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LimitsConfig {
     /// Maximum request body in bytes; an over-cap body is refused `413` before
     /// any handler work. Defaults to 2 MiB (the historical push-body bound).
-    pub max_body_bytes: u64,
+    pub max_body_bytes: NonZeroU64,
 
     /// Per-principal hard commit-count cap. A principal already at or over
     /// this many commits is refused a further commit with a distinct quota
     /// `4xx`. Generous by default so it bounds runaway growth without
     /// impeding ordinary use.
-    pub count_quota: u64,
+    pub count_quota: NonZeroU64,
 
     /// Rate bucket keyed on the connection peer address (per-IP fence).
     ///
@@ -216,43 +436,78 @@ pub struct LimitsConfig {
     /// Per-operation bucket for `POST /revoke`. Ordinary limits -- `/revoke`
     /// is not exempt from rate limiting.
     pub revoke: RateBucket,
+
+    /// The most keys the naked-revoke death set may hold. A naked revoke
+    /// needs no prior knowledge of its key, so this quota (with the rate
+    /// buckets) is what bounds the set; a revoke past it is refused `507`.
+    pub max_dead_keys: NonZeroU64,
+
+    /// The most bytes the blob store may hold, as the engine counts them.
+    /// A write that would pass it is refused `507` and nothing of it is
+    /// stored; reads, and the revoke of a held key, still work. Unset by
+    /// default: no ceiling. No value is recommended: size it to the disk
+    /// the data directory sits on, leaving room for the index (rebuildable)
+    /// and the server's other stores. Storage pressure is relieved by
+    /// refusing writes, never by pruning history.
+    #[serde(default)]
+    pub max_stored_bytes: Option<NonZeroU64>,
+
+    /// Seconds a client may take to send a request's headers before the
+    /// connection is dropped.
+    pub header_read_timeout_secs: NonZeroU64,
+
+    /// Seconds a whole exchange may take, from the request's first byte to
+    /// the response's last byte delivered. A handler still running at the
+    /// limit is answered `408`; a client that drips its request or its read
+    /// of the response is cut off a second later.
+    pub request_timeout_secs: NonZeroU64,
+
+    /// Seconds a connection may sit with no byte read or written, a
+    /// keep-alive between requests included, before it is closed.
+    pub idle_timeout_secs: NonZeroU64,
+
+    /// The most connections served at once. At the cap the server stops
+    /// accepting, so a new client waits in the kernel's accept queue until
+    /// a connection ends. Unset, it is the cores available times 512, as
+    /// nginx's `worker_processes auto` times its 512 `worker_connections`.
+    #[serde(default)]
+    pub max_connections: Option<NonZeroU64>,
 }
 
-/// The expected upstream-authority signing identity for witness-mode sync
-/// (`ServerConfig::authority_identity`).
-///
-/// Verifiable key material -- `alg` names the signature algorithm and
-/// `pub_key` is the raw public key `coz::verify_json` checks the patch
-/// envelope's signature against. A bare thumbprint is deliberately NOT
-/// sufficient: it identifies a key but cannot verify a signature. Mirrors
-/// the `alg`/`pub` wire shape of [`crate::revoke::DisclosedKey`].
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
-pub struct AuthorityIdentity {
-    /// The authority's signature algorithm (e.g. `Ed25519`).
-    pub alg: String,
-    /// The authority's public key bytes (base64url in JSON, wire field `pub`).
-    #[serde(rename = "pub", with = "coz::b64")]
-    pub pub_key: Vec<u8>,
+impl LimitsConfig {
+    /// The connection cap in force: the configured one, else the cores
+    /// available times 512.
+    #[must_use]
+    pub fn max_connections(&self) -> usize {
+        self.max_connections.map_or_else(
+            || std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get) * 512,
+            |n| usize::try_from(n.get()).unwrap_or(usize::MAX),
+        )
+    }
 }
 
 /// A token-bucket rate: `per_second` cells replenished each second, up to a
 /// `burst` capacity. Deserialized from a `{ per_second = N, burst = N }`
 /// inline TOML table.
 ///
-/// Unlike `max_body_bytes = 0` / `count_quota = 0` (rejected loudly at
-/// startup by `resolve_config` -- a zero there silently bricks every request
-/// or every principal's first commit), a `0` here is deliberately clamped to
+/// Unlike the `NonZeroU64` caps above (a zero there silently bricks every
+/// request or every principal's first commit, so it fails to deserialize), a
+/// `0` here is deliberately clamped to
 /// the tightest live bucket rather than rejected: see `rate_limit`'s
 /// `quota()` for the clamp and its rationale. A misconfigured rate stays
 /// functional (merely very strict) rather than bricking writes, so it is
 /// loosened, not refused.
 #[derive(Debug, Clone, Copy, serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateBucket {
     /// Sustained replenishment rate in requests per second.
     pub per_second: u32,
     /// Bucket capacity -- the largest instantaneous burst admitted.
     pub burst: u32,
 }
+
+/// The default caps are nonzero literals.
+const NONZERO: &str = "nonzero literal";
 
 impl Default for LimitsConfig {
     fn default() -> Self {
@@ -268,13 +523,19 @@ impl Default for LimitsConfig {
             burst: 100,
         };
         Self {
-            max_body_bytes: 2 * 1024 * 1024,
-            count_quota: 1_000_000,
+            max_body_bytes: NonZeroU64::new(2 * 1024 * 1024).expect(NONZERO),
+            count_quota: NonZeroU64::new(1_000_000).expect(NONZERO),
             per_ip: reads,
             read: reads,
             push: writes,
             login: writes,
             revoke: writes,
+            max_dead_keys: NonZeroU64::new(1_000_000).expect(NONZERO),
+            max_stored_bytes: None,
+            header_read_timeout_secs: NonZeroU64::new(10).expect(NONZERO),
+            request_timeout_secs: NonZeroU64::new(60).expect(NONZERO),
+            idle_timeout_secs: NonZeroU64::new(120).expect(NONZERO),
+            max_connections: None,
         }
     }
 }
@@ -283,8 +544,13 @@ impl Default for LimitsConfig {
 ///
 /// Selected by the `policy` tag of the `[admission]` TOML table. `Open`
 /// (the default) installs no fence at all -- a bare server is permissionless.
+///
+/// Deserialized through [`AdmissionWire`] so that unknown keys are refused
+/// even under `policy = "open"`: serde's internally tagged enums ignore
+/// every key a *unit* variant does not name, which would let a misspelled
+/// `polcy = "invite"` silently fall back to open admission.
 #[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
-#[serde(tag = "policy", rename_all = "lowercase")]
+#[serde(tag = "policy", rename_all = "lowercase", from = "AdmissionWire")]
 pub enum AdmissionConfig {
     /// No admission fence. The layer is absent, not an always-pass
     /// middleware; a new principal may take up residency without a token.
@@ -302,47 +568,107 @@ pub enum AdmissionConfig {
         /// Path to the deployment's `sha256(token)` hex-line file.
         tokens_path: PathBuf,
     },
+}
 
-    /// Stateless proof-of-work admission. A new-principal genesis push must
-    /// carry an `X-Cyphr-Pow` nonce whose `blake3` hashcash, bound to the
-    /// principal id and the current UTC-hour window, clears `difficulty`
-    /// leading zero bits (see `admission`). No server state, no challenge
-    /// endpoint -- the server verifies with a single hash.
-    Pow {
-        /// Target difficulty in leading zero *bits* of the hashcash digest.
-        #[serde(default)]
-        difficulty: u32,
-    },
+/// Strict wire shape of [`AdmissionConfig`]: `Open` is a field-less struct
+/// variant here so `deny_unknown_fields` applies to it.
+#[derive(Deserialize)]
+#[serde(tag = "policy", rename_all = "lowercase", deny_unknown_fields)]
+enum AdmissionWire {
+    Open {},
+    Invite { tokens_path: PathBuf },
+}
+
+impl From<AdmissionWire> for AdmissionConfig {
+    fn from(wire: AdmissionWire) -> Self {
+        match wire {
+            AdmissionWire::Open {} => Self::Open,
+            AdmissionWire::Invite { tokens_path } => Self::Invite { tokens_path },
+        }
+    }
 }
 
 impl ServerConfig {
-    /// True when this config is a witness pointed at an authority but has no
-    /// [`AuthorityIdentity`] to verify its `/patch` responses against -- the
-    /// sync channel is fully unauthenticated (K10 disabled). Not
-    /// attacker-influenced (deployment configuration only, and
-    /// `authority_identity` has no CLI/env override -- TOML only), so this
-    /// is a deployment-safety gap rather than an attack: the fully
-    /// unauthenticated path is a deliberate, documented backward-compatible
-    /// mode (see `crate::sync`), not one this refuses to start -- it is
-    /// surfaced as a loud, explicit warning instead.
-    pub fn witness_authenticated_channel_unconfigured(&self) -> bool {
-        self.mode == ServerMode::Witness
-            && self.authority_url.is_some()
-            && self.authority_identity.is_none()
+    /// Settings that start a server which can do nothing useful, said at
+    /// start rather than discovered by a silent run.
+    #[must_use]
+    pub fn startup_warnings(&self) -> Vec<&'static str> {
+        let mut warnings = Vec::new();
+        if self.mode == ServerMode::Witness && self.gossip.peers.is_empty() {
+            warnings.push(
+                "witness mode with no upstream: `[gossip] peers` is empty, so this witness has \
+                 nothing to witness",
+            );
+        }
+        if self.audience.is_some() && self.signing_key_path.is_none() {
+            warnings.push(
+                "an audience is set but there is no signing key: the server accepts no logins \
+                 without one (set `signing_key_path`)",
+            );
+        }
+        warnings
     }
+
+    /// Whether a read of a principal this server does not hold fetches it
+    /// from the peers: the setting when given, else the mode's default
+    /// (a witness does, a service does not).
+    #[must_use]
+    pub fn fetches_on_read(&self) -> bool {
+        self.gossip
+            .fetch_on_read
+            .unwrap_or(self.mode == ServerMode::Witness)
+    }
+
+    /// The `record/` subtree: every store the server was told and cannot
+    /// recover if lost (ADR-0002 Decision 1). Every durable-store
+    /// construction site under `record/` joins onto this, so the grouping
+    /// has exactly one place asserting where `record/` sits.
+    pub fn record_dir(&self) -> PathBuf {
+        self.data_dir.join(RECORD_DIR_NAME)
+    }
+
+    /// The blob database's path -- coz blobs, commit manifests, and every
+    /// principal's EML commit-tree keyspaces (ADR-0002 Decision 1, 6: the
+    /// EML commit tree is record data, not a derived projection).
+    pub fn blobs_dir(&self) -> PathBuf {
+        self.record_dir().join("blobs")
+    }
+
+    /// The index database's path -- the sole derived-class member
+    /// (ADR-0002 Decision 1, 6). Unchanged by the `record/` regroup: it
+    /// stays a direct sibling of `record/`, the only directory an operator
+    /// may ever `rm -rf`.
+    pub fn index_dir(&self) -> PathBuf {
+        self.data_dir.join("index")
+    }
+}
+
+/// The `record/` subtree's directory name (ADR-0002 Decision 1) -- the
+/// single spelling every construction site under `record/` joins onto,
+/// shared with [`crate::auth::principal`] which builds its own sidecar
+/// path from a bare `data_dir` rather than a [`ServerConfig`].
+pub const RECORD_DIR_NAME: &str = "record";
+
+/// The longest a login session may live: an hour.
+pub const MAX_SESSION_TTL_SECS: i64 = 60 * 60;
+
+fn default_session_ttl_secs() -> i64 {
+    cyphr_net::login::DEFAULT_SESSION_TTL_SECS
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen: "127.0.0.1:3000".into(),
+            transport_listen: None,
             data_dir: PathBuf::from("./data"),
             log_format: LogFormat::Pretty,
-            mode: ServerMode::Authority,
+            mode: ServerMode::Service,
             signing_key_path: None,
             audience: None,
-            authority_url: None,
-            authority_identity: None,
+            session_ttl_secs: default_session_ttl_secs(),
+            allow_cleartext_upstream: false,
+            gossip: GossipConfig::default(),
             admission: AdmissionConfig::default(),
             limits: LimitsConfig::default(),
         }
@@ -363,9 +689,11 @@ pub enum LogFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ServerMode {
-    /// Accept and validate writes (`/push`).
-    Authority,
-    /// Read-only API; sync from a configured authority.
+    /// Accept and validate principals' writes (`/push`): third-party
+    /// service storage (SPEC 16.2). The default.
+    Service,
+    /// Refuse writes; keep copies of principals' state and follow the
+    /// configured peers through gossip (SPEC 2.2.14).
     Witness,
 }
 
@@ -385,45 +713,50 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
     // Layer 1: compiled defaults.
     let mut figment = Figment::new().merge(Serialized::defaults(ServerConfig::default()));
 
-    // Layer 2: TOML config file (if it exists).
-    if cli.config.exists() {
-        figment = figment.merge(Toml::file(&cli.config));
+    // Layer 2: TOML config file. One the operator named must exist: a
+    // typo'd path otherwise runs the server on defaults and says nothing.
+    match &cli.config {
+        Some(path) if !path.exists() => {
+            return Err(ConfigError::MissingConfigFile(path.clone()));
+        },
+        Some(path) => figment = figment.merge(Toml::file(path)),
+        None if Path::new(DEFAULT_CONFIG_FILE).exists() => {
+            figment = figment.merge(Toml::file(DEFAULT_CONFIG_FILE));
+        },
+        None => {},
     }
 
     let mut config: ServerConfig = figment
         .extract()
         .map_err(|e| ConfigError::Figment(Box::new(e)))?;
 
-    // A pow difficulty of 0 makes every well-formed nonce admit (the
-    // anti-Sybil fence is silently disabled); a difficulty above the
-    // blake3 digest's 256 bits is unsatisfiable by any nonce (new-principal
-    // onboarding is silently and permanently closed). `#[serde(default)]`
-    // on `difficulty` means an operator who omits it from the TOML table
-    // gets 0 with no error, so this must be checked explicitly rather than
-    // relying on deserialization to catch it.
-    if let AdmissionConfig::Pow { difficulty } = config.admission {
-        if difficulty == 0 || difficulty > 256 {
-            return Err(ConfigError::PowDifficultyInvalid(difficulty));
+    // Layers 3-4: env → CLI (clap resolves CLI > env internally).
+    if let Command::RotateKey(ref args) = cli.command {
+        if let Some(ref data_dir) = args.data_dir {
+            config.data_dir = data_dir.clone();
+        }
+        if let Some(ref signing_key_path) = args.signing_key_path {
+            config.signing_key_path = Some(signing_key_path.clone());
         }
     }
-
-    // The same silent-brick class as a zero pow difficulty: `#[serde(default)]`
-    // on every `[limits]` field means an operator who writes (or omits, then
-    // overrides with) `max_body_bytes = 0` gets a server that refuses every
-    // request body, and `count_quota = 0` gets a server that refuses every
-    // principal's first commit -- both with no deserialization error, so both
-    // must be checked explicitly here.
-    if config.limits.max_body_bytes == 0 {
-        return Err(ConfigError::LimitsMaxBodyBytesZero);
+    if let Command::Backup { ref ops, .. }
+    | Command::Restore { ref ops, .. }
+    | Command::Export { ref ops, .. }
+    | Command::VerifyAll { ref ops } = cli.command
+    {
+        if let Some(ref data_dir) = ops.data_dir {
+            config.data_dir = data_dir.clone();
+        }
+        if let Some(ref signing_key_path) = ops.signing_key_path {
+            config.signing_key_path = Some(signing_key_path.clone());
+        }
     }
-    if config.limits.count_quota == 0 {
-        return Err(ConfigError::LimitsCountQuotaZero);
-    }
-
-    // Layers 3-4: env → CLI (clap resolves CLI > env internally).
     if let Command::Serve(ref args) = cli.command {
         if let Some(ref listen) = args.listen {
             config.listen = listen.clone();
+        }
+        if let Some(ref transport_listen) = args.transport_listen {
+            config.transport_listen = Some(transport_listen.clone());
         }
         if let Some(ref data_dir) = args.data_dir {
             config.data_dir = data_dir.clone();
@@ -440,25 +773,48 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         if let Some(ref audience) = args.audience {
             config.audience = Some(audience.clone());
         }
-        if let Some(ref authority_url) = args.authority_url {
-            config.authority_url = Some(authority_url.clone());
+        if let Some(ttl) = args.session_ttl_secs {
+            config.session_ttl_secs = ttl;
+        }
+        if !args.gossip_peers.is_empty() {
+            config.gossip.peers = args
+                .gossip_peers
+                .iter()
+                .cloned()
+                .map(PeerEntry::Url)
+                .collect();
+        }
+        if let Some(on) = args.gossip_fetch_on_read {
+            config.gossip.fetch_on_read = Some(on);
+        }
+        if let Some(interval) = args.gossip_interval_secs {
+            config.gossip.interval_secs = interval;
+        }
+        if args.allow_cleartext_upstream {
+            config.allow_cleartext_upstream = true;
         }
     }
 
-    // Deployment-safety warning, not a refusal to start (see
-    // `witness_authenticated_channel_unconfigured`'s doc): `eprintln!`
-    // rather than `tracing::warn!` because this runs before
-    // `logging::init_tracing` (see `main.rs`), so a tracing event here could
-    // be silently dropped by the default no-op subscriber -- this must reach
-    // an operator regardless of log configuration.
-    if config.witness_authenticated_channel_unconfigured() {
-        eprintln!(
-            "WARNING: witness mode is configured with an authority_url but no \
-             [authority_identity] -- the sync channel is UNAUTHENTICATED (K10 disabled). An \
-             on-path party can forge, withhold, or substitute /patch entries with no \
-             verification. Configure an [authority_identity] table (alg + pub) in the TOML config \
-             file to enable the authenticated channel."
-        );
+    // An upstream the server would dial in cleartext is refused here, at
+    // startup, rather than discovered as a stalled sync.
+    if config.gossip.interval_secs == 0 {
+        return Err(ConfigError::GossipIntervalZero);
+    }
+    for url in config.gossip.peers.iter().map(PeerEntry::url) {
+        cyphr_net::HttpConnector::check_url(url, config.allow_cleartext_upstream).map_err(
+            |source| match source {
+                cyphr_net::ConnectError::CleartextRefused { host } => {
+                    ConfigError::CleartextUpstream {
+                        url: url.to_owned(),
+                        host,
+                    }
+                },
+                other => ConfigError::UpstreamUrl {
+                    url: url.to_owned(),
+                    reason: other.to_string(),
+                },
+            },
+        )?;
     }
 
     Ok(config)
@@ -467,45 +823,41 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
 /// Configuration errors.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// A configuration file named with `--config` does not exist.
+    #[error("configuration file {} does not exist", .0.display())]
+    MissingConfigFile(PathBuf),
+
     /// Figment extraction failed (bad TOML, type mismatch, etc.).
     #[error("configuration: {0}")]
     Figment(Box<figment::Error>),
 
-    /// `mode = "witness"` was configured for `serve`, but witness mode has
-    /// no enforcement anywhere in the server yet.
-    #[allow(dead_code)]
+    /// A gossip peer is plain
+    /// `http://` to a host that is not loopback.
     #[error(
-        "witness mode is not yet implemented -- no route or handler enforces \
-         read-only/sync-from-authority behavior; use mode = \"authority\" (the default)"
+        "upstream {url} is plain http to non-loopback host `{host}`: a tip report or patch could \
+         be rewritten in transit; use https, or set `allow_cleartext_upstream = true` \
+         (--allow-cleartext-upstream) to accept that"
     )]
-    WitnessModeUnimplemented,
+    CleartextUpstream {
+        /// The configured URL.
+        url: String,
+        /// The host it names.
+        host: String,
+    },
 
-    /// `[admission] policy = "pow"` was configured with a `difficulty` outside
-    /// the satisfiable range: 0 (every nonce admits -- the anti-Sybil fence is
-    /// silently off) or greater than 256 (no nonce can ever clear a blake3
-    /// digest's 256 bits -- new-principal onboarding is silently and
-    /// permanently closed).
-    #[error(
-        "admission pow difficulty {0} is invalid -- must be in 1..=256 leading zero bits (0 \
-         admits every nonce; blake3 digests are only 256 bits, so >256 admits none)"
-    )]
-    PowDifficultyInvalid(u32),
+    /// An upstream URL is not a usable `http(s)://host` URL.
+    #[error("upstream {url} is not usable: {reason}")]
+    UpstreamUrl {
+        /// The configured URL.
+        url: String,
+        /// Why it cannot be used.
+        reason: String,
+    },
 
-    /// `[limits] max_body_bytes = 0` was configured, which refuses every
-    /// request body before any handler runs.
-    #[error(
-        "limits.max_body_bytes is 0 -- this refuses every request body; set it to the intended \
-         cap in bytes (the default is 2 MiB)"
-    )]
-    LimitsMaxBodyBytesZero,
-
-    /// `[limits] count_quota = 0` was configured, which refuses every
-    /// principal's first commit.
-    #[error(
-        "limits.count_quota is 0 -- this refuses every principal's first commit; set it to the \
-         intended per-principal commit cap"
-    )]
-    LimitsCountQuotaZero,
+    /// `[gossip] interval_secs = 0` was configured, which would spin the
+    /// gossip loop.
+    #[error("gossip.interval_secs is 0 -- set it to the seconds between gossip rounds")]
+    GossipIntervalZero,
 }
 
 #[cfg(test)]
@@ -516,46 +868,24 @@ mod tests {
         Cli::try_parse_from(args).expect("valid CLI args")
     }
 
-    #[test]
-    fn serve_with_witness_mode_starts() {
-        let cli = parse(&["cyphr-server", "serve", "--mode", "witness"]);
-        let config =
-            resolve_config(&cli).expect("witness mode configuration MUST resolve successfully");
-        assert_eq!(config.mode, ServerMode::Witness);
+    /// An empty configuration file in `dir`, so a test resolves from flags
+    /// and defaults whatever the working directory holds.
+    fn empty_config(dir: &tempfile::TempDir) -> String {
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").expect("write config");
+        path.to_str().expect("utf-8 path").to_owned()
     }
 
-    #[test]
-    fn serve_with_authority_mode_succeeds() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-            "--mode",
-            "authority",
-        ]);
-        let config = resolve_config(&cli).expect("authority mode must resolve successfully");
-        assert_eq!(config.mode, ServerMode::Authority);
-    }
-
-    #[test]
-    fn serve_without_signing_key_flag_leaves_it_unset() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-        ]);
-        let config = resolve_config(&cli).expect("resolve succeeds");
-        assert_eq!(config.signing_key_path, None);
-    }
-
+    /// Backs: operator-visible `--signing-key` flag reaches `ServerConfig` (a keyed server is only
+    /// reachable via it). Unit: `serve()` boots a socket; the CLI-to-config resolution is a pure
+    /// function.
     #[test]
     fn serve_with_signing_key_flag_resolves_the_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
         let cli = parse(&[
             "cyphr-server",
             "--config",
-            "/nonexistent-config-for-test.toml",
+            &empty_config(&dir),
             "serve",
             "--signing-key-path",
             "/etc/cyphr/signing-key.json",
@@ -567,12 +897,15 @@ mod tests {
         );
     }
 
+    /// Backs: operator-visible `--audience` flag reaches `ServerConfig` (sign-on audience binding,
+    /// SPEC 17.2). Unit: `serve()` boots a socket; the CLI-to-config resolution is a pure function.
     #[test]
     fn serve_with_audience_flag_resolves_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
         let cli = parse(&[
             "cyphr-server",
             "--config",
-            "/nonexistent-config-for-test.toml",
+            &empty_config(&dir),
             "serve",
             "--audience",
             "cyphr.me",
@@ -581,30 +914,23 @@ mod tests {
         assert_eq!(config.audience, Some("cyphr.me".to_string()));
     }
 
+    /// Regression: `--config` naming a file that does not exist was
+    /// ignored, so a typo'd path ran the server on compiled defaults with
+    /// no word of it. Red if a missing named file resolves.
     #[test]
-    fn serve_without_audience_flag_leaves_it_unset() {
+    fn a_named_config_file_that_does_not_exist_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("typo.toml");
         let cli = parse(&[
             "cyphr-server",
             "--config",
-            "/nonexistent-config-for-test.toml",
+            missing.to_str().expect("utf-8"),
             "serve",
         ]);
-        let config = resolve_config(&cli).expect("resolve succeeds");
-        assert_eq!(config.audience, None);
-    }
-
-    #[test]
-    fn serve_with_default_mode_succeeds() {
-        // No --mode flag at all: falls back to the compiled default
-        // (Authority), which must not be rejected.
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-        ]);
-        let config = resolve_config(&cli).expect("default mode must resolve successfully");
-        assert_eq!(config.mode, ServerMode::Authority);
+        assert!(matches!(
+            resolve_config(&cli),
+            Err(ConfigError::MissingConfigFile(path)) if path == missing
+        ));
     }
 
     /// Build a `Cli` for `serve` pointing at a TOML file carrying the given
@@ -613,202 +939,68 @@ mod tests {
         let config_path = tmp.join("cyphr-server.toml");
         std::fs::write(&config_path, admission_table).expect("write config");
         Cli {
-            config: config_path,
+            config: Some(config_path),
             command: Command::Serve(ServeArgs {
                 listen: None,
+                transport_listen: None,
                 data_dir: None,
                 log_format: None,
                 mode: None,
                 signing_key_path: None,
                 audience: None,
-                authority_url: None,
+                session_ttl_secs: None,
+                gossip_peers: Vec::new(),
+                gossip_interval_secs: None,
+                gossip_fetch_on_read: None,
+                allow_cleartext_upstream: false,
             }),
         }
     }
 
+    /// Proof-of-work admission was removed; a deployment config still naming
+    /// it must fail loudly at resolution, never fall back to another policy
+    /// (which would silently change who may take up residency). Scenario:
+    /// the operator's stale config file against the current binary.
     #[test]
-    fn pow_difficulty_zero_is_rejected() {
-        // `#[serde(default)]` on `difficulty` means omitting it -- or writing
-        // it explicitly -- as 0 must not silently disable the anti-Sybil
-        // fence (leading_zero_bits(..) >= 0 is always true).
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cli = parse_with_admission_table(tmp.path(), "[admission]\npolicy = \"pow\"\n");
-        let result = resolve_config(&cli);
-        assert!(
-            matches!(result, Err(ConfigError::PowDifficultyInvalid(0))),
-            "an omitted (default-0) pow difficulty must be rejected, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn pow_difficulty_above_256_is_rejected() {
-        // blake3 digests are 256 bits; a difficulty above that is
-        // unsatisfiable by any nonce -- a silent, permanent onboarding outage.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cli = parse_with_admission_table(
-            tmp.path(),
-            "[admission]\npolicy = \"pow\"\ndifficulty = 300\n",
-        );
-        let result = resolve_config(&cli);
-        assert!(
-            matches!(result, Err(ConfigError::PowDifficultyInvalid(300))),
-            "a pow difficulty above 256 must be rejected, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn pow_difficulty_in_valid_range_resolves() {
+    fn removed_pow_policy_is_a_config_error() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cli = parse_with_admission_table(
             tmp.path(),
             "[admission]\npolicy = \"pow\"\ndifficulty = 18\n",
         );
-        let config =
-            resolve_config(&cli).expect("a pow difficulty within 1..=256 must resolve cleanly");
-        assert!(
-            matches!(config.admission, AdmissionConfig::Pow { difficulty } if difficulty == 18),
-            "must resolve to AdmissionConfig::Pow carrying the configured difficulty, got: {:?}",
-            config.admission
-        );
-    }
-
-    /// A `max_body_bytes` of 0 refuses every request body, silently bricking
-    /// all writes (and reads with a body). Like the pow-difficulty zero case,
-    /// serde happily deserializes it, so `resolve_config` must reject it
-    /// explicitly (see `ConfigError::LimitsMaxBodyBytesZero`).
-    #[test]
-    fn limits_max_body_bytes_zero_is_rejected() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cli = parse_with_admission_table(tmp.path(), "[limits]\nmax_body_bytes = 0\n");
         let result = resolve_config(&cli);
         assert!(
-            result.is_err(),
-            "a limits max_body_bytes of 0 (which refuses every body) must be rejected at \
-             resolution, got: {result:?}"
+            matches!(&result, Err(ConfigError::Figment(e)) if e.to_string().contains("pow")),
+            "a config naming the removed pow policy must be a typed config error, got: {result:?}"
         );
     }
 
-    /// A `count_quota` of 0 refuses every principal's first commit, silently
-    /// bricking all writes; it must be rejected at `resolve_config` exactly as
-    /// the zero body cap is (see `ConfigError::LimitsCountQuotaZero`).
+    /// The `[gossip]` table takes a peer as a URL or as `{ url, pg }`, and
+    /// the mode sets whether a read fetches (on for a witness, off for a
+    /// service) unless `fetch_on_read` says otherwise. Scenario: an
+    /// operator's TOML file resolved against each mode.
     #[test]
-    fn limits_count_quota_zero_is_rejected() {
+    fn peers_are_urls_or_pinned_tables_and_the_mode_sets_fetch_on_read() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let cli = parse_with_admission_table(tmp.path(), "[limits]\ncount_quota = 0\n");
-        let result = resolve_config(&cli);
-        assert!(
-            result.is_err(),
-            "a limits count_quota of 0 (which refuses every principal's first commit) must be \
-             rejected at resolution, got: {result:?}"
+        let pg = format!("SHA-512:{}", "A".repeat(86));
+        let peers = format!(
+            "peers = [\"http://127.0.0.1:1\", {{ url = \"http://127.0.0.1:2\", pg = \"{pg}\" }}]"
         );
-    }
-
-    /// GUARD (green today and after): a `[limits]` table with non-zero caps
-    /// resolves cleanly -- the zero-rejection must reject ONLY the degenerate
-    /// values, never a valid configuration.
-    #[test]
-    fn limits_valid_values_resolve_ok() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cli = parse_with_admission_table(
-            tmp.path(),
-            "[limits]\nmax_body_bytes = 1048576\ncount_quota = 500\n",
-        );
-        let config = resolve_config(&cli).expect("a valid [limits] table must resolve cleanly");
-        assert_eq!(config.limits.max_body_bytes, 1_048_576);
-        assert_eq!(config.limits.count_quota, 500);
-    }
-
-    /// A witness pointed at an authority with no `[authority_identity]` is
-    /// the fully unauthenticated (K10-disabled) sync path -- a deliberate,
-    /// documented backward-compatible mode, so `resolve_config` must still
-    /// succeed (this is a warning, not a refusal to start), but the gap
-    /// must be DETECTED so `main` can surface it loudly.
-    #[test]
-    fn witness_with_authority_url_and_no_identity_resolves_but_is_flagged() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-            "--mode",
-            "witness",
-            "--authority-url",
-            "http://127.0.0.1:1",
-        ]);
-        let config = resolve_config(&cli)
-            .expect("an unauthenticated witness sync path must not be refused at startup");
-        assert!(
-            config.witness_authenticated_channel_unconfigured(),
-            "a witness with authority_url set and no authority_identity must be flagged"
-        );
-    }
-
-    /// GUARD: a witness with no `authority_url` at all (never syncs) must
-    /// not be flagged -- there is no channel to leave unauthenticated.
-    #[test]
-    fn witness_with_no_authority_url_is_not_flagged() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-            "--mode",
-            "witness",
-        ]);
-        let config = resolve_config(&cli).expect("witness mode with no authority_url resolves");
-        assert!(
-            !config.witness_authenticated_channel_unconfigured(),
-            "a witness with no authority_url configured has no channel to flag"
-        );
-    }
-
-    /// GUARD: `Authority` mode is never flagged, regardless of the other
-    /// fields -- the check is witness-specific. `authority_url` is set
-    /// here to the SAME value the flagged fixture
-    /// (`witness_with_authority_url_and_no_identity_resolves_but_is_flagged`)
-    /// uses, so `mode` is the only field differing between the two -- with
-    /// `authority_url` left at its default `None`, clause 2
-    /// (`authority_url.is_some()`) was already false on its own, so this
-    /// guard never exercised the `mode` clause it is named for.
-    #[test]
-    fn authority_mode_is_never_flagged() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-            "--mode",
-            "authority",
-            "--authority-url",
-            "http://127.0.0.1:1",
-        ]);
-        let config = resolve_config(&cli).expect("authority mode resolves");
-        assert!(!config.witness_authenticated_channel_unconfigured());
-    }
-
-    /// GUARD: a witness with a correctly configured `authority_identity`
-    /// must NOT be flagged -- nothing else pinned that a correctly
-    /// configured K10 witness avoids the `UNAUTHENTICATED` startup warning
-    /// (`resolve_config`'s `eprintln!`); the other three tests each hold
-    /// `authority_identity` at its default `None`, so clause 3
-    /// (`authority_identity.is_none()`) was unexercised by every one of
-    /// them. `authority_identity` has no CLI/env override (TOML only), so
-    /// this constructs the resolved config directly rather than via `parse`.
-    #[test]
-    fn witness_with_configured_identity_is_not_flagged() {
-        let config = ServerConfig {
-            mode: ServerMode::Witness,
-            authority_url: Some("http://127.0.0.1:1".to_string()),
-            authority_identity: Some(AuthorityIdentity {
-                alg: "Ed25519".to_string(),
-                pub_key: vec![0u8; 32],
-            }),
-            ..Default::default()
+        let resolve = |top: &str, gossip: &str| {
+            let toml = format!("{top}\n[gossip]\n{gossip}\n{peers}\n");
+            resolve_config(&parse_with_admission_table(tmp.path(), &toml)).expect("resolves")
         };
-        assert!(
-            !config.witness_authenticated_channel_unconfigured(),
-            "a witness with a configured authority_identity has an authenticated channel and must \
-             not be flagged as unauthenticated"
+
+        let service = resolve("", "");
+        assert_eq!(service.gossip.peers[0].pg(), None);
+        assert_eq!(
+            service.gossip.peers[1].pg().map(ToString::to_string),
+            Some(pg.clone())
         );
+        assert_eq!(service.gossip.peers[1].url(), "http://127.0.0.1:2");
+        assert!(!service.fetches_on_read());
+        assert!(resolve("mode = \"witness\"", "").fetches_on_read());
+        assert!(!resolve("mode = \"witness\"", "fetch_on_read = false").fetches_on_read());
+        assert!(resolve("", "fetch_on_read = true").fetches_on_read());
     }
 }

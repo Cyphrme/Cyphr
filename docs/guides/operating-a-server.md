@@ -19,12 +19,15 @@ This guide covers standing one up, every knob it has, what it refuses and
 why, what to back up, and what it will not tell you that you might expect it
 to.
 
+For the routes themselves (parameters, response shapes, status codes), see
+the [HTTP API reference](../reference/http-api.md).
+
 ## Terms
 
 | Term      | What it is                                                                                           |
 | :-------- | :--------------------------------------------------------------------------------------------------- |
 | Principal | A user's identity: a chain of commits adding and revoking keys over time. Not a key — a key history. |
-| `pr`      | The identifier the server files a principal under.                                                   |
+| `pr`      | The principal's identifier, derived from its genesis keys.                                           |
 | PG        | Principal Genesis. Your server's own stable identifier, derived from its signing key.                |
 | Tier      | What the server declares itself to be at `GET /server`: `attestor`, `repository`, or `witness`.      |
 | Admission | The gate on a brand-new principal taking up residency. Off by default.                               |
@@ -46,7 +49,7 @@ listening on 127.0.0.1:3000
 That line goes to stdout and everything else goes to stderr, so a supervisor
 that wants to know the real port when you asked for `:0` can read it without
 parsing logs. The defaults if you pass nothing at all are
-`127.0.0.1:3000`, `./data`, pretty logs, and authority mode.
+`127.0.0.1:3000`, `./data`, pretty logs, and service mode.
 
 This server holds no key. It stores and serves commits, signs nothing, and
 declares itself accordingly:
@@ -84,6 +87,7 @@ without padding over raw key bytes:
 
 ```json
 {
+  "v": 1,
   "alg": "Ed25519",
   "pub_key": "y1xCqdKo0nTUHXpOnKOpw44VbKB9lvPmphkVULNnQbw",
   "prv_key": "4jl-rNm5WGFSDHTQM3cHmB5lVVs_eGzYFpmsOddUEno"
@@ -97,6 +101,7 @@ const crypto = require("crypto");
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 console.log(
   JSON.stringify({
+    v: 1,
     alg: "Ed25519",
     pub_key: publicKey
       .export({ format: "der", type: "spki" })
@@ -119,7 +124,9 @@ unkeyed because of a typo would stop issuing logins with no signal.
 Configuration merges from four layers, each overriding the one below: CLI
 flags, then `CYPHR_*` environment variables, then a TOML file, then compiled
 defaults. The TOML file is `./cyphr-server.toml` unless `--config` names
-another, and a missing file is not an error.
+another. A file named with `--config` must exist, or the server refuses to start;
+with no `--config`, `./cyphr-server.toml` is read when present and compiled
+defaults apply when it is not.
 
 That default is worth respecting: the file is looked up in the working
 directory, not beside the binary or the data directory, and a stray
@@ -128,28 +135,33 @@ up silently. It is the fastest way to get a server that behaves nothing like
 its command line — the TOML-only settings especially, since no flag can
 override them. Pass `--config` explicitly in anything you automate.
 
-| Setting              | Flag                 | Environment              | What it buys                                                                     |
-| :------------------- | :------------------- | :----------------------- | :------------------------------------------------------------------------------- |
-| `listen`             | `--listen`           | `CYPHR_LISTEN`           | Bind address. `:0` picks a free port and reports it on stdout.                   |
-| `data_dir`           | `--data-dir`         | `CYPHR_DATA_DIR`         | Where every durable store lives. Locked exclusively while running.               |
-| `signing_key_path`   | `--signing-key-path` | `CYPHR_SIGNING_KEY_PATH` | The key the server signs receipts and tokens with. Absent means keyless.         |
-| `audience`           | `--audience`         | `CYPHR_AUDIENCE`         | The name clients must sign into. Absent means logins are refused.                |
-| `mode`               | `--mode`             | `CYPHR_MODE`             | `authority` (accepts writes) or `witness` (read-only, syncs from an authority).  |
-| `log_format`         | `--log-format`       | `CYPHR_LOG_FORMAT`       | `pretty` for a terminal, `json` for a log pipeline.                              |
-| `authority_url`      | `--authority-url`    | `CYPHR_AUTHORITY_URL`    | The upstream a witness pulls from.                                               |
-| `authority_identity` | —                    | —                        | The upstream's public key, so a witness can verify what it pulls. **TOML only.** |
-| `[admission]`        | —                    | —                        | The gate on new principals. **TOML only.**                                       |
-| `[limits]`           | —                    | —                        | Rate, body size, and commit-count fences. **TOML only.**                         |
+| Setting                    | Flag                                            | Environment                      | What it buys                                                                                                                                                                                                                                               |
+| :------------------------- | :---------------------------------------------- | :------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `listen`                   | `--listen`                                      | `CYPHR_LISTEN`                   | Bind address. `:0` picks a free port and reports it on stdout.                                                                                                                                                                                             |
+| `transport_listen`         | `--transport-listen`                            | `CYPHR_TRANSPORT_LISTEN`         | Bind address for the Noise transport, which authenticates both ends as principals. Off when unset; a keyless server refuses it and keeps serving HTTP.                                                                                                     |
+| `data_dir`                 | `--data-dir`                                    | `CYPHR_DATA_DIR`                 | Where every durable store lives. Locked exclusively while running.                                                                                                                                                                                         |
+| `signing_key_path`         | `--signing-key-path`                            | `CYPHR_SIGNING_KEY_PATH`         | The key the server signs receipts and tokens with. Absent means keyless.                                                                                                                                                                                   |
+| `audience`                 | `--audience`                                    | `CYPHR_AUDIENCE`                 | The name clients must sign into. Absent means logins are refused.                                                                                                                                                                                          |
+| `mode`                     | `--mode`                                        | `CYPHR_MODE`                     | `service` (accepts principals' writes; the default) or `witness` (refuses writes, keeps copies and follows its peers).                                                                                                                                     |
+| `log_format`               | `--log-format`                                  | `CYPHR_LOG_FORMAT`               | `pretty` for a terminal, `json` for a log pipeline.                                                                                                                                                                                                        |
+| `session_ttl_secs`         | `--session-ttl-secs`                            | `CYPHR_SESSION_TTL_SECS`         | Lifetime of a login session's bearer token, in seconds. Default 900 (15 minutes), clamped to `1..=3600`. A session is never extended; the user signs in again.                                                                                             |
+| `allow_cleartext_upstream` | `--allow-cleartext-upstream`                    | `CYPHR_ALLOW_CLEARTEXT_UPSTREAM` | Lets the server dial a non-loopback upstream (a witness's authority, a gossip peer) over plain `http://`. Off by default, because a tip report or a patch could be rewritten in transit; `https://` and loopback never need it.                            |
+| `[gossip] peers`           | `--gossip-peer` (repeatable or comma-separated) | `CYPHR_GOSSIP_PEERS`             | The peers to pull from, each a base URL or, in TOML, a `{ url, pg }` table. The `pg` is the peer's server principal, so its signed tip reports are checked against that chain; it is **TOML only**. Empty keeps gossip off. A flag replaces the TOML list. |
+| `[gossip] interval_secs`   | `--gossip-interval-secs`                        | `CYPHR_GOSSIP_INTERVAL_SECS`     | Seconds between gossip rounds. Default 60. Every round makes a request per peer, so a short interval costs requests even when nothing changed.                                                                                                             |
+| `[gossip] fetch_on_read`   | `--gossip-fetch-on-read`                        | `CYPHR_GOSSIP_FETCH_ON_READ`     | Whether a read of a principal this server does not hold fetches it from the peers. Unset, the mode decides: on for `witness`, off for `service`.                                                                                                           |
+| `[admission]`              | —                                               | —                                | The gate on new principals. **TOML only.**                                                                                                                                                                                                                 |
+| `[limits]`                 | —                                               | —                                | Rate, body size, commit-count, stored-byte and connection-timeout fences. **TOML only.**                                                                                                                                                                   |
 
-The last three have no flag and no environment variable. If you are
+`[admission]` and `[limits]` have no flag and no environment variable, and a
+peer's pinned `pg` is TOML only. If you are
 deploying from a unit file or a container spec that only sets environment,
-the admission policy and every limit are unreachable — you need a config
+the admission policy, every limit and peer pinning are unreachable — you need a config
 file on disk. A full one:
 
 ```toml
 listen = "0.0.0.0:3000"
 data_dir = "/var/lib/cyphr"
-mode = "authority"
+mode = "service"
 log_format = "json"
 signing_key_path = "/etc/cyphr/signing-key.json"
 audience = "login.example.com"
@@ -161,6 +173,11 @@ tokens_path = "/var/lib/cyphr/invites.txt"
 [limits]
 max_body_bytes = 2097152
 count_quota = 1000000
+# max_stored_bytes = 107374182400  # unset by default: no ceiling
+header_read_timeout_secs = 10
+request_timeout_secs = 60
+idle_timeout_secs = 120
+# max_connections = 4096  # unset by default: cores available times 512
 per_ip = { per_second = 100, burst = 200 }
 read = { per_second = 100, burst = 200 }
 push = { per_second = 50, burst = 100 }
@@ -168,21 +185,18 @@ login = { per_second = 50, burst = 100 }
 revoke = { per_second = 50, burst = 100 }
 ```
 
-Three settings are rejected at startup rather than accepted into a broken
+Two settings are rejected at startup rather than accepted into a broken
 server. Each exits 1 before binding a port:
 
 ```
-configuration error: limits.max_body_bytes is 0 -- this refuses every request body; set it to the intended cap in bytes (the default is 2 MiB)
-configuration error: limits.count_quota is 0 -- this refuses every principal's first commit; set it to the intended per-principal commit cap
-configuration error: admission pow difficulty 0 is invalid -- must be in 1..=256 leading zero bits (0 admits every nonce; blake3 digests are only 256 bits, so >256 admits none)
+configuration error: configuration: invalid value signed int `0`, expected a nonzero u64 for key "default.limits.max_body_bytes" in cyphr-server.toml TOML file
+configuration error: configuration: invalid value signed int `0`, expected a nonzero u64 for key "default.limits.count_quota" in cyphr-server.toml TOML file
 ```
 
 Each of those is a value that would silently brick the server rather than
 fail visibly — a zero body cap refuses every request, a zero quota refuses
-every principal's first commit, a zero difficulty turns the anti-spam gate
-into a no-op while looking configured. They are checked because
-`difficulty` and the `[limits]` fields all default when omitted, so
-deserialization alone would not catch them.
+every principal's first commit. Both fields are nonzero integers, so a zero
+fails when the file is read.
 
 A rate bucket of zero is treated differently. It starts, and clamps to the
 tightest live bucket instead:
@@ -223,7 +237,7 @@ curl -s -X POST http://127.0.0.1:3000/auth/challenge
   "v": 1,
   "payload": {
     "error": "this server runs without a signing identity; login is not offered -- see GET /server for the declared capability tier",
-    "now": 1785872456
+    "now": 1795229456
   },
   "statement": { "kind": "unsigned" }
 }
@@ -277,14 +291,13 @@ login with a `500`. Configure both or neither.
 Pick the host your users' clients actually address — `login.example.com`,
 not `Example Inc`.
 
-**Turning on login turns on one permission level, not a model.** Every
-bearer token issued at login carries `["read", "write"]`, unconditionally --
-there is no narrower grant for a client that only needs to read. In
-practice this gates little: `POST /push` is the only route that checks a
-presented token at all, and only to confirm it names the principal being
-written to. Every other route, reads included, takes no token. Setting
-`--audience` is a decision to start issuing tokens, not a decision about
-what those tokens will be trusted to do.
+**Login grants the permissions the integrating service decides.** The
+server grants a login whatever its login policy returns, and none when the
+service supplies no policy. No Cyphr route requires a permission: `POST /push`
+is the only route that checks a presented token at all, and only to confirm
+it names the principal being written to. Setting `--audience` is a decision
+to start issuing tokens, not a decision about what those tokens will be
+trusted to do.
 
 ## What lives in the data directory
 
@@ -292,36 +305,40 @@ After a keyed server has run once:
 
 ```
 data/
-├── blobs/           the commits themselves, and each principal's chain
-├── index/           a derived projection, rebuildable from blobs
-├── observations/    the key death-set
-├── admission/       spent invite tokens (only under policy = "invite")
-└── server-principal.json
+├── record/            what the server was told; irrecoverable if lost
+│   ├── blobs/              the commits themselves, and each principal's
+│   │                       chain (including its EML commit-tree keyspaces
+│   │                       -- record data, not a derived projection), and
+│   │                       the key death-set
+│   ├── admission/          spent invite tokens (policy = "invite" only)
+│   └── server-principal.json
+└── index/             what the server works out, rebuildable from record/
 ```
 
-Each directory is a separate embedded database. The split is not arbitrary
-and it decides your backup policy:
+Each of `blobs/` and `admission/` is a separate embedded database; `server-principal.json` is a plain file. The `record/` / `index/`
+split is not arbitrary and it decides your backup policy: everything under
+`record/` is irrecoverable if lost, and `index/` is the only directory you
+may ever `rm -rf`.
 
-| Path                    | Rebuildable?                  | Lose it and…                                |
-| :---------------------- | :---------------------------- | :------------------------------------------ |
-| `blobs/`                | No — this is the data         | Every principal you host is gone.           |
-| `index/`                | Yes, from `blobs/`            | Nothing, after a rebuild.                   |
-| `observations/`         | No                            | Every key declared dead comes back to life. |
-| `admission/`            | No                            | Every spent invite token becomes reusable.  |
-| `server-principal.json` | By hand, from the signing key | The server will not start. See below.       |
+| Path                           | Rebuildable?                  | Lose it and…                                                                      |
+| :----------------------------- | :---------------------------- | :-------------------------------------------------------------------------------- |
+| `record/blobs/`                | No — this is the data         | Every principal you host is gone, and every key declared dead comes back to life. |
+| `index/`                       | Yes, from `record/`           | Nothing, after a rebuild.                                                         |
+| `record/admission/`            | No                            | Every spent invite token becomes reusable.                                        |
+| `record/server-principal.json` | By hand, from the signing key | The server will not start. See below.                                             |
 
 **The invite tokens file belongs in your backup plan even though it is not
 in this table.** Under `policy = "invite"` it does not have to live inside
 the data directory -- the example above uses `./invites.txt` -- and it is
 not rebuildable. Lose it and every outstanding, unspent invite is dead; the
-`data/admission/` spent-set backs up the tokens already used, not the ones
-still good.
+`data/record/admission/` spent-set backs up the tokens already used, not the
+ones still good.
 
-**`observations/` is separate precisely so a rebuild cannot erase it.** A
-key declared dead by its holder is not recorded on anyone's chain — a naked
-revoke mutates no principal — so if that record lived in the index, the next
-reindex would silently wipe it. Delete the index outright and rebuild it,
-and a key revoked beforehand is still refused afterward.
+**The key death-set lives in `record/blobs/`, not in the index.** A key
+declared dead by its holder is not recorded on anyone's chain — a naked revoke
+mutates no principal — so the engine keeps it in the record store, where a
+rebuild re-verifies it rather than discarding it. Delete the index outright and
+rebuild it, and a key revoked beforehand is still refused afterward.
 
 ```sh
 rm -rf data/index
@@ -340,21 +357,25 @@ curl -s -X POST http://127.0.0.1:3000/push -H 'content-type: application/json' -
 ```json
 {
   "v": 1,
-  "payload": { "error": "push signing key was revoked", "now": 1785872826 },
+  "payload": { "error": "push signing key was revoked", "now": 1795229826 },
   "statement": { "kind": "unsigned" }
 }
 ```
 
-**`server-principal.json` is the file nobody expects to matter.** It holds
-the PG and the genesis key record. Delete it while leaving the blob store
-intact and the server refuses to start:
+**`record/server-principal.json` is the file nobody expects to matter.** It
+holds the PG and the genesis key record. Delete it while leaving the blob
+store intact, and the server refuses to start — but now names the problem:
 
 ```
-ERROR cyphr_server: server exited with error error=server principal storage: protocol: state mismatch
+ERROR cyphr_server: server exited with error error=missing data/record/server-principal.json for an already-established server principal (pg=SHA-512:…); see docs/guides/operating-a-server.md for the recovery procedure
 ```
 
-The message does not name the file, so this reads as a corrupt store when it
-is a missing sidecar. You can rebuild it by hand from two values: the public
+That detection only works before the signing key's first rotation — it
+recomputes the genesis key from the _current_ key to check whether the
+engine already has a chain there, which is the genesis key only pre-rotation.
+After a rotation, a missing sidecar goes undetected: the server assumes a
+fresh boot and creates a second, unrelated principal instead of erring.
+Either way, you rebuild the sidecar by hand from two values: the public
 key, which is `pub_key` in your signing key file, and the genesis
 thumbprint, which is your PG with its hash-algorithm prefix stripped. The
 server cannot tell you the second one — it will not start — so it has to
@@ -380,7 +401,7 @@ case "$ALG" in
 esac
 jq -n --arg pg "$HASH:$TMB" --arg pub "$PUB" --arg tmb "$TMB" --arg alg "$ALG" \
   '{pg:$pg, genesis_key:{alg:$alg, pub_key:$pub, tmb:$tmb, first_seen:0}}' \
-  > data/server-principal.json
+  > data/record/server-principal.json
 ```
 
 That restores the original PG and the server starts, on one condition: the
@@ -396,42 +417,119 @@ true after a rotation.
 **Back up the signing key somewhere other than the data directory.** It is
 the only irreplaceable thing you hold: with it and an empty disk you can
 rebuild a server that clients still recognize, and without it you cannot,
-no matter how complete your `blobs/` backup is.
+no matter how complete your `record/blobs/` backup is.
 
 The store is locked exclusively while the server runs, so a file-level
-backup of a live directory is a copy of a moving target. A second process
-pointed at the same directory refuses to start:
+copy of a live directory is a copy of a moving target. A second process
+pointed at the same directory refuses to start, and so does every offline
+command below:
 
 ```
 ERROR cyphr_server: server exited with error error=FjallError: Locked
 ```
 
-There is no snapshot, dump, or online-backup command. `cyphr-server export`
-appears in `--help` and does not work:
+Four commands work on the data directory of a **stopped** server:
+
+- `cyphr-server backup <dest>` copies `record/` to a directory that does not
+  exist yet. It leaves `index/` behind, since that is derived, and it never
+  copies the signing key; it refuses a key that sits inside the tree it
+  would copy.
+- `cyphr-server restore <from>` replaces `record/` with a backup written by
+  `backup`, and reports the window of commits the restored store lost. The
+  principals re-push to fill it. The record it replaced stays beside it as
+  `record.pre-restore`.
+- `cyphr-server export <out>` writes every stored chain into the directory
+  `<out>`, one file per principal.
+- `cyphr-server verify-all` replays every stored chain from the blob store,
+  exits non-zero and names each chain that fails, and rebuilds the index
+  from the replay.
 
 ```sh
-cyphr-server export "$PR" --data-dir ./data
+cyphr-server backup ./bk1 --data-dir ./data --signing-key-path ./signing-key.json
 ```
 
 ```
-error: export is not yet implemented
+backed up 2 principal(s), 3 commit(s) to ./bk1
 ```
 
-So a consistent backup today means stopping the server, copying the
-directory, and starting it again. Say that out loud when you plan your
-maintenance window, because it is the one operation that needs downtime.
+A restore that loses nothing says so; one that loses commits names them:
+
+```sh
+cyphr-server restore ./bk1 --data-dir ./data
+```
+
+```
+restored; lost window: 1 commit(s) across 1 principal(s); the principals re-push to fill it
+lost SHA-256:vcrqFuL64ktC1B72RBa8lyjo4MY3-MbnQg3WmVMJ2ao: had 3, restored 2
+the replaced record is kept at ./data/record.pre-restore
+```
+
+```sh
+cyphr-server verify-all --data-dir ./data
+```
+
+```
+2 principal(s) replayed, 0 failure(s)
+```
+
+There is no online backup: all four need the server stopped, so a
+consistent backup means stopping it, running `backup`, and starting it
+again. Say that out loud when you plan your maintenance window, because it
+is the one operation that needs downtime. The invite tokens file is not
+inside `record/`, so `backup` does not copy it.
+
+## Rotating the signing key
+
+`rotate-key` replaces the server's signing key without changing its `pg`.
+Stop the server first (it takes the same exclusive lock as `rebuild-index`),
+then run it with the same data directory and key path you serve with:
+
+```sh
+cyphr-server rotate-key --data-dir ./data --signing-key-path ./signing-key.json
+```
+
+```
+rotated SHA-512:Aq8NJWSDFrFsjmcxQjFAZz5hKv4mtQ3u_RU25jX3Vay9sD_FgGs114dOBu4CXU4GfwIhDJfERsYSITvsWFJqHw to key zqeZIhKfFmPpUKqMilLGpOtcRiBDaifZUVC6ZpaIA89Zev_z715qv6SWDo0EuTRuvWm-vSoZZgr58Acx4ozRSw
+```
+
+It generates a new key with the current key's algorithm, extends the
+server's own chain with a `key/replace`, and replaces the file at
+`signing_key_path` in place. The key stays where it was and in the same
+format; nothing new is stored. Clients that follow the chain accept
+statements signed by the new key and refuse ones signed by the retired key.
+Start the server again to sign with the new key.
+
+The command is safe to interrupt. It writes the new key to
+`signing-key.json.next` and syncs it to disk before the chain learns about
+it, then renames that file over `signing-key.json` once the chain has
+committed. If the process dies in between, the next `serve` (or
+`rotate-key`) looks at the leftover `.next` beside the key file: a key the
+stored chain has active is moved into place, and one the chain does not
+know is deleted. Either way the server boots with the key its chain has
+active; you never need to repair the key file by hand.
+
+`<signing-key-path>.next` (here `signing-key.json.next`) is reserved for
+this: the server owns it, creates it owner-only (mode 0600), and deletes
+or renames it at the next `serve` or `rotate-key`. Do not use that name for
+anything else.
+
+`rotate-key` refuses a data directory the server has never booted keyed on:
+start the server once with the key first, stop it, then rotate.
+
+Back up the new key file after a rotation. A backup of the retired key no
+longer matches the chain.
 
 ## Admission: who may create a principal
 
 Admission gates exactly one event — a principal the server has never seen
 taking up residency — and nothing else. An already-resident principal
-pushing its next commit never touches it. There are three policies.
+pushing its next commit never touches it. There are two policies.
 
 **`open` is the default, and it means what it says.** No fence is installed
 at all. Anyone who can reach the port can create principals without limit,
 bounded only by the rate fences and the commit quota. For a public server
-this is a decision, not a default to inherit by not thinking about it: the
-namespace of principal identifiers is first-come-first-served.
+this is a decision, not a default to inherit by not thinking about it:
+anyone can create principals without limit.
 
 **`invite` hands out single-use tokens.**
 
@@ -464,7 +562,7 @@ e06a65d68436b2d63ca8f66c3adc6c1e1a0ca560cf0438e0d35a113756bab7e5
 Start the server before the file exists and it exits:
 
 ```
-ERROR cyphr_server: server exited with error error=reading invite tokens file ./invites.txt: No such file or directory
+ERROR cyphr_server: server exited with error error=reading invite tokens file ./invites.txt: No such file or directory (os error 2)
 ```
 
 A client presents its token in a header. Without one:
@@ -494,56 +592,14 @@ curl -s -X POST http://127.0.0.1:3000/push \
 Three behaviors are worth knowing before you hand tokens to users. Single
 use is enforced durably — the same token on a second, different principal
 is refused, and it is still refused after a restart, because the spent set
-lives in `data/admission/`. A token is only spent on success; a push that
-fails for a protocol reason refunds it. And once a principal is resident,
-its later commits need no token at all, so a token buys a user an identity,
-not a subscription.
+lives in `data/record/admission/`. A token is only spent on success; a push
+that fails for a protocol reason refunds it. And once a principal is
+resident, its later commits need no token at all, so a token buys a user an
+identity, not a subscription.
 
-An `invite` server whose `data/admission/` you restore from an older backup
-un-spends every token issued since. There is no expiry and no revocation
-list; a leaked token is live until someone uses it.
-
-**`pow` asks for proof of work instead of a secret.**
-
-```toml
-[admission]
-policy = "pow"
-difficulty = 20
-```
-
-The refusal echoes the parameters:
-
-```json
-{
-  "v": 1,
-  "payload": {
-    "error": "admission required",
-    "policy": "pow",
-    "difficulty": 20,
-    "window": "utc-hour"
-  },
-  "statement": { "kind": "unsigned" }
-}
-```
-
-The client finds a nonce, sends it as `X-Cyphr-Pow`, and gets its `201`.
-The work binds to one principal identifier and one UTC hour, so a solution
-cannot be amortized: the same nonce presented for a different principal is
-refused. Solutions from the previous hour still verify, so a client that
-solves just before the boundary is not punished; anything older is stale.
-The server holds no state for any of this, and a check costs up to two
-hashes -- one for the current hour and, since a solution from the previous
-hour still verifies, one for that hour too.
-
-**But no shipped client can compute that nonce.** The preimage — a domain
-tag, the principal id length-prefixed, then the hour and nonce as
-little-endian 64-bit integers, hashed with blake3 — is written down in the
-server's source and in the server's own test, and nowhere else. There is no
-client library, no CLI subcommand, and no specification a client author
-could implement from. The `403` tells a client the difficulty but not the
-thing it cannot guess. Turning this policy on today closes new-principal
-onboarding to everyone; `invite` is the policy to reach for until that
-changes.
+An `invite` server whose `data/record/admission/` you restore from an older
+backup un-spends every token issued since. There is no expiry and no
+revocation list; a leaked token is live until someone uses it.
 
 ## The fences
 
@@ -665,8 +721,8 @@ returned.
 
 ## Witness mode
 
-A witness is a read-only replica that pulls state from an upstream
-authority. It refuses every write itself:
+A witness is a read-only replica that pulls state from its
+peers. It refuses every write itself:
 
 ```sh
 curl -s -X POST http://127.0.0.1:3001/push -H 'content-type: application/json' -d @push.json
@@ -677,7 +733,7 @@ curl -s -X POST http://127.0.0.1:3001/push -H 'content-type: application/json' -
   "v": 1,
   "payload": {
     "error": "write operations disabled in witness mode",
-    "now": 1785872708
+    "now": 1795229708
   },
   "statement": { "kind": "unsigned" }
 }
@@ -687,117 +743,81 @@ curl -s -X POST http://127.0.0.1:3001/push -H 'content-type: application/json' -
 rather than by route, so `/revoke` and `/auth/login` are refused on a
 witness too.
 
-Start one by naming its upstream:
+Start one by naming its peers:
 
 ```sh
 cyphr-server serve \
   --listen 127.0.0.1:3001 \
   --data-dir ./witness-data \
   --mode witness \
-  --authority-url http://127.0.0.1:3000
+  --gossip-peer http://127.0.0.1:3000
 ```
 
-**Sync is pull-on-read, not a background loop.** A witness fetches a
-principal's delta when someone asks it for that principal — `GET /tip` or
-`GET /patch` triggers the fetch, applies what verifies, and then answers
-from local state. There is no poller and no schedule. A principal nobody
-asks about is never synced, and the first read after an upstream change
-pays the latency of the fetch.
+**A witness follows its peers two ways.** The gossip timer (`gossip_interval_secs`,
+sixty seconds by default) pulls every principal the witness holds from every
+peer, as it does on a service. And a read of a principal the witness does
+not hold fetches it from the peers, in order, from genesis, and applies what
+verifies before answering (`fetch_on_read`, on by default for a witness and
+off for a service; set it in `[gossip]` to override the mode). A principal
+the witness already holds is refreshed by the timer, not by the read, so its
+answer can be up to one gossip interval old.
 
-Each entry is validated in memory against the ordinary storage rules before
-anything is persisted, and each entry stands on its own: one that fails to
-decode or fails verification is skipped and counted, and the sync moves to
-the next. That is deliberate. Aborting the whole response on the first bad
-entry would make every genuine entry behind it permanently unreachable — a
-witness keeps no progress marker, so the next read would refetch the same
-response and fail on the same entry, forever.
+Each commit is validated in memory against the ordinary storage rules before
+anything is persisted, and each stands on its own: one that fails to decode or
+fails verification is skipped, and the fetch moves to the next. That is
+deliberate. Aborting the whole response on the first bad entry would make
+every genuine entry behind it permanently unreachable.
 
 The consequence is that **a witness can end up partially applied.** Nothing
-unverifiable is ever persisted; every entry that lands passed the same
-chain checks a direct push would. But the witness can be left short of the
-authority's tip, and `GET /tip` serves whatever it holds without saying so.
-The counts are in the log, at `cyphr_server=debug`: a
-`witness sync applied entries` line carrying the principal alongside an
-`applied` and a `rejected` count.
+unverifiable is ever persisted; every commit that lands passed the same
+chain checks a direct push would. But the witness can be left short of its
+peers' tips, and `GET /tip` serves whatever it holds without saying so.
 
-A non-zero `rejected` is the signal that this witness's answer is not the
-authority's whole story. With an `[authority_identity]` configured, the
-post-apply check compares what the witness now holds against what the
-authority signed for, and fails the sync when they differ — but the entries
-that already applied stay applied. Failing the sync does not roll anything
-back.
+### Checking a peer's tip reports
 
-### Authenticating the upstream
-
-Out of the box the sync channel is not authenticated, and the server says so
-loudly on startup — before the log subscriber is even installed, so it
-reaches you regardless of log configuration:
-
-```
-WARNING: witness mode is configured with an authority_url but no [authority_identity] -- the sync channel is UNAUTHENTICATED (K10 disabled). An on-path party can forge, withhold, or substitute /patch entries with no verification. Configure an [authority_identity] table (alg + pub) in the TOML config file to enable the authenticated channel.
-```
-
-Fix it by pinning the upstream's key. Read it from the authority's own
-discovery endpoint:
+By default a peer's answers are taken as the commits they carry, each
+verified; the peer is not asked to sign for them. To have the witness check a
+peer's signed tip report, name the peer's server principal. Read its PG from
+the peer's own discovery endpoint:
 
 ```sh
-curl -s http://127.0.0.1:3000/server | jq -r .payload.pub
+curl -s http://127.0.0.1:3000/server | jq -r .payload.pg
 ```
 
-```
-xzV0Vr3u_IB9KYe0P2nk5mWkLNKTQMDdRzcBTcpVEIM
-```
-
-and put it in the witness's config file — this setting has no flag and no
-environment variable:
+and put it beside the URL in the witness's config file (this has no flag and
+no environment variable):
 
 ```toml
 mode = "witness"
-authority_url = "http://127.0.0.1:3000"
 
-[authority_identity]
-alg = "Ed25519"
-pub = "xzV0Vr3u_IB9KYe0P2nk5mWkLNKTQMDdRzcBTcpVEIM"
+[gossip]
+peers = [{ url = "http://127.0.0.1:3000", pg = "SHA-512:..." }]
 ```
 
-The warning goes away and the witness now verifies two things: that the
-signed report accompanying a delta came from that key and names the
-principal it asked about, and that its own resulting local state matches
-what the report attests. The second check is what catches truncation and
-substitution — comparing the response's own fields against each other could
-never do it, because a signature over the report says nothing about a
-separate plaintext list of entries.
+The witness now fetches that server principal's chain from the peer, like
+any other principal, and accepts a tip report only if it is signed by a key
+active in that chain and names the principal asked about. It then checks that
+the tip it holds after applying what verified is the one the report attests.
+Until the chain is held, or if the signing key is not in it even after one
+more fetch, the peer's answer for that round is refused and nothing from it
+is applied. The second check is what catches truncation and substitution;
+a signature over the report says nothing about a separate list of entries.
+When the tips differ, the witness asks the peer for its branches and
+evidence, and keeps what verifies as proof of a fork.
 
-**What a wrong key looks like from the outside.** Point a witness at the
-right upstream with the wrong `pub` and reads simply fail to find anything:
+**What a wrong PG looks like from the outside.** Point a witness at the
+right peer with the wrong `pg` and reads simply fail to find anything: the
+answer is the same `404` a principal that genuinely does not exist gets, and
+the real reason is a `WARN` line in the log naming the peer and why it was
+refused. A mis-pinned witness therefore looks like an empty one. If you run
+witnesses, watch for that warning explicitly; nothing on the wire will tell
+you.
 
-```json
-{
-  "v": 1,
-  "payload": {
-    "error": "principal AkQKBDXinn-_73V0UNuISr5n7pNVItqqrHI_6zcaYgA not found",
-    "now": 1785872751
-  },
-  "statement": { "kind": "unsigned" }
-}
-```
-
-`404` — the same answer as a principal that genuinely does not exist. The
-real reason is a `WARN` in the log:
-
-```
-WARN cyphr_server::sync: witness sync authenticated-channel check failed principal=AkQK… reason=EnvelopeUnsignedOrMisSigned
-```
-
-A mis-keyed witness therefore looks like an empty one. If you run witnesses,
-watch for that warning explicitly; nothing on the wire will tell you.
-
-**One thing the authenticated channel does not close: replay of a genuine
-response.** It authenticates the pairing of local state and signed report,
-not the report's freshness. A response the authority genuinely signed at a
+**One thing the tip check does not close: replay of a genuine response.** It authenticates the pairing of local state and signed report,
+not the report's freshness. A response the peer genuinely signed at a
 moment when its tip matched the witness's state matches that state forever,
 so an on-path party can keep serving that captured response while the
-authority advances, and the witness will keep concluding it is up to date.
+peer advances, and the witness will keep concluding it is up to date.
 Nothing is forged, so no comparison catches it. Closing it needs a freshness
 property the channel does not currently provide.
 
@@ -806,7 +826,7 @@ A witness declares itself at `GET /server` and publishes no key material:
 ```json
 {
   "v": 1,
-  "payload": { "tier": "witness", "mode": "witness", "now": 1785872708 },
+  "payload": { "tier": "witness", "mode": "witness", "now": 1795229708 },
   "statement": { "kind": "unsigned" }
 }
 ```
@@ -818,7 +838,7 @@ bootstraps its own principal, signs the tips it serves —
 the payload above, because witness mode decides the tier before it looks
 at any key. Clients get signatures with no published key to check them
 against. Run witnesses keyless and let clients that need a verifiable
-receipt ask the authority.
+receipt ask a keyed peer.
 
 ## The key death-set
 
@@ -853,7 +873,7 @@ holds it:
 ```json
 {
   "v": 1,
-  "payload": { "error": "push signing key was revoked", "now": 1785872811 },
+  "payload": { "error": "push signing key was revoked", "now": 1795229811 },
   "statement": { "kind": "unsigned" }
 }
 ```
@@ -865,29 +885,63 @@ active in several principals; a death record kills it in all of them. There
 is no un-revoke.
 
 **It survives anything short of losing the disk.** The record lives in
-`data/observations/`, its own store, for the reason given in the backup
-section: it is not derivable from any chain, so an index rebuild must not be
-able to erase it.
+`data/record/blobs/`, for the reason given in the backup section: it is not
+derivable from any chain, so an index rebuild must not be able to erase it.
 
-**It cannot kill a genesis key.** The server only accepts a revoke naming a
-key it has indexed, which in practice means a key introduced by a
-`key/create` transaction. A principal's original key is not indexed:
+**It can kill any key, a genesis key included.** The server checks the
+revoke against the key it discloses and nothing else, so a principal's
+original key, the one a user is most likely to have on a device they lost,
+is revoked the same way as a later one, and so is a key no stored
+principal holds:
 
 ```json
 {
   "v": 1,
   "payload": {
-    "error": "revoke names a key this server has not indexed",
-    "now": 1785872792
+    "revoked_tmb": "vcrqFuL64ktC1B72RBa8lyjo4MY3-MbnQg3WmVMJ2ao",
+    "recorded": true
   },
   "statement": { "kind": "unsigned" }
 }
 ```
 
-`400`. That is exactly the key a user is most likely to have on a device
-they lost. If the clients on your service enroll a user with one key and
-stop, your users have no kill switch — worth knowing before you are asked to
-use one.
+The record is bounded. The death set has a ceiling, `[limits] max_dead_keys`
+(1,000,000 by default); once it is full the server still records a revoke
+of a key a stored principal holds and answers `507` to the rest.
+
+## Connection timeouts
+
+Three `[limits]` settings bound how long a client may hold a connection
+without finishing its work, so a stalled client cannot pin a connection for
+ever.
+
+| Setting                    | Default | What it bounds                                                                                                                                                                                                                                          |
+| :------------------------- | :------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `header_read_timeout_secs` | 10      | How long a client may take to send a request's headers; past it the connection is dropped.                                                                                                                                                              |
+| `request_timeout_secs`     | 60      | How long a whole exchange may take, from the request's first byte to the response's last byte delivered. A handler still running at the limit is answered `408`; a client that drips its request or its read of the response is cut off a second later. |
+| `idle_timeout_secs`        | 120     | How long a connection may carry no byte in either direction, a keep-alive between requests included, before it closes.                                                                                                                                  |
+
+Zero is refused at start. They apply to the HTTP listener; the Noise
+transport has its own idle timeout.
+
+`[limits] max_connections` caps the connections served at once. Unset, it
+is the number of cores available times 512 (as nginx's
+`worker_processes auto` times its default 512 `worker_connections`). At the
+cap the server stops accepting: a new client waits in the kernel's accept
+queue until a connection ends, and is neither refused nor dropped. Zero is
+refused at start.
+
+## The storage ceiling
+
+`[limits] max_stored_bytes` bounds what the blob store may hold. It is
+unset by default, which means no ceiling; no value is recommended, so size
+it to the disk under `data_dir`. The engine counts the bytes it finds when
+it scans the store at start and adds each new blob it writes. A write that
+would take the count past the ceiling is refused with `507`, nothing of it
+is stored, and reads and the revoke of a held key still work. The count
+is approximate under concurrent writes, which can overshoot it by what
+they add together. History is never pruned to make room: storage pressure
+is relieved by refusing writes.
 
 ## What the server tells you
 
@@ -904,7 +958,7 @@ rotation to configure. `--log-format json` gives one object per line:
 ```
 
 `RUST_LOG` controls filtering and defaults to
-`cyphr_server=info,tower_http=info`. At that default there is no access log
+`cyphr_server=info,cyphr_storage=info,tower_http=info`. At that default there is no access log
 at all — a request that succeeds, a request that 404s, and a request refused
 by a fence are equally invisible. Turn requests on explicitly:
 
@@ -925,7 +979,7 @@ RUST_LOG=cyphr_server=info,tower_http=debug cyphr-server serve …
   "span": {
     "method": "GET",
     "request_id": "f2a6264a-2209-4fc1-a461-c3bc96b91a77",
-    "uri": "/tip?pr=nobody",
+    "uri": "/tip?pg=nobody",
     "name": "request"
   }
 }
@@ -934,18 +988,48 @@ RUST_LOG=cyphr_server=info,tower_http=debug cyphr-server serve …
 Every request carries a generated `request_id` through its span, so a
 failure and its handler's own log lines join up.
 
-**There is no metrics endpoint and no health endpoint.** `/health`,
-`/healthz`, `/metrics`, and `/readyz` all return the ordinary `404`:
+**Two operability endpoints exist.** `GET /healthz` answers `200` with
+`{"status":"ok"}` when the record directory accepts a write and no store
+has lost a sync, and `503` with
+`{"status":"unavailable","error":"storage unavailable"}` when it does not;
+the cause goes to the log, not the wire. The write probe is one fixed
+one-byte sentinel file, never concurrent, so it detects a vanished or
+unwritable directory but not a full disk or failing device. Those surface
+later. A full disk most likely shows up as write errors (`500`): a failed
+journal write poisons the store before any sync is attempted. A failing
+device typically shows up as a failed sync. Once the record, the invite
+spent set or the death set fails a sync, that store refuses every write
+until restart and `/healthz` answers `503`. `GET /metrics`
+is Prometheus text exposition (`text/plain; version=0.0.4`) of fixed
+counters, with no label drawn from a request, principal or key:
+
+- `cyphr_requests_total`: every request answered.
+- `cyphr_pushes_accepted_total`: pushes answered 2xx.
+- `cyphr_gossip_rounds_total`: gossip rounds completed, idle ones included.
+- `cyphr_gossip_commits_replayed_total`: commits gossip rounds ran through
+  the core. It grows with what gossip pulls, not with how long the server
+  runs: an idle server adds rounds and no replays.
+- `cyphr_refusals_total{kind="…"}`: requests answered 4xx or 5xx, by a
+  closed set of kinds (`bad_request`, `denied`, `not_found`, `conflict`,
+  `too_large`, `unprocessable`, `rate_limited`, `server_error`).
+- `cyphr_eml_append_failures_total`: accepted commits whose commit-log
+  (EML) append failed after the commit was stored. The push still
+  succeeded and the next load of that principal repairs the log, so a
+  count that keeps rising means the log store is failing even though
+  every push answers success.
+
+`/readyz` and `/health` are not routes and return the ordinary `404`:
 
 ```json
 {
   "v": 1,
-  "payload": { "error": "route not found", "now": 1785872935 },
+  "payload": { "error": "route not found", "now": 1795229935 },
   "statement": { "kind": "unsigned" }
 }
 ```
 
-Use `GET /server` as a liveness probe. It reads memory only, writes nothing,
+`GET /server` is the cheapest probe, and the one to use to check the
+configuration. It reads memory only, writes nothing,
 touches no store, and its `tier` doubles as a check that the server came up
 in the configuration you intended — a probe that starts answering
 `repository` on a server you deployed as an attestor is telling you that
@@ -959,7 +1043,8 @@ For anything beyond liveness you are counting log lines. The signals worth
 extracting, given what is and is not emitted:
 
 - `server principal established` with its `pg`, at every keyed start. A `pg` that changed is the loudest possible alarm — every client that pinned you will refuse.
-- `witness sync failed` and `witness sync authenticated-channel check failed`, which say a witness's last sync did not complete. They do not cover the quieter case: a sync that succeeded with entries skipped, which is `witness sync applied entries` with a non-zero `rejected` at `cyphr_server=debug`. Watch that one too if you care whether a witness is complete, not merely alive.
+- `witness sync failed` and `witness sync: patch fetch or verification failed`, which say a witness's last sync did not complete. They do not cover the quieter case: a sync that succeeded with entries skipped, which is `witness sync applied entries` with a non-zero `rejected` at `cyphr_server=debug`. Watch that one too if you care whether a witness is complete, not merely alive.
+- `internal engine error` with `record not durable, writes refused until restart` at `error`: the record could not be flushed to disk and the server now refuses every write (see "Durability"). Alert on it; `GET /healthz` also answers `503`.
 - `configuration error:` on stderr with exit 1, which is a start that never happened.
 - Response status counts from `tower_http=debug`, which covers every status a route handler produces — including a witness's `403` write refusal. It does not cover the fences; see below.
 
@@ -981,30 +1066,113 @@ layer sitting _inside_ the tracing, so it does show up like any other
 response. Seeing one `403` in the log is what makes it natural to assume
 the `429`s are in there somewhere too. They are not.
 
-That leaves the fences observable only from outside the process — from the
-reverse proxy or load balancer in front of it, which sees the status codes
-the server actually returned. If you want an alarm on rate-limit storms,
-oversized bodies, or quota exhaustion, that is where the counter has to
-live. There is nowhere inside the server to put it.
+The fences are not invisible, though. The `/metrics` counters wrap the
+fences too, so `cyphr_refusals_total{kind="rate_limited"}` and
+`{kind="too_large"}` count what the fences refused even though no log line
+does. Alarm on those, or on the status codes at the reverse proxy in front
+of the server; the logs are the wrong place for either.
+
+### Refusals name their kind
+
+A refusal the caller can act on carries a stable `kind` beside the human
+`error` message, so a client branches on the kind and never on the text.
+An action-only push for a principal with no genesis commit, for example, is
+a `422`:
+
+```json
+{
+  "v": 1,
+  "payload": {
+    "error": "protocol: genesis incomplete",
+    "kind": "genesis_incomplete",
+    "now": 1795229960
+  },
+  "statement": { "kind": "unsigned" }
+}
+```
+
+(`statement.kind` is the signature slot, not the refusal kind.) The kinds
+are `not_found`, `ambiguous`, `invalid_input`, `malformed_blob`,
+`malformed_body`, `too_large`, `branch_limit`, `errored`,
+`state_mismatch`, `commit_mismatch`, `coz_reuse`,
+`genesis_incomplete` and `protocol` (any other protocol refusal). A server
+fault carries no `kind`, and neither do refusals built by the fences and
+auth layers. The set may grow, so treat an unknown kind as the generic
+refusal its status code says.
+
+## Durability
+
+**An accepted write is on disk before the server answers.** For every
+push the server stores the commit, appends it to the principal's commit
+log, then asks the operating system to flush the record to disk, and only
+then writes the index and signs the receipt. A `201`, a signed receipt and
+a signed tip report therefore never describe state that a power cut can
+erase. This matters because the receipt is evidence a client keeps: a
+server that signed over a commit and then lost it would, after restart,
+accept a different commit at the same position and sign that too, and the
+two signed statements would convict an honest server of equivocation. The
+same flush covers a retained rival commit (a fork), a naked revoke and an
+action-only push, because the server answers each of them as recorded.
+The rule applies in every mode, keyed or not, witness or service.
+
+The cost is one disk flush per accepted commit, about 8 ms on a push that
+takes about 40 ms. **Group commit is not implemented:** there is no
+setting that batches flushes across pushes, and no setting that turns the
+flush off.
+
+**If the flush fails, the server refuses every write until you restart
+it.** A failed flush can leave the operating system having dropped the
+pages it covered, and a later flush can then succeed over data that is
+gone. The server does not trust that success. After the first failure it
+answers every write with `500` (`internal storage error`, no `kind`),
+whichever principal it names, and logs each refusal at `error` with the
+cause (`cyphr_server::error`, which the default `RUST_LOG` shows):
+
+```
+ERROR cyphr_server::error: internal engine error error=record not durable, writes refused until restart: <cause>
+```
+
+The storage engine also logs `record sync failed; refusing writes until
+restart` once, under the `cyphr_storage` target, which the default
+`RUST_LOG` shows. Reads keep working. A gossip round that hits the
+failure logs `the record is not durable` at `error`. What to do:
+
+1. Treat a rising `cyphr_refusals_total{kind="server_error"}` together
+   with that log line as an incident. `GET /healthz` answers `503` as well,
+   since it reads the engine's durability state, not only a sentinel
+   file.
+2. Find the cause (a failing disk, a full device, a lost mount) and fix it.
+3. Restart the server. It replays what reached the disk and serves from
+   there. A commit whose push was answered `500` may or may not have
+   reached the disk; the client learns which by reading `GET /tip` after
+   the restart and pushing again if the commit is missing.
+
+Restarting before fixing the cause makes the next write fail the same way.
 
 ## Restarting and upgrading
 
-**Stop with SIGINT, not SIGTERM.** The server drains connections on
-`Ctrl-C`:
+**Stop with SIGINT or SIGTERM — both drain connections.** `Ctrl-C`,
+`systemctl stop`, `docker stop`, and a bare `kill` all reach the same path:
 
 ```
 INFO cyphr_server: shutdown signal received, draining connections
 INFO cyphr_server: server stopped
 ```
 
-SIGTERM — what `systemctl stop`, `docker stop`, and a bare `kill` send —
-is not handled. The process dies immediately with requests in flight and
-logs neither line. If you run under systemd, set `KillSignal=SIGINT` in the
-unit; otherwise every restart severs whatever was in progress.
+A `kill -9` (SIGKILL) still bypasses this — no signal handler can catch
+it — but the store is resilient to that hard kill too: a server restarted
+after one opens its directory cleanly with no stale lock and no recovery
+step. The cost of a hard kill is borne by in-flight requests, not the data.
 
-The store itself is resilient to the hard kill: a server restarted after a
-SIGTERM opens its directory cleanly with no stale lock and no recovery step.
-The cost is borne by in-flight requests, not by the data.
+**Under sustained heavy CPU load, a stop can still take longer than
+expected.** The signal is received — logs and OS-level process state both
+confirm it — but shutdown has been observed, under heavy oversubscription,
+to not complete within a short budget roughly 4 in 100 times, and once
+needed a hard kill to clear. The cause is not established, and no one
+component — the scheduler, the async runtime, this crate's own shutdown
+path — is implicated over another. If a supervised restart hangs past its
+usual few seconds, do not assume a stuck request — it may be this. Tracked
+as issue #190.
 
 An upgrade is therefore: stop the old process and wait for it to exit,
 start the new binary against the same data directory. Nothing is versioned
@@ -1013,17 +1181,16 @@ directory is locked exclusively, a rolling restart of two processes against
 one directory is not possible — the second refuses to start. A blue-green
 deployment needs two data directories and a resync, not a shared one.
 
-Three things interact with a restart in ways worth planning for:
+Two things interact with a restart in ways worth planning for:
 
 - **Login challenges** are in-memory and per-process. A client mid-login when you restart gets `login challenge is unknown, already used, or expired` and needs a fresh challenge. Harmless — clients retry — but it is a burst of login failures at every restart.
-- **Witness registrations** (`POST /witness/register`) are in-memory. Every witness registered for push fanout is forgotten on restart and must register again. If you depend on fanout, that is a re-registration step in your restart procedure, not something the server recovers on its own.
-- **Invite tokens issued to a running server** go the other way: they do nothing until the next restart. `invite new` durably records the new hashes in the tokens file, but the server reads that file once, at startup, and never rereads it. Hand out a token minted after boot and the holder gets a `403` until you restart. Every invite batch costs a restart, the same as the two hazards above.
+- **Invite tokens issued to a running server** go the other way: they do nothing until the next restart. `invite new` durably records the new hashes in the tokens file, but the server reads that file once, at startup, and never rereads it. Hand out a token minted after boot and the holder gets a `403` until you restart. Every invite batch costs a restart.
 
-`rebuild-index` is the one maintenance command that exists. It reconstructs
-`index/` entirely from `blobs/`; use it after restoring a partial backup, or
-if lookups start disagreeing with what you know is stored. Stop the server
-first — it takes the same exclusive lock, so it cannot run against a live
-one.
+`rebuild-index` is the maintenance command for a damaged or stale index. It reconstructs
+`index/` entirely from `record/blobs/`; use it after restoring a partial
+backup, or if lookups start disagreeing with what you know is stored. Stop
+the server first — it takes the same exclusive lock, so it cannot run
+against a live one.
 
 ```sh
 cyphr-server rebuild-index --data-dir ./data
@@ -1034,9 +1201,11 @@ need the total rebuild.
 
 ## Capacity
 
-There is no published benchmark and no capacity guidance grounded in
-measurement, so treat what follows as the shape of the problem rather than
-numbers to plan against.
+[Performance](../reference/performance.md) gives measured costs per
+operation against history length, the network simulation's CPU and wall
+time, and the cost of the per-commit disk flush, on one named machine. What
+follows is the shape of the problem; plan against the measured numbers
+rather than these descriptions.
 
 The costs are not evenly distributed. A push validates every signature in
 the bundle, re-derives the principal's roots, and — on a keyed server —
@@ -1053,22 +1222,27 @@ is not a storage plan.
 
 The one hard number the server enforces on itself is the rate limiter's
 per-bucket ceiling of 100,000 resident keys -- five buckets, so 500,000
-resident keys in the worst case, not 100,000. Everything else — memory per
-principal, disk per commit, throughput per core — is unmeasured.
+resident keys in the worst case, not 100,000. Memory per principal and disk
+per commit are not measured; the performance reference gives what is.
 
 ## What is not there yet
 
 Named plainly, because finding these out during an incident is worse than
 reading them here:
 
-- **No SIGTERM handling.** Graceful shutdown is SIGINT only, despite the process being a normal service in every other respect.
-- **No key rotation you can perform.** The capability exists in the codebase and has no command, endpoint, or signal attached to it. A server whose signing key is compromised has no move except a new identity — which breaks every client's pin, because the `pg` changes with the genesis key.
-- **No usable proof-of-work admission.** The policy works; nothing that could talk to it exists or is documented.
-- **No metrics, no health endpoint, no access log by default.**
-- **No backup command.** `cyphr-server export` is listed in `--help` and prints `error: export is not yet implemented`. Consistent backups mean stopping the server.
+Limits of the protocol and of the checks around it (revocation timing,
+forks, embedded principals, promises the system does not keep) are in
+[Known limits](known-limits.md). What follows is specific to running the
+server.
+
+- **No replay protection on witness sync.** The authenticated sync channel (see "Checking a peer's tip reports" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the peer advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
+- **No online key rotation.** `rotate-key` (see "Rotating the signing key") works on a stopped server; there is no endpoint or signal that rotates a running one.
+- **No access log by default** (see above to turn one on); counters are `GET /metrics`.
+- **No group commit.** Every accepted commit pays its own disk flush (see "Durability"), so a busy server's push rate is bounded by the flush latency of its disk.
+- **No online backup.** `backup`, `restore`, `export` and `verify-all` need the server stopped; a running server holds the store's lock. A consistent backup means stopping the server.
 - **No token revocation and no invite expiry.** A leaked invite token is live until spent; a leaked bearer token is live until it expires, 15 minutes later.
 - **No `Retry-After` on a `429`,** and no indication of which bucket refused, so a well-behaved client cannot back off intelligently.
 - **No admission or limits configuration outside a TOML file.** Environment-only deployments cannot set them.
-- **No permissions model.** Every bearer token the server issues carries `["read","write"]`, and bearer tokens gate almost nothing: `POST /push` checks that a presented token names the principal being written to, and no other route requires one.
+- **No Cyphr route requires a permission.** The integrating service supplies the login policy and protects its own routes; `POST /push` checks that a presented token names the principal being written to, and no other Cyphr route requires one.
 - **No freshness guarantee on witness sync.** A captured, genuinely-signed upstream response can be replayed indefinitely to hold a witness at a stale state.
 - **No coherent keyed witness.** A witness given a signing key signs what it serves while publishing no key to verify those signatures with.

@@ -19,7 +19,7 @@ multi-device authentication, key rotation and revocation, and individually
 signed atomic actions — all without a central authority.
 
 Built on [Coz](https://github.com/Cyphrme/Coz) cryptographic JSON messaging
-and [MALT](https://github.com/Cyphrme/malt) append-only Merkle trees.
+and [EML](https://eml-paper.netlify.app) (Epoch Merkle Log) append-only Merkle trees.
 
 > These docs are under active development. The protocol specification is the
 > canonical reference; the guides here will expand as the project matures.

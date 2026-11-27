@@ -1,0 +1,109 @@
+{
+  "name": "replayed_action_is_ignored",
+  "principal": [
+    "golden"
+  ],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "commits": [
+    {
+      "v": 2,
+      "txs": [
+        [
+          {
+            "pay": {
+              "alg": "ES256",
+              "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "now": 1700000000,
+              "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "typ": "cyphr.me/cyphr/key/create"
+            },
+            "sig": "-FCNYXlZfktL0Ap8gLRbKUoYxm2H_mP1QH5sHf9eRE5OOEnMb8WO4H1c_ikF4cLrc2Rwxz9h4XysrHLCrArSwA"
+          }
+        ],
+        [
+          {
+            "pay": {
+              "alg": "ES256",
+              "id": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "now": 1700000000,
+              "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "typ": "cyphr.me/cyphr/principal/create"
+            },
+            "sig": "TJo4bJHic2iRSwu7q7HE4b462B3nBKo_vUOVJBKef1kF4Ewep7wNm7AWsPgIGvfEhE41P0YFA8oLX7ubGSNiIw"
+          }
+        ],
+        [
+          {
+            "pay": {
+              "alg": "ES256",
+              "arrow": "SHA-256:d523iS0q879s0pRJhHv2kWjKVbnF4PFYjW8jYUgExzc",
+              "now": 1700000000,
+              "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "typ": "cyphr.me/cyphr/commit/create"
+            },
+            "sig": "ebr9_LCjZ-OzEGf9eAZaqo1rRyS3binKa-zVs45486tYsBD5EbiP94ERT9KEnXCsfSL-MbvZYiXAcOXgWtK05g"
+          }
+        ]
+      ],
+      "keys": [
+        {
+          "alg": "ES256",
+          "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "tag": "Zami's Majuscule Key (SPEC §15.1)",
+          "now": 0
+        }
+      ],
+      "commit_id": "SHA-256:gfbiLe2FejIvm3Sju1ZSwkfWOqI1vMsMFTlxk7hRNsA",
+      "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "SHA-256:kE5VTpoHhPFC6QzkWiOpaBpU4AZBSUA6n4D52sJArVM"
+    },
+    {
+      "v": 2,
+      "actions": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "Replayed action",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "xeRgw6SrVgk2ztou-NDKjVNt5xpPgqh_OStiVHaNBCNtQmn5SIuYghaKluADQasrFjH_wVVSMJK17Q3sHLOG_Q"
+        }
+      ],
+      "txs": [],
+      "keys": [],
+      "commit_id": "",
+      "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "SHA-256:kE5VTpoHhPFC6QzkWiOpaBpU4AZBSUA6n4D52sJArVM"
+    }
+  ],
+  "digests": [
+    "bw1uwrvH0G_YM6DftXUREAuyCpmgJagKRTHjmBMn10I",
+    "41Mgu9G96DMWi0SumCWNJlsRkECRO4gBLi1IDL2UJl4",
+    "4odMPugKZQFgnvtZQljGAaTopRPaNlYGjd37P0OMsK4",
+    "4odMPugKZQFgnvtZQljGAaTopRPaNlYGjd37P0OMsK4"
+  ],
+  "expected": {
+    "key_count": 1,
+    "level": 4,
+    "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "SHA-256:kE5VTpoHhPFC6QzkWiOpaBpU4AZBSUA6n4D52sJArVM",
+    "cr": "SHA-256:gfbiLe2FejIvm3Sju1ZSwkfWOqI1vMsMFTlxk7hRNsA",
+    "tr": "SHA-256:gfbiLe2FejIvm3Sju1ZSwkfWOqI1vMsMFTlxk7hRNsA",
+    "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pg": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "deleted": false,
+    "frozen": false
+  }
+}

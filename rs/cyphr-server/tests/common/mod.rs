@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 pub mod multi;
+pub mod ops;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -22,6 +23,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
+use cyphr::replay::WireBundle;
 use cyphr_server::AppState;
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::auth::principal::ServerPrincipal;
@@ -55,6 +58,7 @@ pub fn write_signing_key(dir: &Path) -> std::path::PathBuf {
     let file = serde_json::json!({
         "alg": kp.alg.name(),
         "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+        "v": 1,
         "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
     });
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
@@ -124,15 +128,12 @@ pub fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
 
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(
+        alg.to_string(),
+        Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 /// Build genesis from a golden fixture's `genesis_keys` array.
@@ -141,58 +142,113 @@ pub fn make_genesis(genesis_keys: &[serde_json::Value]) -> cyphr_storage::Genesi
     if keys.len() == 1 {
         cyphr_storage::Genesis::Implicit(keys.into_iter().next().unwrap())
     } else {
-        cyphr_storage::Genesis::Explicit(keys)
+        cyphr_storage::Genesis::Disclosed(keys)
     }
 }
 
-/// Build raw coz blobs from a golden fixture's commit, embedding key material.
-pub fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
-    let cozies = commit["txs"].as_array().expect("txs array");
-    let keys = commit["keys"].as_array();
-    let mut key_idx = 0;
-    let mut blobs = Vec::new();
+/// A golden fixture's commit line as the wire bundle a push carries.
+pub fn build_bundle(commit: &serde_json::Value) -> WireBundle {
+    serde_json::from_value::<cyphr_storage::CommitEntry>(commit.clone())
+        .expect("fixture commit line")
+        .bundle()
+        .expect("fixture bundle")
+}
 
-    for coz_value in cozies {
-        let mut coz = coz_value.clone();
-
-        let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
-
-        if is_key_introducing {
-            if let Some(ks) = keys {
-                if key_idx < ks.len() {
-                    coz.as_object_mut()
-                        .unwrap()
-                        .insert("key".to_string(), ks[key_idx].clone());
-                    key_idx += 1;
-                }
+/// The wire bundle (SPEC 4.6.2) a client pushes for the cozies `blobs`,
+/// listed in signed order: data actions, each transaction coz a
+/// transaction of its own, and every `key` member a test attached to a coz
+/// moved to the bundle's `keys`. A coz with no `key` member keeps its exact
+/// bytes, so the unsigned members a test adds reach the server. A push
+/// carries its actions before its transactions, so an action listed after
+/// a transaction is a test defect and panics.
+pub fn bundle_of(blobs: &[Vec<u8>]) -> WireBundle {
+    let mut bundle = WireBundle::default();
+    for blob in blobs {
+        let mut bytes = blob.clone();
+        let mut value: serde_json::Value = serde_json::from_slice(blob).unwrap_or_default();
+        if let Some(entry) = value
+            .get("key")
+            .and_then(|k| serde_json::from_value::<cyphr_storage::KeyEntry>(k.clone()).ok())
+        {
+            value.as_object_mut().unwrap().remove("key");
+            bytes = serde_json::to_vec(&value).unwrap();
+            if !bundle.keys.iter().any(|k| k.tmb == entry.tmb) {
+                bundle.keys.push(entry);
             }
         }
-
-        blobs.push(serde_json::to_vec(&coz).unwrap());
+        let is_action = value["pay"]["typ"]
+            .as_str()
+            .is_some_and(|t| !cyphr::parsed_coz::typ::is_transaction(t));
+        if is_action {
+            assert!(
+                bundle.txs.is_empty(),
+                "a push carries its data actions before its transactions"
+            );
+            bundle.actions.push(bytes);
+        } else {
+            bundle.txs.push(vec![bytes]);
+        }
     }
+    bundle
+}
 
-    blobs
+/// Every coz a push body or a served bundle carries, as its base64url
+/// string: the data actions, then each transaction's cozies, in order.
+pub fn wire_cozies(bundle: &serde_json::Value) -> Vec<serde_json::Value> {
+    let actions = bundle["actions"].as_array().into_iter().flatten();
+    let txs = bundle["txs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|tx| tx.as_array().expect("a transaction is an array"));
+    actions.chain(txs).cloned().collect()
+}
+
+/// [`push_body`] of [`bundle_of`]`(blobs)`.
+pub fn push_blobs(principal_id: &PrincipalGenesis, blobs: &[Vec<u8>]) -> String {
+    push_body(principal_id, &bundle_of(blobs))
+}
+
+/// A push body: `principal_id` and `bundle` in the wire form.
+pub fn push_body(principal_id: &PrincipalGenesis, bundle: &WireBundle) -> String {
+    let mut body = serde_json::to_value(bundle).expect("bundle serializes");
+    body["principal_id"] = principal_id.to_string().into();
+    body.to_string()
+}
+
+/// The id the fixture's genesis derives, i.e. the only `principal_id`
+/// `bootstrap_principal` may use for it: the PG its genesis commit names
+/// (SPEC 5.1), or for a fixture with none its genesis key's PR (SPEC 3.1).
+pub fn fixture_principal_id(fixture: &serde_json::Value) -> PrincipalGenesis {
+    let named = fixture["commits"]
+        .as_array()
+        .and_then(|commits| commits.first())
+        .map(build_bundle)
+        .and_then(|bundle| test_fixtures::bundle::genesis_id(&bundle));
+    named.unwrap_or_else(|| {
+        let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+        cyphr_storage::engine::genesis_principal_id(&make_genesis(genesis_keys))
+            .expect("fixture genesis derives an id")
+    })
 }
 
 /// Bootstrap a principal into the engine via the validated write path, using
 /// the fixture's explicit genesis.
 pub async fn bootstrap_principal(
     state: &AppState,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     fixture: &serde_json::Value,
 ) {
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
     let commits = fixture["commits"].as_array().unwrap();
 
     for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        let bundle = build_bundle(commit);
         let genesis = make_genesis(genesis_keys);
 
         state
             .engine
-            .submit_commit(principal_id, Some(genesis), &blob_slices)
+            .submit_commit(principal_id, Some(genesis), &bundle)
             .await
             .expect("bootstrap submit_commit failed");
     }
@@ -211,22 +267,18 @@ pub fn load_pool() -> test_fixtures::Pool {
 
 /// Sign a fresh "add `new_key_name`" commit onto `principal`, signed by
 /// `signer_name` (must have a known private key in `pool`). Returns the new
-/// commit's raw coz blob bytes, wire-ready for `submit_commit`.
+/// commit's wire bundle, ready for `submit_commit`.
 ///
-/// Takes `principal` by value rather than `&Principal` + internal `.clone()`
-/// deliberately: `Principal::clone()` shares the underlying `CloneableLog`'s
-/// `Arc<Mutex<Log<S>>>>`, not a deep copy, so cloning one shared starting
-/// principal for N variants would have all N append to the SAME commit tree.
-/// Each call site must instead build its own independent `Principal` (e.g. via
-/// a fresh `load_principal_from_commits` call) to get genuinely independent,
-/// mutually-exclusive alternative "next commits".
-pub fn sign_key_create_commit(
+/// Takes `principal` by value: the commit is made on it. A caller wanting
+/// several mutually-exclusive alternative "next commits" from one state
+/// passes a [`cyphr::Principal::fork`] of it to each call.
+pub async fn sign_key_create_commit(
     mut principal: cyphr::Principal,
     pool: &test_fixtures::Pool,
     signer_name: &str,
     new_key_name: &str,
     now: i64,
-) -> Vec<Vec<u8>> {
+) -> WireBundle {
     let signer = pool.get(signer_name).expect("signer key in pool");
     let new_key = pool.get(new_key_name).expect("new key in pool");
 
@@ -254,17 +306,15 @@ pub fn sign_key_create_commit(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -275,110 +325,126 @@ pub fn sign_key_create_commit(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
+        .await
         .expect("commit should finalize");
 
-    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    // `export_commits` deliberately doesn't embed "key" into the cozy JSON
-    // (it carries key material separately, at the commit level, for the
-    // internal CommitEntry storage format) -- but the wire format
-    // `submit_commit` parses from raw client blobs expects "key" embedded
-    // directly on the key-introducing cozy itself. Embed it here for the one
-    // key/create cozy.
-    let mut key_idx = 0;
-    new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({
-                        "alg": key.alg,
-                        "pub": key.pub_key,
-                        "tmb": key.tmb,
-                    }),
-                );
-                key_idx += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect()
+    test_fixtures::bundle::last_commit_bundle(&principal).expect("the new commit's bundle")
 }
 
-/// Build a brand-new principal's genesis push HTTP body: a `key/create`
-/// closed by `commit/create`, the genesis key embedded on the closing cozy --
-/// the wire contract `resolve_genesis` requires for a never-before-seen
-/// principal.
-pub fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
-    let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let mut blobs = sign_key_create_commit(principal, pool, "golden", "key_a", now);
-
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg,
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+/// The id a principal with an implicit genesis on pool key `name` derives
+/// (SPEC 3.1): that key's thumbprint under its algorithm's hash. A
+/// principal that commits is keyed by its PG instead ([`genesis_push_id`]).
+pub fn implicit_principal_id(pool: &test_fixtures::Pool, name: &str) -> PrincipalGenesis {
+    let key = pool
+        .get(name)
+        .expect("key in pool")
+        .key()
+        .expect("pool key");
+    cyphr_storage::engine::genesis_principal_id(&cyphr_storage::Genesis::Implicit(key))
+        .expect("pool key derives an id")
 }
 
-/// Build a second commit push HTTP body for an existing principal (introducing `key_b`).
-pub fn build_second_commit_push_body(
+/// The principal [`build_genesis_push_body_with`] pushes and its genesis
+/// commit's blobs: `genesis_name` creates itself, then `new_key_name`.
+async fn genesis_push(
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    genesis_name: &str,
+    new_key_name: &str,
+    now: i64,
+) -> (cyphr::Principal, WireBundle) {
+    let key = |name: &str| {
+        pool.get(name)
+            .expect("key in pool")
+            .key()
+            .expect("pool key")
+    };
+    let mut principal = cyphr::Principal::implicit(key(genesis_name))
+        .await
+        .expect("genesis");
+    let bundle = test_fixtures::bundle::genesis_bundle(
+        &mut principal,
+        pool.get(genesis_name).expect("genesis key in pool"),
+        &[key(new_key_name)],
+        now,
+    )
+    .await
+    .expect("genesis commit");
+    (principal, bundle)
+}
+
+/// The id (the PG) of the principal whose genesis commit
+/// [`build_genesis_push_body_with`] builds for `genesis_name` and
+/// `new_key_name`. The PG is the state the genesis keys root, whatever
+/// the commit's time.
+pub async fn genesis_push_id(
+    pool: &test_fixtures::Pool,
+    genesis_name: &str,
+    new_key_name: &str,
+) -> PrincipalGenesis {
+    let (_, bundle) = genesis_push(pool, genesis_name, new_key_name, 1).await;
+    test_fixtures::bundle::genesis_id(&bundle).expect("genesis PG")
+}
+
+/// The id of the standard test principal, the one `build_genesis_push_body`
+/// builds: `golden` with `key_a`.
+pub async fn golden_principal_id(pool: &test_fixtures::Pool) -> PrincipalGenesis {
+    genesis_push_id(pool, "golden", "key_a").await
+}
+
+/// The principal [`build_genesis_push_body_with`] pushes, after its genesis
+/// commit: the state a test signs its next commit on.
+pub async fn genesis_pushed_principal(
+    pool: &test_fixtures::Pool,
+    genesis_name: &str,
+    new_key_name: &str,
+    now: i64,
+) -> cyphr::Principal {
+    genesis_push(pool, genesis_name, new_key_name, now).await.0
+}
+
+/// Build a brand-new principal's genesis push HTTP body: its genesis
+/// commit (SPEC 5.1, 5.3), in which `genesis_name` creates itself and
+/// `new_key_name`, then signs the `principal/create` and `commit/create`.
+/// Every `key/create` discloses its key, so the principal reads from the
+/// blobs alone. Its id is [`genesis_push_id`]; pass that as
+/// `principal_id` unless the test deliberately pushes under another one.
+pub async fn build_genesis_push_body_with(
+    pool: &test_fixtures::Pool,
+    genesis_name: &str,
+    new_key_name: &str,
+    principal_id: &PrincipalGenesis,
     now: i64,
 ) -> String {
-    let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let blobs = sign_key_create_commit(principal, pool, "golden", "key_b", now);
+    let (_, bundle) = genesis_push(pool, genesis_name, new_key_name, now).await;
+    push_body(principal_id, &bundle)
+}
 
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+/// The standard genesis push: `golden` with `key_a`.
+pub async fn build_genesis_push_body(
+    pool: &test_fixtures::Pool,
+    principal_id: &PrincipalGenesis,
+    now: i64,
+) -> String {
+    build_genesis_push_body_with(pool, "golden", "key_a", principal_id, now).await
+}
+
+/// Build a second commit push HTTP body for the standard principal
+/// ([`build_genesis_push_body`] pushed at `genesis_now`), introducing
+/// `key_b`, signed by `golden`.
+pub async fn build_second_commit_push_body(
+    pool: &test_fixtures::Pool,
+    principal_id: &PrincipalGenesis,
+    genesis_now: i64,
+    now: i64,
+) -> String {
+    let principal = genesis_pushed_principal(pool, "golden", "key_a", genesis_now).await;
+    let bundle = sign_key_create_commit(principal, pool, "golden", "key_b", now).await;
+    push_body(principal_id, &bundle)
 }
 
 // ========================================================================
@@ -447,4 +513,88 @@ pub fn envelope_payload(body: &serde_json::Value) -> &serde_json::Value {
          {body:?}"
     );
     &body["payload"]
+}
+
+/// One commit on `p` in which pool key `signer` creates pool key `name`,
+/// finalized by `signer` at `now`; its bundle.
+pub async fn key_commit_by(
+    p: &mut cyphr::Principal,
+    signer: &str,
+    name: &str,
+    now: i64,
+) -> WireBundle {
+    let pool = load_pool();
+    let s = pool.get(signer).expect("signer");
+    let key = pool.get(name).expect("pool key").key().expect("key");
+    let mut pay = serde_json::json!({
+        "alg": s.alg, "id": key.tmb().to_b64(), "now": now,
+        "tmb": s.compute_tmb_b64().expect("tmb"), "typ": "cyphr.me/cyphr/key/create"
+    });
+    if let Some(obj) = pay.as_object_mut() {
+        obj.sort_keys();
+    }
+    let pay = serde_json::to_vec(&pay).expect("pay");
+    let prv = Base64UrlUnpadded::decode_vec(s.prv.as_ref().expect("prv")).expect("prv b64");
+    let pubb = Base64UrlUnpadded::decode_vec(&s.pub_key).expect("pub b64");
+    let (sig, cad) = coz::sign_json(&pay, &s.alg, &prv, &pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &s.alg).expect("czd");
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, Some(key))
+        .expect("applies");
+    scope
+        .finalize_with_software(&s.software_signer().expect("signer"), now, "cyphr.me")
+        .await
+        .expect("finalizes");
+    WireBundle::of_commit(p.commits().last().expect("a commit")).expect("bundle")
+}
+
+/// `eve`'s self-signed naked revoke (SPEC 6.4) as of `rvk`: `{pay, sig, keys}`.
+pub fn eve_revoke(rvk: i64) -> serde_json::Value {
+    let pool = load_pool();
+    let e = pool.get("eve_ed25519").expect("eve");
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": e.alg, "now": rvk, "rvk": rvk, "tmb": e.compute_tmb_b64().expect("tmb"),
+        "typ": "cyphr.me/cyphr/key/revoke"
+    }))
+    .expect("pay");
+    let prv = Base64UrlUnpadded::decode_vec(e.prv.as_ref().expect("prv")).expect("prv b64");
+    let pubb = Base64UrlUnpadded::decode_vec(&e.pub_key).expect("pub b64");
+    let (sig, _) = coz::sign_json(&pay, &e.alg, &prv, &pubb).expect("sign");
+    serde_json::json!({
+        "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "keys": [{"alg": e.alg, "pub": e.pub_key}],
+    })
+}
+
+/// A gossip table naming one peer by URL alone: its reports are not
+/// checked.
+pub fn plain_gossip(url: impl Into<String>) -> cyphr_server::config::GossipConfig {
+    cyphr_server::config::GossipConfig {
+        peers: vec![cyphr_server::config::PeerEntry::Url(url.into())],
+        ..Default::default()
+    }
+}
+
+/// A gossip table naming `authority` as the one peer, with the PG of its
+/// server principal: its signed tip reports are checked against that
+/// principal's chain.
+pub fn pinned_gossip(
+    url: impl Into<String>,
+    authority: &AppState,
+) -> cyphr_server::config::GossipConfig {
+    let pg = authority
+        .principal
+        .as_ref()
+        .expect("the authority holds a server principal")
+        .pg()
+        .clone();
+    cyphr_server::config::GossipConfig {
+        peers: vec![cyphr_server::config::PeerEntry::Pinned {
+            url: url.into(),
+            pg,
+        }],
+        ..Default::default()
+    }
 }

@@ -52,81 +52,66 @@ MAY still be possible even in an unrecoverable state (SPEC.md §2.2.11).
 > from designated recovery agents regardless of whether the principal is
 > considered unrecoverable.
 
-`VERIFIED: agent-check — updated 2026-03-09 per A-5`
-
 **[recovery-proactive]**: Self-recovery mechanisms MUST be established before
 key loss or revocation. None of the protocol's recovery mechanisms can prevent
 or reverse an unrecoverable state once it has occurred.
-`VERIFIED: agent-check`
 
 **[level-recovery-matrix]**: Recovery support by level:
 
 - Level 1: No recovery. Sideband only.
 - Level 2: Recovery via atomic swap (`key/replace`) only.
 - Level 3+: Full recovery (can add new keys via `key/create`).
-  `VERIFIED: agent-check`
 
 #### Fallback
 
 **[fallback-field]**: For single-key accounts, a `fallback` field MAY be
 included at key creation to designate a recovery key. The `fallback` value is
 `tmb` (Level 2) or external principal `PR` (Level 3+).
-`VERIFIED: agent-check`
 
 **[fallback-not-in-tmb]**: The `fallback` field MUST NOT be included in the
 `tmb` calculation. This allows changing the fallback without changing the key's
 identity.
-`VERIFIED: agent-check`
 
 **[level-2-fallback-restriction]**: Level 2 fallback MUST adhere to atomic swap
 (`key/replace`) semantics. The fallback key replaces the lost key rather than
 adding via `key/create`.
-`VERIFIED: agent-check`
 
 #### Recovery Agents
 
 **[recovery-agent-registration]**: Recovery agents MUST be registered via
 `cyphr/recovery/create` transaction, which includes `agent` (PR, tmb, or
 array of contact PRs) and `threshold` (M-of-N, default 1).
-`VERIFIED: agent-check`
 
 **[recovery-agent-deletion]**: Recovery agents MAY be removed via
 `recovery/delete`. After deletion, the agent MUST NOT be able to initiate
 recovery.
-`VERIFIED: agent-check`
 
 **[recovery-agent-authorization]**: A designated recovery agent's `key/create`
 MUST be accepted as valid even though no regular user key signed it — the
 agent's authority derives from the `recovery/create` delegation.
-`VERIFIED: agent-check`
 
 #### Social Recovery
 
 **[social-recovery-threshold]**: Social recovery requires M-of-N trusted
 contacts to sign the same `key/create` transaction. When the threshold number
 of signatures is collected, the transaction MUST be considered valid.
-`VERIFIED: agent-check`
 
 #### Freeze
 
 **[freeze-global]**: Freeze MUST be global — it applies to the principal across
 all services that observe the freeze state. Freezes halt all key mutations
 (`key/*`) and MAY restrict other actions per service policy.
-`VERIFIED: agent-check`
 
 **[self-freeze]**: A principal MAY initiate a freeze by signing
 `cyphr/freeze/create`. Self-freeze MAY be unfrozen by any active key.
-`VERIFIED: agent-check`
 
 **[external-freeze]**: A designated recovery authority MAY initiate a freeze
 based on heuristics or out-of-band communication. External freeze requires the
 recovery authority to thaw (or the principal after a configured timeout).
-`VERIFIED: agent-check`
 
 **[external-freeze-delegation]**: External freeze authority MUST be explicitly
 delegated via `cyphr/recovery/create`. Without delegation, an external party
 MUST NOT be able to freeze a principal.
-`VERIFIED: agent-check`
 
 #### Retroactivity
 
@@ -134,18 +119,15 @@ MUST NOT be able to freeze a principal.
 past actions to a given timestamp). Principals MUST mutate their state forward
 using `create` and `delete` verbs to reach their targeted state. Past actions
 MUST NOT be undone.
-`VERIFIED: agent-check`
 
 **[revoke-forward-only]**: Even though `key/revoke` can be postdated to the
 time of an attack via `rvk`, Cyphr MUST interpret transactions based on
 current `now`, not `rvk`. `rvk` is a declaration of compromise, not a request
 for history rewriting.
-`VERIFIED: agent-check`
 
 **[disown-no-ar-mutation]**: A client MAY mark past actions as disowned
 (expressing intent that the action was unintentional), but disowning MUST NOT
 mutate AR. Disowning is bookkeeping only.
-`VERIFIED: agent-check`
 
 ### Transitions
 
@@ -158,7 +140,6 @@ referencing `pre` = targeted PR.
   registered.
 - **POST**: New key is added to KT. Principal transitions from Dead/Zombie
   to Active.
-  `VERIFIED: agent-check`
 
 **[freeze-transition]**: Account freeze transitions the principal from Active
 to Frozen. All mutations are rejected until unfreeze.
@@ -166,30 +147,25 @@ to Frozen. All mutations are rejected until unfreeze.
 - **PRE**: Principal is Active. Signing key MUST be active (or recovery
   authority with delegation).
 - **POST**: `IsFrozen` = true.
-  `VERIFIED: agent-check`
 
 **[unfreeze-transition]**: `cyphr/freeze/delete` removes the freeze.
 
 - **PRE**: Principal is Frozen.
 - **POST**: `IsFrozen` = false. Principal returns to Active (if keys meet
   thresholds).
-  `VERIFIED: agent-check`
 
 ### Forbidden States
 
 **[no-retroactive-rewrite]**: History MUST NOT be rewritten through
 retroactivity. The retrospection attack (attacker uses retroactivity to undo
 legitimate actions) MUST be prevented by the forward-only mutation model.
-`VERIFIED: agent-check`
 
 **[no-unregistered-recovery]**: A party not registered via
 `cyphr/recovery/create` MUST NOT be able to sign recovery transactions.
 Attempts MUST fail with `RECOVERY_NOT_DESIGNATED`.
-`VERIFIED: agent-check`
 
 **[no-undelegated-freeze]**: An external party without explicit delegation MUST
 NOT be able to freeze a principal (per [external-freeze-delegation]).
-`VERIFIED: agent-check`
 
 > [!NOTE]
 > **PLACEHOLDER — Recovery Timelocks (Level 5+)**: SPEC.md §18.10 mentions
@@ -206,14 +182,12 @@ storage is the primary mechanism. External recovery delegates trust but remains
 under the principal's control (via explicit delegation).
 
 - **Type**: Design Property
-  `VERIFIED: agent-check`
 
 **[freeze-defensive]**: Freeze is a defensive mechanism for suspected compromise
 scenarios. It is designed to stop the damage window while the principal
 investigates, without irreversibly revoking keys.
 
 - **Type**: Design Property
-  `VERIFIED: agent-check`
 
 ## Formal Specification
 

@@ -116,13 +116,14 @@ struct HttpResponse {
 // Bodies
 // ========================================================================
 
-/// A brand-new principal's genesis push body, wire-ready. `principal_id` is
-/// only a storage label; genesis is resolved from the golden-key blobs, so
-/// distinct labels (with distinct `now`) are distinct new-principal
-/// residency facts.
-fn genesis_body(principal_id: &str, now: i64) -> String {
+/// A brand-new principal's genesis push body, wire-ready, for the principal
+/// whose genesis key is pool key `genesis_name` (with `key_a`; its id is
+/// the PG that genesis derives, SPEC 5.1). Distinct genesis keys are distinct
+/// new-principal residency facts; `now` does not distinguish principals.
+async fn genesis_body(genesis_name: &str, now: i64) -> String {
     let pool = common::load_pool();
-    common::build_genesis_push_body(&pool, principal_id, now)
+    let principal_id = common::genesis_push_id(&pool, genesis_name, "key_a").await;
+    common::build_genesis_push_body_with(&pool, genesis_name, "key_a", &principal_id, now).await
 }
 
 /// Assert an admission denial: HTTP 403 (never 401) whose JSON body names the
@@ -160,7 +161,7 @@ fn assert_denied(resp: &HttpResponse, expected_policy: &str) {
 async fn open_policy_admits_new_principal_without_token() {
     let server = TestServer::start_open().await;
     let r = server
-        .post("/push", &genesis_body("open-genesis", NOW_BASE + 10), &[])
+        .post("/push", &genesis_body("golden", NOW_BASE + 10).await, &[])
         .await;
     assert_eq!(r.status, 201, "open genesis push must succeed: {}", r.body);
 }
@@ -176,22 +177,7 @@ async fn open_policy_admits_new_principal_without_token() {
 async fn invite_missing_token_is_denied() {
     let server = TestServer::start_invite().await;
     let r = server
-        .post("/push", &genesis_body("invite-notoken", NOW_BASE + 20), &[])
-        .await;
-    assert_denied(&r, "invite");
-}
-
-/// Invite-policy denial (wrong token). RED today: a present-but-wrong token is refused
-/// exactly like a missing one.
-#[tokio::test]
-async fn invite_wrong_token_is_denied() {
-    let server = TestServer::start_invite().await;
-    let r = server
-        .post(
-            "/push",
-            &genesis_body("invite-wrong", NOW_BASE + 21),
-            &[(INVITE_HEADER, WRONG_TOKEN_SAME_LEN)],
-        )
+        .post("/push", &genesis_body("golden", NOW_BASE + 20).await, &[])
         .await;
     assert_denied(&r, "invite");
 }
@@ -203,7 +189,7 @@ async fn invite_valid_token_admits_new_principal() {
     let r = server
         .post(
             "/push",
-            &genesis_body("invite-valid", NOW_BASE + 22),
+            &genesis_body("golden", NOW_BASE + 22).await,
             &[(INVITE_HEADER, VALID_TOKEN)],
         )
         .await;
@@ -227,14 +213,14 @@ async fn invite_wrong_tokens_are_denied_identically() {
     let same_len = server
         .post(
             "/push",
-            &genesis_body("ct-same", NOW_BASE + 23),
+            &genesis_body("golden", NOW_BASE + 23).await,
             &[(INVITE_HEADER, WRONG_TOKEN_SAME_LEN)],
         )
         .await;
     let diff_len = server
         .post(
             "/push",
-            &genesis_body("ct-diff", NOW_BASE + 24),
+            &genesis_body("alice", NOW_BASE + 24).await,
             &[(INVITE_HEADER, WRONG_TOKEN_DIFF_LEN)],
         )
         .await;
@@ -255,7 +241,7 @@ async fn invite_token_is_single_use() {
     let first = server
         .post(
             "/push",
-            &genesis_body("single-p1", NOW_BASE + 30),
+            &genesis_body("golden", NOW_BASE + 30).await,
             &[(INVITE_HEADER, VALID_TOKEN)],
         )
         .await;
@@ -267,7 +253,7 @@ async fn invite_token_is_single_use() {
     let second = server
         .post(
             "/push",
-            &genesis_body("single-p2", NOW_BASE + 31),
+            &genesis_body("alice", NOW_BASE + 31).await,
             &[(INVITE_HEADER, VALID_TOKEN)],
         )
         .await;
@@ -286,7 +272,7 @@ async fn invite_token_not_consumed_on_protocol_rejection() {
     let bad = server
         .post(
             "/push",
-            "{\"principal_id\":\"refund-bad\",\"blobs\":[]}",
+            "{\"principal_id\":\"refund-bad\",\"txs\":[]}",
             &[(INVITE_HEADER, VALID_TOKEN)],
         )
         .await;
@@ -300,7 +286,7 @@ async fn invite_token_not_consumed_on_protocol_rejection() {
     let good = server
         .post(
             "/push",
-            &genesis_body("refund-good", NOW_BASE + 40),
+            &genesis_body("golden", NOW_BASE + 40).await,
             &[(INVITE_HEADER, VALID_TOKEN)],
         )
         .await;
@@ -317,7 +303,7 @@ async fn invite_token_not_consumed_on_protocol_rejection() {
 #[tokio::test]
 async fn invite_resident_principal_bypasses_admission() {
     let server = TestServer::start_invite().await;
-    let body = genesis_body("resident", NOW_BASE + 50);
+    let body = genesis_body("golden", NOW_BASE + 50).await;
     let seed = server
         .post("/push", &body, &[(INVITE_HEADER, VALID_TOKEN)])
         .await;
@@ -347,7 +333,7 @@ async fn non_push_requests_are_never_gated() {
         "GET /server must never be gated: {}",
         identity.body
     );
-    let tip = server.get("/tip?pr=nobody").await;
+    let tip = server.get("/tip?pg=nobody").await;
     assert_ne!(
         tip.status, 403,
         "GET /tip must never be gated by admission: {} {}",
@@ -361,7 +347,7 @@ async fn non_push_requests_are_never_gated() {
 #[tokio::test]
 async fn push_without_principal_id_passes_through_to_handler() {
     let server = TestServer::start_invite().await;
-    let r = server.post("/push", "{\"blobs\":[\"QUFBQQ\"]}", &[]).await;
+    let r = server.post("/push", "{\"txs\":[[\"QUFBQQ\"]]}", &[]).await;
     assert_ne!(
         r.status, 403,
         "a body with no parseable principal_id must fail open, not be gated: {} {}",
@@ -371,22 +357,6 @@ async fn push_without_principal_id_passes_through_to_handler() {
         r.status >= 400,
         "the handler's own parse must still reject the malformed body: {} {}",
         r.status,
-        r.body
-    );
-}
-
-/// End-to-end boot check. Guard: `serve()` BOOTS with the
-/// admission module present and installed -- not merely that `build_router`
-/// compiles. `TestServer::start` panics if the server never accepts
-/// connections, so a successful `/server` read proves the composed server is
-/// live.
-#[tokio::test]
-async fn serve_boots_with_admission_installed() {
-    let server = TestServer::start_invite().await;
-    let r = server.get("/server").await;
-    assert_eq!(
-        r.status, 200,
-        "server with admission installed must boot and serve: {}",
         r.body
     );
 }
@@ -426,7 +396,7 @@ async fn configured_body_cap_governs_push_under_active_admission() {
     // invite policy or the handler's own parse for any reason OTHER than
     // size.
     let mut body: serde_json::Value =
-        serde_json::from_str(&genesis_body("n-body-cap", NOW_BASE + 60))
+        serde_json::from_str(&genesis_body("golden", NOW_BASE + 60).await)
             .expect("genesis body parses as JSON");
     body.as_object_mut()
         .expect("genesis body is a JSON object")

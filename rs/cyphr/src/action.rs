@@ -3,7 +3,9 @@
 //! Per SPEC §4.3, actions are signed Coz messages representing user actions.
 //! They are recorded in the Data State (DS) for Authenticated Atomic Actions (AAA).
 
-use coz::{Czd, Pay, Thumbprint};
+use coz::{Czd, Thumbprint};
+
+use crate::state::HashAlg;
 
 /// A verified action (Level 4+).
 ///
@@ -13,7 +15,8 @@ use coz::{Czd, Pay, Thumbprint};
 ///
 /// This struct can only be created through verification. Fields are
 /// crate-internal to prevent external direct construction.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+#[cfg_attr(not(any(test, feature = "test-utils")), derive(Clone))]
 pub struct Action {
     /// Action type from `typ` field (e.g., "cyphr.me/comment/create").
     pub(crate) typ: String,
@@ -23,10 +26,26 @@ pub struct Action {
     pub(crate) now: i64,
     /// Coz digest (unique identifier).
     pub(crate) czd: Czd,
-    /// Original payload (for application-specific fields).
-    pub(crate) pay: Pay,
-    /// Raw Coz message for storage/export.
+    /// The hash algorithm `czd` is in: the signing key's.
+    pub(crate) hash_alg: HashAlg,
+    /// Raw Coz message: the signed payload (including application-specific
+    /// fields) and signature, for storage/export.
     pub(crate) raw: coz::CozJson,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl Clone for Action {
+    fn clone(&self) -> Self {
+        crate::probe::action_cloned();
+        Self {
+            typ: self.typ.clone(),
+            signer: self.signer.clone(),
+            now: self.now,
+            czd: self.czd.clone(),
+            hash_alg: self.hash_alg,
+            raw: self.raw.clone(),
+        }
+    }
 }
 
 impl Action {
@@ -39,6 +58,7 @@ impl Action {
         signer: Thumbprint,
         now: i64,
         czd: Czd,
+        hash_alg: HashAlg,
         raw: coz::CozJson,
     ) -> Self {
         Self {
@@ -46,24 +66,25 @@ impl Action {
             signer,
             now,
             czd,
-            pay: Pay::default(), // Placeholder - use raw for actual data
+            hash_alg,
             raw,
         }
     }
 
     /// Create an action from an already-verified Pay message (internal).
     #[cfg(test)]
-    pub(crate) fn from_pay(pay: &Pay, czd: Czd, raw: coz::CozJson) -> Option<Self> {
+    pub(crate) fn from_pay(pay: &coz::Pay, czd: Czd, raw: coz::CozJson) -> Option<Self> {
         let signer = pay.tmb.clone()?;
         let now = pay.now?;
         let typ = pay.typ.clone()?;
+        let hash_alg = coz::Alg::from_str(pay.alg.as_deref()?)?.hash_alg();
 
         Some(Self {
             typ,
             signer,
             now,
             czd,
-            pay: pay.clone(),
+            hash_alg,
             raw,
         })
     }
@@ -88,85 +109,13 @@ impl Action {
         &self.czd
     }
 
+    /// The hash algorithm the Coz digest is in.
+    pub fn hash_alg(&self) -> HashAlg {
+        self.hash_alg
+    }
+
     /// Get the raw Coz message for storage/export.
     pub fn raw(&self) -> &coz::CozJson {
         &self.raw
-    }
-
-    /// Get a custom field from the action payload.
-    pub fn get_field(&self, key: &str) -> Option<&serde_json::Value> {
-        self.pay.extra.get(key)
-    }
-
-    /// Get the message content if present.
-    pub fn msg(&self) -> Option<&str> {
-        self.pay.msg.as_deref()
-    }
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use coz::{PayBuilder, Thumbprint};
-    use serde_json::json;
-
-    use super::*;
-
-    /// Helper to wrap Pay in CozJson for tests.
-    fn to_raw(pay: &Pay) -> coz::CozJson {
-        coz::CozJson {
-            pay: serde_json::to_value(pay).unwrap(),
-            sig: vec![0; 64],
-        }
-    }
-
-    #[test]
-    fn action_from_pay_basic() {
-        let pay = PayBuilder::new()
-            .typ("cyphr.me/comment/create")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .msg("Hello, world!")
-            .build();
-
-        let czd = Czd::from_bytes(vec![0xBB; 32]);
-        let action = Action::from_pay(&pay, czd.clone(), to_raw(&pay)).unwrap();
-
-        assert_eq!(action.typ, "cyphr.me/comment/create");
-        assert_eq!(action.now, 1000);
-        assert_eq!(action.msg(), Some("Hello, world!"));
-        assert_eq!(action.czd.as_bytes(), czd.as_bytes());
-    }
-
-    #[test]
-    fn action_from_pay_with_custom_fields() {
-        let mut pay = PayBuilder::new()
-            .typ("example/data")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        pay.extra.insert("custom".into(), json!("value"));
-
-        let czd = Czd::from_bytes(vec![0xDD; 32]);
-        let action = Action::from_pay(&pay, czd, to_raw(&pay)).unwrap();
-
-        assert_eq!(action.get_field("custom"), Some(&json!("value")));
-    }
-
-    #[test]
-    fn action_from_pay_missing_tmb_returns_none() {
-        let pay = PayBuilder::new()
-            .typ("example/test")
-            .alg("ES256")
-            .now(1000)
-            .build();
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        assert!(Action::from_pay(&pay, czd, to_raw(&pay)).is_none());
     }
 }

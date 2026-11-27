@@ -17,33 +17,25 @@ Included implementations:
 
 ## Quick Start
 
-Load a principal from genesis:
+Load a principal by replaying its commits from genesis:
 
 ```rust
-use cyphr_storage::{Genesis, load_principal};
+use coz::Alg;
 use cyphr::Key;
-use coz::Thumbprint;
+use cyphr_storage::{Genesis, load_principal_from_commits};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create a key
-    let key = Key {
-        alg: "ES256".to_string(),
-        tmb: Thumbprint::from_bytes(vec![0u8; 32]),
-        pub_key: vec![0u8; 64],
-        first_seen: 1000,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+async fn load() -> Result<(), Box<dyn std::error::Error>> {
+    // A genesis key.
+    let keypair = Alg::ES256.generate_keypair();
+    let key = Key::from_pub_key("ES256", keypair.pub_bytes.clone())?;
 
-    // Implicit genesis: single key, no entries needed for basic case
+    // Implicit genesis: single key, no commits needed for the basic case.
     let genesis = Genesis::Implicit(key);
-    let entries = [];
 
-    // Load principal from genesis and entries
-    let principal = load_principal(genesis, &entries)?;
+    // Replay the commits recorded for the principal (none here).
+    let principal = load_principal_from_commits(genesis, &[]).await?;
 
-    println!("Created principal: {:?}", principal.pr());
+    println!("Loaded principal: {:?}", principal.pr());
     Ok(())
 }
 ```

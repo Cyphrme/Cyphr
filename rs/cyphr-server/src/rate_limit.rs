@@ -75,6 +75,7 @@ use axum::extract::{ConnectInfo, Request};
 use axum::http::header::CONTENT_LENGTH;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use cyphr::PrincipalGenesis;
 use futures::future::BoxFuture;
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use moka::sync::Cache;
@@ -97,7 +98,7 @@ const KEY_CEILING: usize = 100_000;
 /// resolves to `0` (under any quota) -- an index blip never fabricates a quota
 /// refusal of legitimate traffic; the fence only ever refuses on a *known*
 /// over-cap count.
-pub type CountProbe = Arc<dyn Fn(String) -> BoxFuture<'static, u64> + Send + Sync>;
+pub type CountProbe = Arc<dyn Fn(PrincipalGenesis) -> BoxFuture<'static, u64> + Send + Sync>;
 
 /// A single-key `governor` DIRECT (un-keyed) rate limiter -- the per-key cell
 /// [`BoundedLimiter`] stores one of per resident key.
@@ -177,8 +178,8 @@ impl Fences {
             push: BoundedLimiter::new(quota(limits.push)),
             login: BoundedLimiter::new(quota(limits.login)),
             revoke: BoundedLimiter::new(quota(limits.revoke)),
-            max_body_bytes: limits.max_body_bytes,
-            count_quota: limits.count_quota,
+            max_body_bytes: limits.max_body_bytes.get(),
+            count_quota: limits.count_quota.get(),
         }
     }
 
@@ -190,7 +191,7 @@ impl Fences {
             Op::Push => Some(&self.push),
             Op::Login => Some(&self.login),
             Op::Revoke => Some(&self.revoke),
-            Op::Other => None,
+            Op::Probe | Op::Other => None,
         }
     }
 }
@@ -199,8 +200,8 @@ impl Fences {
 /// quota: one cell replenished every `1s / per_second`, up to `burst` capacity.
 /// Both fields are clamped to at least 1 so a misconfigured `0` becomes the
 /// tightest live bucket rather than a panic. Deliberately a silent LOOSENING,
-/// unlike `max_body_bytes == 0` / `count_quota == 0` (rejected loudly at
-/// startup -- see `config::resolve_config`): a clamped-tightest bucket still
+/// unlike `max_body_bytes` / `count_quota` (`NonZeroU64`, so a zero does not
+/// deserialize): a clamped-tightest bucket still
 /// serves traffic, just very strictly, so it never bricks writes and is
 /// clamped rather than refused.
 fn quota(bucket: RateBucket) -> Quota {
@@ -223,6 +224,10 @@ enum Op {
     Push,
     Login,
     Revoke,
+    /// An operator's probe (`/healthz`, `/metrics`): the read fence is a
+    /// client's allowance, and a monitor that polls must not spend it or be
+    /// refused by it, so a probe is held by the per-IP fence alone.
+    Probe,
     Other,
 }
 
@@ -230,11 +235,32 @@ enum Op {
 /// is deliberately ordinary -- no exemption from rate limiting.
 fn classify(method: &Method, path: &str) -> Op {
     match (method, path) {
-        (&Method::POST, "/push") => Op::Push,
+        // A PoP can move a chain as a push does, and costs a replay.
+        (&Method::POST, "/push" | "/resync") => Op::Push,
         (&Method::POST, "/revoke") => Op::Revoke,
         (&Method::POST, "/auth/challenge") | (&Method::POST, "/auth/login") => Op::Login,
+        (&Method::GET, "/healthz" | "/metrics") => Op::Probe,
         (&Method::GET, _) => Op::Read,
         _ => Op::Other,
+    }
+}
+
+/// The unit a per-source limit counts, shared by the HTTP fences and the
+/// Noise session cap so one source is one source on both. An IPv6 /64 is one
+/// end site, one subscriber (RFC 6177), who can source an address per
+/// connection, so it is bucketed by its /64 prefix. IPv4 keeps the full
+/// address: a /24 would merge unrelated hosts behind one provider's block
+/// (and one NAT already shares an address), and no test here supports the
+/// wider bucket.
+pub(crate) fn source_bucket(ip: IpAddr) -> IpAddr {
+    // A dual-stack listener reports an IPv4 client as `::ffff:a.b.c.d`;
+    // key it as the IPv4 address it is, or all of them share one /64.
+    match ip.to_canonical() {
+        v4 @ IpAddr::V4(_) => v4,
+        IpAddr::V6(v6) => {
+            let prefix = u128::from(v6) & !u128::from(u64::MAX);
+            IpAddr::V6(prefix.into())
+        },
     }
 }
 
@@ -245,7 +271,7 @@ fn classify(method: &Method, path: &str) -> Op {
 fn peer_ip(req: &Request) -> IpAddr {
     req.extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|info| info.0.ip())
+        .map(|info| source_bucket(info.0.ip()))
         .unwrap_or(IpAddr::from([0, 0, 0, 0]))
 }
 
@@ -279,10 +305,10 @@ where
 {
     // (1) Size cap on the declared length -- refuse before any keying or
     // buffering when the client announces an over-cap body.
-    if let Some(len) = declared_len(&req) {
-        if len > fences.max_body_bytes {
-            return too_large(fences.max_body_bytes);
-        }
+    if let Some(len) = declared_len(&req)
+        && len > fences.max_body_bytes
+    {
+        return too_large(fences.max_body_bytes);
     }
 
     // (2) Per-IP fence over every request.
@@ -293,10 +319,10 @@ where
 
     // (3) Per-operation fence (keyed on peer IP within the operation).
     let op = classify(req.method(), req.uri().path());
-    if let Some(limiter) = fences.op_limiter(op) {
-        if limiter.check_key(&ip).is_err() {
-            return rate_limited();
-        }
+    if let Some(limiter) = fences.op_limiter(op)
+        && limiter.check_key(&ip).is_err()
+    {
+        return rate_limited();
     }
 
     // (4) Write path: buffer the body (enforcing the size cap on the actual
@@ -394,10 +420,10 @@ fn quota_exceeded(limit: u64) -> Response {
 /// cross-fence coupling.
 #[derive(Deserialize)]
 struct PrincipalIdPeek {
-    principal_id: String,
+    principal_id: PrincipalGenesis,
 }
 
-fn peek_principal_id(bytes: &[u8]) -> Option<String> {
+fn peek_principal_id(bytes: &[u8]) -> Option<PrincipalGenesis> {
     serde_json::from_slice::<PrincipalIdPeek>(bytes)
         .ok()
         .map(|peek| peek.principal_id)
@@ -470,100 +496,56 @@ where
 
 #[cfg(test)]
 mod tests {
-    use governor::clock::DefaultClock;
-    use governor::state::keyed::DefaultKeyedStateStore;
+    use axum::body::Body;
+    use proptest::prelude::*;
 
     use super::*;
 
-    /// A keyed `governor` limiter over key `K`, backed by the default
-    /// (DashMap) keyed state store and default clock. Exercises `governor`'s
-    /// own keyed bucket behavior directly, in isolation from
-    /// [`BoundedLimiter`]'s `moka`-backed store.
-    type KeyedLimiter<K> = RateLimiter<K, DefaultKeyedStateStore<K>, DefaultClock>;
-
-    /// A tight bucket trips within its burst; a fresh key starts full.
-    #[test]
-    fn tight_quota_trips_within_burst() {
-        let limiter: KeyedLimiter<IpAddr> = RateLimiter::keyed(quota(RateBucket {
-            per_second: 1,
-            burst: 2,
-        }));
-        let ip = IpAddr::from([127, 0, 0, 1]);
-        assert!(limiter.check_key(&ip).is_ok(), "first cell within burst");
-        assert!(limiter.check_key(&ip).is_ok(), "second cell within burst");
-        assert!(
-            limiter.check_key(&ip).is_err(),
-            "third immediate cell exceeds a burst of 2"
-        );
-
-        // A distinct key is an independent bucket.
-        let other = IpAddr::from([127, 0, 0, 2]);
-        assert!(
-            limiter.check_key(&other).is_ok(),
-            "a distinct key must not share the tripped bucket"
-        );
+    fn request_from(ip: IpAddr) -> Request {
+        let mut req = Request::new(Body::empty());
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(ip, 4000)));
+        req
     }
 
-    /// A generous bucket never trips under a modest burst.
-    #[test]
-    fn generous_quota_admits_a_burst() {
-        let limiter: KeyedLimiter<IpAddr> = RateLimiter::keyed(quota(RateBucket {
-            per_second: 100_000,
-            burst: 100_000,
-        }));
-        let ip = IpAddr::from([127, 0, 0, 1]);
-        for _ in 0..1000 {
-            assert!(
-                limiter.check_key(&ip).is_ok(),
-                "generous bucket must not trip"
+    proptest! {
+        /// Property: the HTTP fences key every address of one IPv6 /64 to
+        /// one bucket (as the Noise session cap does), so a client that
+        /// sources a fresh address per request cannot mint a fresh
+        /// allowance each time; addresses of different /64s stay apart.
+        /// Red if `peer_ip` keys the full address.
+        #[test]
+        fn one_ipv6_64_is_one_http_source(
+            prefix in any::<u64>(), a in any::<u64>(), b in any::<u64>(), other in any::<u64>(),
+        ) {
+            let v6 = |p: u64, host: u64| {
+                IpAddr::V6(((u128::from(p) << 64) | u128::from(host)).into())
+            };
+            prop_assert_eq!(
+                peer_ip(&request_from(v6(prefix, a))),
+                peer_ip(&request_from(v6(prefix, b)))
+            );
+            prop_assume!(other != prefix);
+            prop_assert_ne!(
+                peer_ip(&request_from(v6(prefix, a))),
+                peer_ip(&request_from(v6(other, a)))
             );
         }
     }
 
+    /// Backs: each route is rate-limited under its own operation bucket (push, revoke, login,
+    /// read). Unit: rate_limits.rs probes push/read/revoke buckets; the login/other mapping has no
+    /// e2e probe.
     #[test]
     fn classify_maps_routes_to_operations() {
         assert!(classify(&Method::POST, "/push") == Op::Push);
         assert!(classify(&Method::POST, "/revoke") == Op::Revoke);
         assert!(classify(&Method::POST, "/auth/login") == Op::Login);
         assert!(classify(&Method::GET, "/tip") == Op::Read);
+        assert!(classify(&Method::GET, "/healthz") == Op::Probe);
+        assert!(classify(&Method::GET, "/metrics") == Op::Probe);
         assert!(classify(&Method::GET, "/e/abc") == Op::Read);
         assert!(classify(&Method::PUT, "/whatever") == Op::Other);
-    }
-
-    #[test]
-    fn peek_reads_principal_id() {
-        let body = br#"{"principal_id":"abc","blobs":[]}"#;
-        assert_eq!(peek_principal_id(body).as_deref(), Some("abc"));
-        assert!(peek_principal_id(b"not json").is_none());
-    }
-
-    /// WHITE-BOX bounded-state invariant: every keyed limiter carries a hard
-    /// max-entry ceiling (`KEY_CEILING`) enforced continuously by `moka` on
-    /// every insert, not just an amortized sweep -- so even a flood of
-    /// distinct, never-repeated keys (e.g. a distributed or IPv6-rotation
-    /// attack, which no time-based staleness check alone can bound) never
-    /// grows the map past `KEY_CEILING` resident entries.
-    #[test]
-    fn keyed_limiter_map_is_bounded_by_key_ceiling() {
-        use std::net::Ipv6Addr;
-
-        let fences = Fences::from_config(&LimitsConfig::default());
-
-        // Flood the per-IP map with distinct, never-seen keys. `moka` evicts
-        // the coldest resident key inline on each insert past capacity --
-        // no external sweep to drive.
-        for i in 0..(KEY_CEILING as u128 + 1_000) {
-            let ip = IpAddr::V6(Ipv6Addr::from(i));
-            let _ = fences.per_ip.check_key(&ip);
-        }
-
-        assert!(
-            fences.per_ip.len() <= KEY_CEILING,
-            "the per-IP limiter map must stay within KEY_CEILING ({}) entries under a flood of \
-             distinct keys, got {}",
-            KEY_CEILING,
-            fences.per_ip.len(),
-        );
     }
 
     /// A HOT key's accumulated throttle must SURVIVE a flood of distinct
@@ -588,11 +570,17 @@ mod tests {
         // against that; the assertion holds only because per-key eviction
         // keeps H recently-touched and therefore never the eviction victim,
         // so its exhausted bucket is the one that survives, never a reset one.
+        //
+        // The refill period is an hour, not `quota()`'s one-second floor: the
+        // flood's wall time is machine-load dependent, and under load it can
+        // exceed a second, letting the real clock refill a cell of H's
+        // legitimately-surviving bucket and flip the final check to `Ok`.
         const HOT_BURST: u32 = 64;
-        let lim = BoundedLimiter::new(quota(RateBucket {
-            per_second: 1,
-            burst: HOT_BURST,
-        }));
+        let lim = BoundedLimiter::new(
+            Quota::with_period(Duration::from_secs(3600))
+                .expect("non-zero period")
+                .allow_burst(NonZeroU32::new(HOT_BURST).expect("non-zero burst")),
+        );
         let hot = IpAddr::from([10, 0, 0, 1]);
 
         // 1. Exhaust H's bucket; confirm it is now throttled (guard

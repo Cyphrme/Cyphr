@@ -18,13 +18,38 @@ cargo install cyphr-cli
 cyphr key generate --algo ES256 --tag my-key
 ```
 
+Keys are stored unencrypted at rest, in a file only you can read. See
+[Key storage](../../docs/guides/key-storage.md) for what that means and what
+the CLI does to protect the file.
+
 ### Initialize a new Principal
 
 ```bash
 cyphr init --algo ES256
 ```
 
-This generates a new ECDSA keypair, creates an implicit Level 1 Principal, and stores both the keypair and Principal state to your local storage directory.
+This generates a new ECDSA keypair, creates an implicit Level 1 Principal, and stores both the keypair and Principal state to your local storage directory. A Level 1 principal has no commit, so `cyphr push` has nothing to send for it. Pass `--genesis-commit` to publish the genesis commit at the same time (the genesis key signs a `key/create` for itself and each further key, a `principal/create` and the commit that finalizes them):
+
+```bash
+cyphr init --algo ES256 --genesis-commit
+```
+
+`--keys <tmb1>,<tmb2>` creates a multi-key principal, which always commits its genesis.
+
+### Move a Level 1 Principal up
+
+A Level 1 Principal has no commit, so commands that need one (`key add`,
+`data action`, `data commit`) refuse it until you say so. Create its genesis
+commit explicitly:
+
+```bash
+cyphr upgrade --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc
+```
+
+or repeat the command with `--upgrade`, which creates the genesis commit as
+part of it. The principal and its identifier stay the same; `key add
+--upgrade` makes the genesis commit, then the key's own commit. Nothing is
+signed without one of the two.
 
 ### View Principal keys
 
@@ -33,6 +58,8 @@ cyphr key list --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc
 ```
 
 ### Add a key to a Principal
+
+On a principal that already has its genesis commit (see above):
 
 ```bash
 cyphr key add --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc \
@@ -44,6 +71,30 @@ cyphr key add --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc \
 ```bash
 cyphr inspect --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc
 ```
+
+### Pair a device
+
+Each device enrolls its own key; no private key is exported or copied. On
+the new device, sign a pairing request for the principal, then carry the
+file to a device already in the principal and accept it there:
+
+```sh
+cyphr key request --identity <PR> --file request.json
+cyphr key accept --identity <PR> --signer <TMB> --file request.json
+```
+
+The request is signed by the new key (a proof of possession) under an
+application typ, `<authority>/pairing/create`. `accept` refuses a request
+whose signature does not verify, that names another principal or
+authority, or whose `now` is more than 300 seconds from the accepting
+device's clock (`--window` changes it). The window is an implementation
+choice: SPEC 17.2 and 17.3 (at `be0663f`) require a bounded timestamp
+window and leave N to the verifier.
+
+Replay limit: a request replayed after acceptance is refused while its key
+is active. Within the window, if the owner deleted that key and runs
+`accept` again on the same file, the key is added back. The MVP has no
+challenge nonce.
 
 ### Export and import
 

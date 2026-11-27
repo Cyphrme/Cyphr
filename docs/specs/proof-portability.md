@@ -15,7 +15,7 @@
 
 ## Domain
 
-**Problem Domain:** `Principal::verify_key_inclusion` (`rs/cyphr/src/principal.rs`)
+**Problem Domain:** `Principal::verify_key_inclusion` (`rs/cyphr/src/principal/proofs.rs`)
 only serves a caller that already owns and trusts a live `Principal` --
 it reads its trusted roots from `self`. Issue #19 asks for the portable
 alternative: a third party holding only a server's pinned PG and a
@@ -26,7 +26,7 @@ replaying, or querying that principal directly.
 **Target System:** `rs/cyphr/src/inclusion.rs`'s free function
 `verify_key_inclusion` (pre-existing, genuinely `Principal`-free); the
 one new accessor `Principal::sr_inclusion_proof`
-(`rs/cyphr/src/principal.rs`) that makes hop 4 of the proof chain
+(`rs/cyphr/src/principal/proofs.rs`) that makes hop 4 of the proof chain
 reachable from outside the crate; and the end-to-end demonstration in
 `rs/cyphr-server/tests/inclusion_portability.rs`.
 
@@ -51,7 +51,7 @@ top-down from a trusted Principal Root (PR):
 Each hop is a self-contained `polydigest::LeafProof`, checked against
 its own level's root, with a bridge check binding hop `i`'s proven leaf
 value to hop `i-1`'s root (`NodePath::verify`,
-`rs/cyphr/src/principal.rs`). All four hops and roots are generatable
+`rs/cyphr/src/principal/proofs.rs`). All four hops and roots are generatable
 from public APIs: `Principal::active_algs`/`active_keys`/`data_root`
 feed `KeyTree`/`AuthTree`/`StateTree::build_tree` for hops 1-3 (all
 `pub`), and the new `Principal::sr_inclusion_proof` accessor gives hop
@@ -96,7 +96,7 @@ tip-attested AR).
 ## `[portability-r-endpoint-deferred]` Ruling: no new HTTP endpoint ships here
 
 A server-side proof-serving read handler (e.g. `GET
-/proof/key-inclusion?pr=<pg>&tmb=<b64ut>&alg=<name>`, returning an
+/proof/key-inclusion?pg=<pg>&tmb=<b64ut>&alg=<name>`, returning an
 unsigned envelope carrying the 4 hops) was considered and is
 **deferred**, not shipped, for three reasons:
 
@@ -127,7 +127,7 @@ unsigned envelope carrying the 4 hops) was considered and is
    hops_, not whether the verification itself is portable.
 
 **Follow-up shape**, for whoever picks this up: `GET
-/proof/key-inclusion?pr=<pg>&tmb=<b64ut>&alg=<name>` inside
+/proof/key-inclusion?pg=<pg>&tmb=<b64ut>&alg=<name>` inside
 `routes.rs`, returning `Envelope::unsigned` (no attestation claim is
 needed -- the hops are self-verifying against a tip report the caller
 fetches separately) carrying `{hops: [LeafProof; 4], tmb, alg}`. It

@@ -7,7 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64ct::{Base64UrlUnpadded, Encoding};
 use coz::Thumbprint;
-use cyphr::Key;
+use cyphr::replay::WireBundle;
+use cyphr::{Key, PrincipalGenesis};
 use cyphr_blob_fjall::FjallBlobStore;
 use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::engine::StorageEngine;
@@ -17,24 +18,52 @@ use cyphr_storage::{CommitEntry, Genesis};
 pub type CliStorageEngine =
     StorageEngine<FjallBlobStore, FjallIndexer, cyphr_blob_fjall::storage_fjall::FjallStorage>;
 
-/// Type alias for a `Principal` backed by the CLI's durable Commit Tree
-/// storage — what [`load_principal_from_engine`] always returns.
-pub type CliPrincipal = cyphr::Principal<cyphr_blob_fjall::storage_fjall::FjallStorage>;
+/// A `Principal` the CLI mutates over an in-memory commit log, detached
+/// from the engine's durable one: the engine's own append in
+/// `submit_commit` is then the only write to that log. A command that
+/// appended to it as well would leave it one leaf ahead of the chain, and
+/// the next load would regenerate it from the blobs.
+pub type CliPrincipal = cyphr::Principal<cyphr::eml::MemoryStorage>;
 
 use crate::Error;
-use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
+use crate::keystore::{Error as KeystoreError, JsonKeyStore, KeyBackend};
 
-/// Build a fresh single-threaded tokio runtime and drive `fut` to
-/// completion on it.
+/// The one place a command opens the key backend. Selecting a backend at
+/// runtime (an OS keychain, a hardware token) changes this function and
+/// nothing else: commands see only the [`KeyBackend`] trait.
+pub fn open_backend(cli: &crate::Cli) -> crate::Result<JsonKeyStore> {
+    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    for t in keystore.tightened() {
+        eprintln!(
+            "tightened permissions on {}: {:04o} -> {:04o}",
+            t.path.display(),
+            t.from,
+            t.to
+        );
+    }
+    if let Some(d) = keystore.exposed_dir() {
+        eprintln!(
+            "warning: key directory {} is accessible to other users (mode {:04o}); not changed. \
+             Keep the key file in a directory only you can reach",
+            d.path.display(),
+            d.mode
+        );
+    }
+    Ok(keystore)
+}
+
+/// Drive `fut` to completion on the process's one runtime.
 ///
-/// The CLI is synchronous end-to-end; every entry point that needs to await
-/// one async storage call spins up a short-lived runtime just for that call
-/// rather than making the whole CLI async.
+/// `main` builds the runtime once and runs the (synchronous) command body
+/// on a blocking-pool thread, so this blocks that thread on the runtime's
+/// handle. Every await in a command, and every connection pool a
+/// connector holds, therefore lives on the same runtime for the whole
+/// process; a per-call runtime would strand a pool's background tasks when
+/// the call returned.
 pub fn block_on<F: std::future::Future>(fut: F) -> crate::Result<F::Output> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    Ok(rt.block_on(fut))
+    let handle = tokio::runtime::Handle::try_current()
+        .map_err(|e| std::io::Error::other(format!("no process runtime: {e}")))?;
+    Ok(handle.block_on(fut))
 }
 
 /// Get Unix timestamp as i64 seconds.
@@ -46,19 +75,19 @@ pub fn current_timestamp() -> i64 {
 }
 
 /// Load a cyphr Key from keystore by thumbprint.
-pub fn load_key_from_keystore(keystore: &JsonKeyStore, tmb: &str) -> crate::Result<Key> {
-    let stored = keystore.get(tmb)?;
+pub fn load_key_from_keystore(keystore: &impl KeyBackend, tmb: &str) -> crate::Result<Key> {
+    let stored = keystore.public(tmb)?;
     let now = current_timestamp();
 
-    Ok(Key {
-        alg: stored.alg.clone(),
-        tmb: Thumbprint::from_bytes(decode_b64(tmb)?),
-        pub_key: stored.pub_key.clone(),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: stored.tag.clone(),
-    })
+    // The keystore is local trust, but a corrupted or swapped record must
+    // not yield a key whose tmb is not its pub's thumbprint.
+    Ok(Key::new(
+        stored.alg,
+        Thumbprint::from_bytes(decode_b64(tmb)?),
+        stored.pub_key,
+    )?
+    .with_first_seen(now)
+    .with_tag(stored.tag))
 }
 
 /// Extract genesis from stored commits.
@@ -67,143 +96,149 @@ pub fn load_key_from_keystore(keystore: &JsonKeyStore, tmb: &str) -> crate::Resu
 ///
 /// **With keystore**: Look up the signer of the first coz by
 /// thumbprint (`pay.tmb`). This is the correct approach for import,
-/// where the genesis key (signer) may not be embedded in the commit
-/// but the *new* key being added might be.
+/// where the genesis key (signer) may not be in the commit's `keys` but
+/// the *new* key being added might be.
 ///
-/// **Without keystore**: Scan the first commit's cozies for
-/// embedded `key` objects. This works for inspect/verify/list where
-/// all key material is in the commits themselves.
+/// **Without keystore**: the first commit's `keys` entries its
+/// `key/create` cozies name, in transaction order. This works for
+/// inspect/verify/list where all key material is in the commits
+/// themselves.
 pub fn extract_genesis_from_commits(
     commits: &[CommitEntry],
-    keystore: Option<&JsonKeyStore>,
+    keystore: Option<&impl KeyBackend>,
 ) -> crate::Result<Genesis> {
     let first_commit = commits.first().ok_or(Error::MissingField("commits"))?;
+    let named = |tmb: &str| first_commit.keys.iter().find(|k| k.tmb == tmb);
+    let decoded = first_commit
+        .bundle()
+        .map_err(|e| Error::InvalidArgument(format!("the first commit does not serialize: {e}")))?
+        .decode()
+        .map_err(|e| Error::InvalidArgument(format!("the first commit does not decode: {e}")))?;
 
     // When keystore is available, prefer signer-based lookup.
     // The signer of the first coz IS the genesis key.
-    if let Some(ks) = keystore {
-        if let Some(first_tx) = first_commit.cozies.first() {
-            if let Some(signer_tmb) = first_tx
-                .get("pay")
-                .and_then(|p| p.get("tmb"))
-                .and_then(|v| v.as_str())
-            {
-                // Try embedded key first (self-signed genesis)
-                if let Some(key_obj) = first_tx.get("key") {
-                    if key_obj.get("tmb").and_then(|v| v.as_str()) == Some(signer_tmb) {
-                        return extract_key_from_obj(key_obj).map(Genesis::Implicit);
-                    }
-                }
+    if let Some(ks) = keystore
+        && let Some(first) = decoded.cozies().next()
+    {
+        let signer_tmb = first.header().tmb.to_b64();
+        // The keystore is the local authority: a key in the
+        // (untrusted) bundle never overrides it.
+        if let Ok(key) = load_key_from_keystore(ks, &signer_tmb) {
+            return Ok(Genesis::Implicit(key));
+        }
 
-                // Fallback to keystore
-                if let Ok(key) = load_key_from_keystore(ks, signer_tmb) {
-                    return Ok(Genesis::Implicit(key));
-                }
-            }
+        // Not in the keystore: fall back to the self-signed genesis
+        // key the bundle discloses.
+        if let Some(entry) = named(&signer_tmb) {
+            return entry_key(entry).map(Genesis::Implicit);
         }
     }
 
-    // No keystore or signer lookup failed — scan for embedded keys.
-    let mut genesis_keys = Vec::new();
-
-    for tx_value in &first_commit.cozies {
-        if let Some(key_obj) = tx_value.get("key") {
-            genesis_keys.push(extract_key_from_obj(key_obj)?);
-        }
-    }
+    // No keystore or signer lookup failed: the keys the genesis commit
+    // discloses.
+    let mut genesis_keys: Vec<Key> = match decoded.genesis_keys() {
+        Some(Ok(keys)) => keys.into_iter().cloned().collect(),
+        Some(Err(e)) => return Err(Error::InvalidArgument(format!("the first commit: {e}"))),
+        None => Vec::new(),
+    };
 
     if genesis_keys.is_empty() {
-        return Err(Error::Storage(
-            "cannot determine genesis keys from storage".into(),
-        ));
+        return Err(Error::MissingField("genesis key in the first commit"));
     }
 
     if genesis_keys.len() == 1 {
         Ok(Genesis::Implicit(genesis_keys.remove(0)))
     } else {
-        Ok(Genesis::Explicit(genesis_keys))
+        Ok(Genesis::Disclosed(genesis_keys))
     }
 }
 
-/// Extract a Key from a JSON key object.
-fn extract_key_from_obj(key_obj: &serde_json::Value) -> crate::Result<Key> {
-    let alg = key_obj
-        .get("alg")
-        .and_then(|v| v.as_str())
-        .ok_or(Error::MissingField("key.alg"))?;
-    let pub_b64 = key_obj
-        .get("pub")
-        .and_then(|v| v.as_str())
-        .ok_or(Error::MissingField("key.pub"))?;
-    let tmb_b64 = key_obj
-        .get("tmb")
-        .and_then(|v| v.as_str())
-        .ok_or(Error::MissingField("key.tmb"))?;
-
-    let pub_key = Base64UrlUnpadded::decode_vec(pub_b64)?;
-    let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64)?;
-
-    Ok(Key {
-        alg: alg.to_string(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
-        pub_key,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
+/// A commit `keys` entry as a [`Key`].
+fn entry_key(entry: &cyphr_storage::KeyEntry) -> crate::Result<Key> {
+    entry.to_key().map_err(|e| match e {
+        cyphr::replay::WireError::Key(refusal) => refusal.into(),
+        other => Error::InvalidArgument(format!("key {}: {other}", entry.tmb)),
     })
 }
 
 /// Parse the CLI options into a CliStorageEngine.
 pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
-    let store_uri = &cli.store;
-    let keystore_path = &cli.keystore;
-    let total_check = cli.total_check;
+    let path = store_path(cli)?;
+    refuse_interrupted_swap(path)?;
+    open_store(path, cli.total_check)
+}
 
-    if let Some(path) = store_uri.strip_prefix("file:") {
-        let path = std::path::Path::new(path);
-        let db = fjall::Database::builder(path.join("blobs"))
-            .open()
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        let blob_store = FjallBlobStore::from_database(db.clone())
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        let indexer = FjallIndexer::open(&path.join("index"))
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        let engine =
-            StorageEngine::with_storage_factory(blob_store, indexer, move |principal_id: &str| {
-                cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id)
-                    .map_err(|e| e.to_string())
-            });
-
-        // Open keystore and extract keys
-        let keystore = JsonKeyStore::open(keystore_path)?;
-        let thumbprints = keystore.list();
-        let mut keys = Vec::new();
-        for tmb in &thumbprints {
-            if let Ok(key) = load_key_from_keystore(&keystore, tmb) {
-                keys.push(key);
-            }
-        }
-
-        // Reindex on startup synchronously
-        block_on(engine.reindex(&keys, total_check))?
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
-
-        Ok(engine)
-    } else {
-        Err(Error::InvalidArgument(format!(
-            "unsupported store URI: {store_uri} (expected file:<path>)"
-        )))
+/// Refuse to open a store that is missing while a store swap left siblings
+/// behind: opening would silently create an empty store beside the real
+/// history. A store that was never created (no siblings) opens normally.
+fn refuse_interrupted_swap(path: &std::path::Path) -> crate::Result<()> {
+    if path.exists() {
+        return Ok(());
     }
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
+    else {
+        return Ok(());
+    };
+    let parent = if parent.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        parent
+    };
+    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(parent)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name().to_str().is_some_and(|n| {
+                n.strip_prefix(name).is_some_and(|rest| {
+                    rest == super::network::SWAP_MARKER
+                        || rest == super::network::SCRATCH_SUFFIX
+                        || rest.starts_with(super::network::BACKUP_PREFIX)
+                })
+            })
+        })
+        .map(|e| e.path())
+        .collect();
+    if found.is_empty() {
+        return Ok(());
+    }
+    found.sort();
+    Err(Error::InterruptedSwap {
+        store: path.to_owned(),
+        found,
+    })
 }
 
-/// Get the principal ID string for a PrincipalGenesis
-pub fn get_principal_id(pg: &cyphr::PrincipalGenesis) -> crate::Result<String> {
-    use cyphr::StateDigest;
-    Ok(pg.as_multihash().tagged_first()?.to_string())
+/// The directory a `file:<path>` store URI names.
+pub fn store_path(cli: &crate::Cli) -> crate::Result<&std::path::Path> {
+    cli.store
+        .strip_prefix("file:")
+        .map(std::path::Path::new)
+        .ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "unsupported store URI: {} (expected file:<path>)",
+                cli.store
+            ))
+        })
 }
 
-/// Get the principal ID string from a Principal.
+/// Open (creating if absent) the store rooted at `path`.
+///
+/// `total_check` discards the index and rebuilds it instead of healing
+/// manifest-backed gaps lazily on first use.
+pub fn open_store(path: &std::path::Path, total_check: bool) -> crate::Result<CliStorageEngine> {
+    let db = fjall::Database::builder(path.join("blobs")).open()?;
+    let blob_store = FjallBlobStore::from_database(db.clone())?;
+    let indexer = FjallIndexer::open(&path.join("index"))?;
+    let logs = cyphr_blob_fjall::EmlLogs::new(db)?;
+    let engine = StorageEngine::with_log_factory(blob_store, indexer, logs);
+
+    if total_check {
+        block_on(engine.rebuild_index_from_scratch())??;
+    }
+
+    Ok(engine)
+}
+
+/// Get the principal ID from a Principal.
 ///
 /// This must be *stable*: it is used as the storage engine's lookup key for
 /// this principal's tip across its entire lifetime, so calling it again
@@ -211,251 +246,137 @@ pub fn get_principal_id(pg: &cyphr::PrincipalGenesis) -> crate::Result<String> {
 /// string it returned right after genesis.
 ///
 /// Established (Level 3+) principals key off `pg()`, which is frozen for
-/// life the moment `principal/create` sets it. But a still-nascent
-/// principal (including multi-key explicit genesis before that commit --
-/// the common case, since the CLI never issues `principal/create`) has no
-/// stable field to key off other than `genesis_keys()`, which is fixed at
-/// construction and never mutated afterward. `pr()` is NOT stable here: it
+/// life the moment `principal/create` sets it. A principal that has not
+/// committed yet (the CLI commits its genesis before its first key change)
+/// has no stable field to key off other than `genesis_key()`, which is
+/// fixed at construction and never mutated afterward. `pr()` is NOT stable here: it
 /// is the live, continuously-recomputed Principal State, which moves with
 /// every subsequent commit -- using it produced a different "stable" ID on
 /// every save once any operation happened after genesis, silently losing
 /// the principal's own tip.
 ///
 /// So a nascent principal's ID is the genesis-time PR, recomputed by
-/// rebuilding a throwaway `Principal` from the original genesis keys
-/// (looked up in `keystore` by their still-immutable thumbprints) --
-/// byte-identical to what `init` computed and showed the user, regardless
-/// of how many mutations this principal has since accumulated.
+/// rebuilding a throwaway `Principal` from the genesis key (looked up in
+/// `keystore` by its still-immutable thumbprint) -- byte-identical to what
+/// `init` computed and showed the user, regardless of how many mutations
+/// this principal has since accumulated.
 pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
     principal: &cyphr::Principal<S>,
-    keystore: &JsonKeyStore,
-) -> crate::Result<String> {
-    use cyphr::StateDigest;
-
+    keystore: &impl KeyBackend,
+) -> crate::Result<PrincipalGenesis> {
     if let Some(pg) = principal.pg() {
-        return Ok(pg.as_multihash().tagged_first()?.to_string());
+        return Ok(pg.clone());
     }
 
-    let genesis_keys = principal
-        .genesis_keys()
-        .iter()
-        .map(|tmb| load_key_from_keystore(keystore, tmb))
-        .collect::<crate::Result<Vec<_>>>()?;
-    let genesis_principal = cyphr::Principal::<cyphr::eml::MemoryStorage>::explicit(genesis_keys)?;
-    Ok(genesis_principal
-        .pr()
-        .as_multihash()
-        .tagged_first()?
-        .to_string())
+    let genesis_key = load_key_from_keystore(keystore, principal.genesis_key())?;
+    Ok(cyphr::PrincipalState::genesis(genesis_key)?.pr_id()?)
 }
 
-/// Load a principal from the storage engine.
+/// The name a keystore holds a Level 1 identity's genesis key under: the
+/// thumbprint, which is the digest of the id itself (SPEC 3.1).
+pub fn keystore_name(identity: &PrincipalGenesis) -> crate::Result<String> {
+    use cyphr::StateDigest;
+    Ok(Base64UrlUnpadded::encode_string(
+        identity.as_multihash().first_variant()?,
+    ))
+}
+
+/// Load a principal from the storage engine, detached from its durable
+/// commit log ([`CliPrincipal`]); [`save_principal_to_engine`] writes what
+/// the caller then commits.
 pub fn load_principal_from_engine(
     engine: &CliStorageEngine,
-    keystore: &JsonKeyStore,
-    identity: &str,
+    keystore: &impl KeyBackend,
+    identity: &PrincipalGenesis,
 ) -> crate::Result<CliPrincipal> {
-    let pg = parse_principal_genesis(identity)?;
-    let principal_id = get_principal_id(&pg)?;
-
     block_on(async {
-        let tip = engine
-            .get_tip(&principal_id)
-            .await
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
-
+        if let Some(at_tip) = engine.at_tip(identity).await? {
+            return Ok(at_tip.detach().await?);
+        }
         // `identity` matching a keystore thumbprint directly IS implicit
         // (single-key) genesis, independent of whether a tip has been
-        // stored yet -- this must be checked before falling back on
-        // `tip.is_none()`, otherwise a never-yet-pushed *explicit*
-        // multi-key genesis (whose identity is a combined digest, not any
-        // single key's thumbprint) gets misread as implicit and fails to
-        // reload with a confusing "key not found" error.
-        let is_implicit_genesis = keystore.get(identity).is_ok();
-
-        let genesis = if is_implicit_genesis {
-            let genesis_key = load_key_from_keystore(keystore, identity)?;
-            cyphr_storage::Genesis::Implicit(genesis_key)
-        } else if let Some(tmbs) = keystore.lookup_genesis(&principal_id) {
-            // Explicit multi-key genesis recorded locally at `init` time
-            // (see `init`'s call to `record_genesis`) -- the only way to
-            // reconstruct it before any commit exists to anchor it in
-            // storage.
-            let keys = tmbs
-                .iter()
-                .map(|tmb| load_key_from_keystore(keystore, tmb))
-                .collect::<crate::Result<Vec<_>>>()?;
-            cyphr_storage::Genesis::Explicit(keys)
-        } else if tip.is_none() {
-            return Err(crate::Error::Storage(format!(
-                "identity {identity} has no stored commits and does not match any keystore key or \
-                 recorded genesis; cannot resolve genesis"
-            )));
-        } else {
-            engine
-                .resolve_genesis(&principal_id, &[])
-                .await
-                .map_err(|e| crate::Error::Storage(e.to_string()))?
-        };
-
-        engine
-            .load_principal(&principal_id, genesis)
-            .await
-            .map_err(|e| crate::Error::Storage(e.to_string()))
+        // stored yet. A multi-key principal exists only through its
+        // genesis commit (SPEC 5.1), so with no tip there is nothing to
+        // resolve it from.
+        let tmb = keystore_name(identity)?;
+        if keystore.public(&tmb).is_err() {
+            return Err(crate::Error::UnresolvableGenesis(identity.to_string()));
+        }
+        let genesis_key = load_key_from_keystore(keystore, &tmb)?;
+        Ok(cyphr::Principal::implicit(genesis_key).await?)
     })?
 }
 
-/// Whether a coz `typ` string indicates a key-embedding transaction
-/// (`key/create` or `key/replace`) -- i.e. one whose blob must carry the
-/// new key's material inline, not just the signer's thumbprint.
-///
-/// Thin wrapper over `cyphr::parsed_coz::typ::is_key_introducing`, the
-/// crate-spanning canonical implementation of this rule (F41).
-fn is_key_embedding_typ(typ: &str) -> bool {
-    cyphr::parsed_coz::typ::is_key_introducing(typ)
-}
-
-/// Resolve `principal`'s original genesis (implicit single-key, or explicit
-/// multi-key) from its own `genesis_keys()` and local `keystore` records —
-/// covering *every* genesis key, not just the first.
+/// Resolve `principal`'s genesis from its own `genesis_key()` and the local
+/// `keystore`. Every further key enters by a `key/create` its commits
+/// carry, so the genesis key alone replays it.
 ///
 /// # Errors
 ///
-/// Returns an error if any genesis key's thumbprint is not found in
+/// Returns an error if the genesis key's thumbprint is not found in
 /// `keystore` (e.g. an imported principal whose genesis material never
 /// lived in this local keystore) — callers fall back to reconstructing
 /// genesis from stored blob material instead (see
 /// [`extract_genesis_from_commits`]).
 fn resolve_local_genesis<S: cyphr::eml::Storage>(
     principal: &cyphr::Principal<S>,
-    keystore: &JsonKeyStore,
+    keystore: &impl KeyBackend,
 ) -> crate::Result<Genesis> {
-    let keys = principal
-        .genesis_keys()
-        .iter()
-        .map(|tmb| load_key_from_keystore(keystore, tmb))
-        .collect::<crate::Result<Vec<_>>>()?;
-
-    Ok(match keys.len() {
-        1 => Genesis::Implicit(keys.into_iter().next().unwrap()),
-        _ => Genesis::Explicit(keys),
-    })
+    Ok(Genesis::Implicit(load_key_from_keystore(
+        keystore,
+        principal.genesis_key(),
+    )?))
 }
 
 /// Save a principal's new commits to the storage engine.
 ///
-/// Generic over `principal`'s own Commit Tree backend `S`: callers pass
-/// both a freshly-constructed, not-yet-persisted `Principal` (backed by
-/// [`cyphr::eml::MemoryStorage`], e.g. from `init`/`import`) and a
-/// [`CliPrincipal`] loaded via [`load_principal_from_engine`] and then
-/// mutated (e.g. from `key add`/`key revoke`). Either way, only `engine`'s
+/// Generic over `principal`'s own Commit Tree backend `S`: only `engine`'s
 /// own durable storage is written to — `principal`'s backend is read-only
 /// here, via `cyphr_storage::export_commits`.
 pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
     engine: &CliStorageEngine,
-    keystore: &JsonKeyStore,
+    keystore: &impl KeyBackend,
     principal: &cyphr::Principal<S>,
 ) -> crate::Result<()> {
     block_on(async {
         let principal_id = get_principal_id_from_principal(principal, keystore)?;
 
-        let tip = engine
-            .get_tip(&principal_id)
-            .await
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+        let tip = engine.get_tip(&principal_id).await?;
 
         let stored_count = tip.map(|t| t.commit_count as usize).unwrap_or(0);
 
-        let commits = cyphr_storage::export_commits(principal)
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
-
-        for (i, commit) in commits.iter().enumerate().skip(stored_count) {
-            let mut raw_blobs = Vec::new();
-            let mut key_iter = commit.keys.iter();
-            for coz in &commit.cozies {
-                let mut coz_mut = coz.clone();
-                let typ = coz_mut
-                    .get("pay")
-                    .and_then(|p| p.get("typ"))
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("");
-
-                if is_key_embedding_typ(typ) {
-                    if let Some(key_entry) = key_iter.next() {
-                        if let Some(obj) = coz_mut.as_object_mut() {
-                            obj.insert("key".to_string(), serde_json::to_value(key_entry)?);
-                        }
-                    }
-                } else if i == 0 && typ.contains("/commit/create") {
-                    // Best-effort: embed the genesis key's material into the
-                    // first commit's terminal coz, so a *single-key*
-                    // (implicit) genesis can be reconstructed later purely
-                    // from stored blobs even without a local keystore
-                    // record. A single JSON "key" field can only carry one
-                    // key's material, so this cannot represent a multi-key
-                    // (explicit) genesis without silently narrowing it down
-                    // to just the first key (the F40 root cause, in this
-                    // function's sibling `genesis` resolution below) — for
-                    // that case genesis reconstruction instead relies on
-                    // the local keystore's recorded genesis
-                    // (`keystore.lookup_genesis`, set at `init` time) or,
-                    // failing that, `extract_genesis_from_commits` scanning
-                    // every cozy's own embedded key material.
-                    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                    if let [identity] = principal.genesis_keys() {
-                        if let Ok(key) = load_key_from_keystore(keystore, identity) {
-                            let key_entry = cyphr_storage::KeyEntry {
-                                alg: key.alg.clone(),
-                                pub_key: Base64UrlUnpadded::encode_string(&key.pub_key),
-                                tmb: key.tmb.to_b64(),
-                                tag: key.tag.clone(),
-                                now: Some(key.first_seen),
-                            };
-                            if let Some(obj) = coz_mut.as_object_mut() {
-                                obj.insert("key".to_string(), serde_json::to_value(&key_entry)?);
-                            }
-                        }
-                    }
-                }
-
-                let bytes = serde_json::to_vec(&coz_mut).map_err(crate::Error::Json)?;
-                raw_blobs.push(bytes);
+        // A line is new when the commits before it are not all stored yet.
+        // An action-only line forms no commit, so it does not count toward
+        // `stored_count`; one stored already hashes to the same manifest, so
+        // submitting it again changes nothing.
+        let mut commits_before = 0usize;
+        for commit in &cyphr_storage::export_commits(principal)? {
+            let is_new = commits_before >= stored_count;
+            if !commit.commit_id.is_empty() {
+                commits_before += 1;
             }
-            let raw_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
+            if !is_new {
+                continue;
+            }
+            let bundle = commit.bundle().map_err(crate::Error::Json)?;
 
-            // F40: always resolve genesis from what this caller already
-            // knows locally (covering every genesis key, not just the
-            // first), rather than only supplying it for the first commit
-            // and letting `submit_commit` fall back to reconstructing it
-            // server-side from stored blob material for i > 0. That
-            // server-side fallback (`StorageEngine::resolve_genesis`) can
-            // only recover a *single* embedded key from the first commit's
-            // blobs — it has no wire representation for a multi-key
-            // genesis at all — so relying on it for a multi-key genesis's
-            // second-and-later commits silently reconstructs the wrong
-            // principal (e.g. treating the first commit's newly-*added*
-            // key as if it were the whole genesis) and
-            // `finalize_commit`'s arrow check correctly rejects the
-            // resulting state-root divergence.
+            // Resolve the genesis from what this caller knows locally (its
+            // genesis key); the engine reads a stored principal's genesis
+            // from its first commit anyway.
             let genesis = match resolve_local_genesis(principal, keystore) {
                 Ok(genesis) => genesis,
                 Err(_) => {
-                    let parsed_commit = cyphr_storage::CommitEntry {
-                        cozies: commit.cozies.clone(),
-                        keys: commit.keys.clone(),
-                        commit_id: commit.commit_id.clone(),
-                        auth_root: commit.auth_root.clone(),
-                        sr: commit.sr.clone(),
-                        pr: commit.pr.clone(),
-                    };
-                    extract_genesis_from_commits(&[parsed_commit], Some(keystore))?
+                    extract_genesis_from_commits(std::slice::from_ref(commit), Some(keystore))?
                 },
             };
 
-            engine
-                .submit_commit(&principal_id, Some(genesis), &raw_refs)
+            match engine
+                .submit_commit(&principal_id, Some(genesis), &bundle)
                 .await
-                .map_err(|e| crate::Error::Storage(e.to_string()))?;
+            {
+                Ok(_) => {},
+                Err(e) => return Err(e.into()),
+            }
         }
 
         Ok(())
@@ -465,68 +386,70 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
 /// Retrieve all commits for an identity from the storage engine.
 pub fn get_commits_from_engine(
     engine: &CliStorageEngine,
-    identity: &str,
+    identity: &PrincipalGenesis,
 ) -> crate::Result<Vec<CommitEntry>> {
-    let pg = parse_principal_genesis(identity)?;
-    let principal_id = get_principal_id(&pg)?;
-
     block_on(async {
-        use cyphr_storage::blob::BlobStore;
-        use cyphr_storage::index::Indexer;
-
-        let chain = engine
-            .indexer()
-            .get_commit_chain(&principal_id, None, None)
-            .await
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
-
-        let mut commit_entries = Vec::with_capacity(chain.len());
-        for commit_ref in &chain {
-            let mut cozies = Vec::with_capacity(commit_ref.blob_hashes.len());
-            let mut keys = Vec::new();
-
-            for hash in &commit_ref.blob_hashes {
-                let data = engine
-                    .blob_store()
-                    .get(hash)
-                    .await
-                    .map_err(|e| crate::Error::Storage(e.to_string()))?
-                    .ok_or_else(|| crate::Error::Storage(format!("blob {hash} not found")))?;
-
-                let json_str = String::from_utf8(data)
-                    .map_err(|e| crate::Error::Storage(format!("blob is not UTF-8: {e}")))?;
-                let value: serde_json::Value =
-                    serde_json::from_str(&json_str).map_err(crate::Error::Json)?;
-
-                if let Some(key_obj) = value.get("key") {
-                    if let Ok(ke) =
-                        serde_json::from_value::<cyphr_storage::KeyEntry>(key_obj.clone())
-                    {
-                        keys.push(ke);
-                    }
-                }
-
-                cozies.push(value);
-            }
-
-            commit_entries.push(cyphr_storage::CommitEntry::new(
-                cozies,
-                keys,
-                commit_ref.commit_id.clone(),
-                commit_ref.ar.clone(),
-                commit_ref.sr.clone(),
-                commit_ref.pr.clone(),
-            ));
-        }
-
-        Ok(commit_entries)
+        let patch = engine.get_patch(identity, None, None).await?;
+        patch
+            .entries
+            .iter()
+            .map(|entry| {
+                Ok(CommitEntry {
+                    commit_id: entry.commit.commit_id.clone(),
+                    auth_root: entry.commit.ar.clone(),
+                    sr: entry.commit.sr.clone(),
+                    pr: entry.commit.pr.clone(),
+                    ..CommitEntry::from_bundle(&entry.bundle).map_err(crate::Error::Json)?
+                })
+            })
+            .collect()
     })?
 }
 
-/// Parse a base64url principal genesis string into a PrincipalGenesis.
-pub fn parse_principal_genesis(s: &str) -> crate::Result<cyphr::PrincipalGenesis> {
-    let bytes = Base64UrlUnpadded::decode_vec(s)?;
-    Ok(cyphr::PrincipalGenesis::from_bytes(bytes)?)
+/// One stored commit as the exact wire bundle the store holds, so a peer
+/// receives the bytes the commit's digests were computed over.
+pub struct RawCommit {
+    /// The commit id (tagged digest).
+    pub commit_id: String,
+    /// The commit's bundle, grouped by transaction.
+    pub bundle: WireBundle,
+}
+
+/// A principal's stored history as raw wire bundles, oldest first. Empty
+/// when the store holds nothing for `principal_id`.
+pub async fn raw_chain(
+    engine: &CliStorageEngine,
+    principal_id: &PrincipalGenesis,
+) -> crate::Result<Vec<RawCommit>> {
+    if engine.get_tip(principal_id).await?.is_none() {
+        return Ok(Vec::new());
+    }
+    Ok(engine
+        .get_patch(principal_id, None, None)
+        .await?
+        .entries
+        .into_iter()
+        .map(|entry| RawCommit {
+            commit_id: entry.commit.commit_id,
+            bundle: entry.bundle,
+        })
+        .collect())
+}
+
+/// The genesis a locally held keystore can state for `identity`, if any:
+/// the key itself, when `identity` is a key's thumbprint. `None` means the
+/// genesis must come from stored blobs or the peer's.
+pub fn local_genesis(
+    keystore: &impl KeyBackend,
+    identity: &PrincipalGenesis,
+) -> crate::Result<Option<Genesis>> {
+    let tmb = keystore_name(identity)?;
+    if keystore.public(&tmb).is_ok() {
+        return Ok(Some(Genesis::Implicit(load_key_from_keystore(
+            keystore, &tmb,
+        )?)));
+    }
+    Ok(None)
 }
 
 /// Decode base64url string to bytes.
@@ -534,35 +457,93 @@ pub fn decode_b64(s: &str) -> crate::Result<Vec<u8>> {
     Ok(Base64UrlUnpadded::decode_vec(s)?)
 }
 
-/// Generate a new keypair using `Alg` dispatch.
+/// Generate a new keypair inside `keystore`.
 ///
-/// Returns the thumbprint string, a `StoredKey` for keystore, and a
-/// `cyphr::Key` for protocol operations.
-pub fn generate_key(algo: &str, tag: Option<&str>) -> crate::Result<(String, StoredKey, Key)> {
-    let alg_enum = coz::Alg::from_str(algo)
-        .ok_or_else(|| Error::InvalidArgument(format!("unknown algorithm: {algo}")))?;
+/// Returns the thumbprint string and a `cyphr::Key` for protocol
+/// operations; the private half never leaves the backend.
+pub fn generate_key(
+    keystore: &mut impl KeyBackend,
+    algo: &str,
+    tag: Option<&str>,
+) -> crate::Result<(String, Key)> {
+    let info = keystore.generate(algo, tag).map_err(|e| match e {
+        KeystoreError::UnknownAlgorithm(a) => {
+            Error::InvalidArgument(format!("unknown algorithm: {a}"))
+        },
+        other => other.into(),
+    })?;
 
-    let keypair = alg_enum.generate_keypair();
-    let tmb_b64 = Base64UrlUnpadded::encode_string(keypair.thumbprint.as_bytes());
+    let key = Key::from_pub_key(info.alg, info.pub_key)?
+        .with_first_seen(current_timestamp())
+        .with_tag(info.tag);
 
-    let now = current_timestamp();
+    Ok((info.tmb, key))
+}
 
-    let stored = StoredKey {
-        alg: algo.to_string(),
-        pub_key: keypair.pub_bytes.clone(),
-        prv_key: keypair.prv_bytes,
-        tag: tag.map(String::from),
+/// Sign the pay `pay_bytes` as it stands through `signer`, as
+/// `coz::sign_json` does with raw key bytes: the signature over the pay's
+/// canonical hash, and the czd of the signed coz.
+pub fn sign_pay(
+    signer: &impl cyphr::signer::Signer,
+    pay_bytes: &[u8],
+) -> crate::Result<(Vec<u8>, coz::Czd)> {
+    let alg = signer.alg();
+    let cad = coz::canonical_hash_for_alg(pay_bytes, alg, None)
+        .ok_or_else(|| Error::Signing(format!("cannot canonicalize pay for {alg}")))?;
+    let sig = block_on(signer.sign(&cad))?.map_err(|e| Error::Signing(e.to_string()))?;
+    let czd = coz::czd_for_alg(&cad, &sig, alg)
+        .ok_or_else(|| Error::Signing("czd_for_alg failed".into()))?;
+    Ok((sig, czd))
+}
+
+/// Whether the action `blob` is signed by a key `principal_id` ever held:
+/// a refusal for an inactive signer is then a verdict its history flipped,
+/// ignored (SPEC 6.2); a stranger key's is not.
+async fn signed_by_held_key(
+    engine: &CliStorageEngine,
+    principal_id: &PrincipalGenesis,
+    blob: &[u8],
+) -> crate::Result<bool> {
+    let coz = cyphr::replay::StoredCoz::from_wire(blob)
+        .map_err(|e| cyphr_storage::engine::EngineError::MalformedBlob(e.to_string()))?;
+    let Some(principal) = engine.at_tip(principal_id).await? else {
+        return Ok(false);
     };
+    Ok(principal.held_key(&coz.header().tmb))
+}
 
-    let key = Key {
-        alg: algo.to_string(),
-        tmb: Thumbprint::from_bytes(keypair.thumbprint.as_bytes().to_vec()),
-        pub_key: keypair.pub_bytes,
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: tag.map(String::from),
-    };
-
-    Ok((tmb_b64, stored, key))
+/// Submit a peer's or a store's history to `engine`: the commits from the
+/// one at `from` on, then every action (actions hold no chain position,
+/// SPEC 4.8.1), one at a time. One the engine already holds is a no-op
+/// (SPEC 7.6), and one whose signer was not active at its own `now` on
+/// this history is ignored (SPEC 6.2). Returns the commits applied.
+pub async fn submit_history(
+    engine: &CliStorageEngine,
+    principal_id: &PrincipalGenesis,
+    genesis: Option<Genesis>,
+    commits: &[WireBundle],
+    actions: &[Vec<Vec<u8>>],
+    from: usize,
+) -> crate::Result<usize> {
+    let mut applied = 0;
+    for bundle in commits.iter().skip(from) {
+        engine
+            .submit_commit(principal_id, genesis.clone(), bundle)
+            .await?;
+        applied += 1;
+    }
+    for blob in actions.iter().flatten() {
+        let one = WireBundle::actions(vec![blob.clone()]);
+        match engine
+            .submit_commit(principal_id, genesis.clone(), &one)
+            .await
+        {
+            Ok(_) => {},
+            Err(cyphr_storage::engine::EngineError::Protocol(e))
+                if e.is_inactive_signer()
+                    && signed_by_held_key(engine, principal_id, blob).await? => {},
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(applied)
 }

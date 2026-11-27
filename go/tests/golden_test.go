@@ -141,7 +141,6 @@ func TestGolden_Actions(t *testing.T) {
 //   - self_revoke_last_key_fails
 //   - pre_mismatch_fails
 //   - timestamp_past_fails
-//   - action_timestamp_past_fails
 //   - unsupported_algorithm_fails
 //   - action_by_revoked_key_fails
 func TestGolden_Errors(t *testing.T) {

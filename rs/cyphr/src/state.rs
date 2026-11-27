@@ -2,13 +2,15 @@
 //!
 //! Implements SPEC §7 state calculation semantics.
 
+// Only the test-support oracle `compute_pr` uses it at module level.
+#[cfg(any(test, feature = "test-utils"))]
 use std::collections::BTreeMap;
 
+use coz::Czd;
 // `Thumbprint` is only referenced by test-support-only oracle functions
 // (compute_kr, derive_auth_state) and unit tests below.
 #[cfg(test)]
 use coz::Thumbprint;
-use coz::{Cad, Czd};
 
 use crate::multihash::MultihashDigest;
 
@@ -41,22 +43,6 @@ pub trait StateDigest {
 pub struct KeyRoot(pub crate::multihash::MultihashDigest);
 
 impl StateDigest for KeyRoot {
-    fn as_multihash(&self) -> &crate::multihash::MultihashDigest {
-        &self.0
-    }
-}
-
-/// Commit ID — SPEC §8.5
-///
-/// Digest of coz `czd`s within a single commit.
-/// Previously named `TransactionState`; renamed to reflect its role as
-/// the identity of a commit rather than a state-tree node.
-///
-/// Holds a [`MultihashDigest`] with one variant per active hash algorithm.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CommitID(pub crate::multihash::MultihashDigest);
-
-impl StateDigest for CommitID {
     fn as_multihash(&self) -> &crate::multihash::MultihashDigest {
         &self.0
     }
@@ -100,14 +86,6 @@ impl StateDigest for StateRoot {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DataRoot(pub MultihashDigest);
 
-impl DataRoot {
-    /// Get the inner Cad for a specific algorithm.
-    pub fn to_cad(&self, alg: HashAlg) -> crate::error::Result<Cad> {
-        let bytes = self.0.get_or_err(alg)?;
-        Ok(Cad::from_bytes(bytes.to_vec()))
-    }
-}
-
 impl StateDigest for DataRoot {
     fn as_multihash(&self) -> &MultihashDigest {
         &self.0
@@ -130,26 +108,171 @@ impl StateDigest for PrincipalRoot {
 /// Principal Genesis (PG) - SPEC §3.7.1
 ///
 /// The first PR ever computed. Permanent, never changes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrincipalGenesis(pub MultihashDigest);
+///
+/// The digest is private, so no caller outside this crate can hold a
+/// genesis with no variants: each constructor refuses one, and `Display`
+/// never prints an empty string. Neither of these builds one:
+///
+/// ```compile_fail,E0423
+/// use cyphr::{MultihashDigest, PrincipalGenesis};
+/// let _ = PrincipalGenesis(MultihashDigest::default());
+/// ```
+///
+/// ```compile_fail,E0616
+/// use cyphr::{PrincipalGenesis, state::HashAlg};
+/// let pg = PrincipalGenesis::from_digest(HashAlg::Sha256, vec![0u8; 32]).unwrap();
+/// let _ = &pg.0;
+/// ```
+///
+/// # Equality
+///
+/// A principal id is its canonical spelling, the single `ALG:digest` that
+/// `Display` prints: the first variant in the digest's own order, which is
+/// the algorithm `active_algs` names. `Eq`, `Hash` and `Ord` are defined on
+/// that spelling alone, so a genesis holding several variants equals the id
+/// parsed from its own printed form, hashes the same, and sorts with it.
+/// Whether two ids name one principal by a shared hash variant is a
+/// question about roots, [`MultihashDigest::matches`], which is not an
+/// equivalence and so is not `Eq`.
+#[derive(Debug, Clone)]
+pub struct PrincipalGenesis(MultihashDigest);
 
 impl PrincipalGenesis {
-    /// Create a PrincipalGenesis from raw bytes (e.g., for testing).
-    /// Assumes SHA-256 algorithm for single-variant construction.
+    /// The canonical variant: what `Display` prints and equality compares.
+    /// A genesis is never empty (every constructor refuses it).
+    fn canonical(&self) -> Option<(&HashAlg, &[u8])> {
+        self.0.variants().iter().next().map(|(alg, d)| (alg, &**d))
+    }
+}
+
+impl PrincipalGenesis {
+    /// Whether `claimed`, a labelled id, is one of this genesis's variants:
+    /// its label and digest are the label and digest of a variant held here,
+    /// with no width matching. SPEC 12.1 treats every hash variant of a
+    /// genesis as equivalent, so a claim made by any of them names this
+    /// genesis. This is a relation between an id and a genesis, used where
+    /// a claim is judged; it is not `Eq`, which compares canonical
+    /// spellings and keys maps.
+    #[must_use]
+    pub fn has_variant(&self, claimed: &PrincipalGenesis) -> bool {
+        claimed
+            .canonical()
+            .is_some_and(|(alg, digest)| self.0.get(*alg) == Some(digest))
+    }
+}
+
+impl PartialEq for PrincipalGenesis {
+    fn eq(&self, other: &Self) -> bool {
+        self.canonical() == other.canonical()
+    }
+}
+
+impl Eq for PrincipalGenesis {}
+
+impl std::hash::Hash for PrincipalGenesis {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.canonical().hash(state);
+    }
+}
+
+impl PartialOrd for PrincipalGenesis {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PrincipalGenesis {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.canonical().cmp(&other.canonical())
+    }
+}
+
+impl PrincipalGenesis {
+    /// A PG from a digest `bytes` taken under `alg`, the hash that produced
+    /// it. A genesis digest's width follows its genesis key's algorithm
+    /// (an Ed25519 identity is 64 bytes, SHA-512), so the caller names the
+    /// hash; the width alone would read a SHA-512 digest as something else.
     ///
     /// # Errors
     ///
-    /// Returns `DigestLengthMismatch` if `bytes` is not exactly 32 bytes —
-    /// reachable from untrusted input (e.g. a CLI-supplied genesis string,
-    /// or an implicit genesis whose thumbprint algorithm hashes to a
-    /// different width than SHA-256).
-    pub fn from_bytes(bytes: Vec<u8>) -> crate::error::Result<Self> {
-        Ok(Self(MultihashDigest::from_single(HashAlg::Sha256, bytes)?))
+    /// `DigestLengthMismatch` if `bytes` is not `alg`'s digest width —
+    /// reachable from untrusted input such as a CLI-supplied identity.
+    pub fn from_digest(alg: HashAlg, bytes: Vec<u8>) -> crate::error::Result<Self> {
+        Ok(Self(MultihashDigest::from_single(alg, bytes)?))
+    }
+
+    /// A PG from a digest holding one variant per algorithm, as a
+    /// principal with a mixed-algorithm keyset has.
+    ///
+    /// # Errors
+    ///
+    /// `EmptyMultihash` if `digest` has no variants.
+    pub fn from_multihash(digest: MultihashDigest) -> crate::error::Result<Self> {
+        if digest.is_empty() {
+            return Err(crate::error::Error::EmptyMultihash);
+        }
+        Ok(Self(digest))
     }
 
     /// Create PG from the initial PR (at genesis).
-    pub fn from_initial(pr: &PrincipalRoot) -> Self {
-        Self(pr.0.clone())
+    ///
+    /// # Errors
+    ///
+    /// `EmptyMultihash` if `pr` has no variants.
+    pub fn from_initial(pr: &PrincipalRoot) -> crate::error::Result<Self> {
+        Self::from_multihash(pr.0.clone())
+    }
+}
+
+impl serde::Serialize for PrincipalGenesis {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PrincipalGenesis {
+    /// The labelled spelling only, parsed by [`FromStr`](std::str::FromStr):
+    /// every edge that deserializes an id refuses a bare one the same way.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl std::str::FromStr for PrincipalGenesis {
+    type Err = crate::error::Error;
+
+    /// The one parser of a principal id: the labelled spelling
+    /// `ALG:digest`, one variant. A string with no `:` is refused before
+    /// any decoding, because core cannot know which algorithm a bare
+    /// digest came from; every other failure is [`TaggedDigest`]'s.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if !s.contains(':') {
+            return Err(crate::error::Error::MalformedDigest(
+                "unlabelled principal id: expected ALG:digest, for example SHA-256:<base64url>",
+            ));
+        }
+        let tagged: TaggedDigest = s.parse()?;
+        Self::from_digest(tagged.alg(), tagged.as_bytes().to_vec())
+    }
+}
+
+impl std::fmt::Display for PrincipalGenesis {
+    /// The one canonical spelling: a single `ALG:digest`. A value holding
+    /// several variants prints the first in the digest's own order, so the
+    /// spelling is deterministic; equality across spellings is
+    /// [`MultihashDigest::matches`], not string comparison.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        // The first variant in the digest's own order, the order
+        // `active_algs` names an id's algorithm by, so a printed id is the
+        // id the engine keys the principal under.
+        match self.0.variants().iter().next() {
+            Some((alg, digest)) => {
+                write!(f, "{alg}:{}", Base64UrlUnpadded::encode_string(digest))
+            },
+            None => Ok(()),
+        }
     }
 }
 
@@ -160,11 +283,33 @@ impl StateDigest for PrincipalGenesis {
 }
 
 // ============================================================================
-// Hash algorithm dispatch (re-export from coz)
+// The algorithm table
 // ============================================================================
 
-// Re-export HashAlg from coz - single source of truth for algorithm mapping
+// Coz owns the algorithms: a signing algorithm's name and hash
+// (`coz::Alg`), a hash algorithm's name (`HashAlg`'s `Display`), digest
+// size and hashing. Cyphr adds only which hash algorithms it supports and
+// their EML ids (`crate::commit_root::hash_alg_to_u64`); everything else
+// is looked up here rather than re-tabulated.
 pub use coz::HashAlg;
+
+/// Every hash algorithm Cyphr supports, keyed by its Coz name (e.g.
+/// `SHA-256`) through [`hash_alg_named`]. `hash_alg_to_u64` matches
+/// exhaustively on `HashAlg`, so an algorithm Coz adds fails to compile
+/// there until it is given an EML id and a row here.
+pub const HASH_ALGS: [HashAlg; 3] = [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512];
+
+/// The supported hash algorithm whose Coz name is `name` (e.g. `SHA-256`).
+///
+/// # Errors
+///
+/// `UnsupportedAlgorithm` if no supported hash algorithm has that name.
+pub fn hash_alg_named(name: &str) -> crate::error::Result<HashAlg> {
+    HASH_ALGS
+        .into_iter()
+        .find(|alg| alg.to_string() == name)
+        .ok_or_else(|| crate::error::Error::UnsupportedAlgorithm(name.to_string()))
+}
 
 // ============================================================================
 // Tagged Digest (algorithm-prefixed digest with parse-time validation)
@@ -217,21 +362,7 @@ impl TaggedDigest {
     /// Returns the expected digest length in bytes for a given algorithm.
     #[must_use]
     pub const fn expected_len(alg: HashAlg) -> usize {
-        match alg {
-            HashAlg::Sha256 => 32,
-            HashAlg::Sha384 => 48,
-            HashAlg::Sha512 => 64,
-        }
-    }
-
-    /// Parses a hash algorithm name string (e.g., "SHA-256").
-    fn parse_alg(s: &str) -> Result<HashAlg, crate::error::Error> {
-        match s {
-            "SHA-256" => Ok(HashAlg::Sha256),
-            "SHA-384" => Ok(HashAlg::Sha384),
-            "SHA-512" => Ok(HashAlg::Sha512),
-            _ => Err(crate::error::Error::UnsupportedAlgorithm(s.to_string())),
-        }
+        alg.digest_size()
     }
 }
 
@@ -245,7 +376,7 @@ impl std::str::FromStr for TaggedDigest {
                     "missing ':' separator",
                 ))?;
 
-        let alg = Self::parse_alg(alg_str)?;
+        let alg = hash_alg_named(alg_str)?;
 
         // Decode base64 into a buffer sized for the expected algorithm output
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -303,9 +434,8 @@ impl<'de> serde::Deserialize<'de> for TaggedDigest {
     }
 }
 
-/// Get hash algorithm from signing algorithm name (string).
-///
-/// Prefer `coz::Alg::from_str(s).map(|a| a.hash_alg())` when possible.
+/// The hash algorithm of the signing algorithm named `alg` (e.g. `ES256`),
+/// by Coz's algorithm table.
 ///
 /// # Errors
 ///
@@ -321,8 +451,9 @@ pub fn hash_alg_from_str(alg: &str) -> crate::error::Result<HashAlg> {
 
 /// Derive the set of hash algorithms from a keyset (SPEC §14).
 ///
-/// For each unique key algorithm, returns the corresponding hash algorithm.
-/// The result is sorted for deterministic ordering.
+/// For each active key, its algorithm's hash algorithm, deduplicated and
+/// sorted for deterministic ordering. A [`crate::Key`] holds only a
+/// supported algorithm, so no key is dropped for an unknown one.
 ///
 /// # Example
 ///
@@ -337,7 +468,7 @@ pub fn derive_hash_algs(keys: &[&crate::Key]) -> Vec<HashAlg> {
     let algs: BTreeSet<HashAlg> = keys
         .iter()
         .filter(|k| k.is_active())
-        .filter_map(|k| hash_alg_from_str(&k.alg).ok())
+        .map(|k| k.hash_alg())
         .collect();
 
     algs.into_iter().collect()
@@ -351,7 +482,8 @@ pub fn derive_hash_algs(keys: &[&crate::Key]) -> Vec<HashAlg> {
 ///
 /// Same as [`hash_sorted_concat`] but returns raw bytes for MultihashDigest construction.
 pub(crate) fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
-    use crate::hasher::CyphrHasher;
+    #[cfg(any(test, feature = "test-utils"))]
+    crate::probe::hashed();
     // Sort lexicographically
     let mut sorted: Vec<&[u8]> = components.to_vec();
     sorted.sort();
@@ -360,27 +492,30 @@ pub(crate) fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Ve
     for c in sorted {
         concat.extend_from_slice(c);
     }
-    alg.hash(&concat)
+    alg.hash_bytes(&concat)
 }
 
 /// Compute `H(components...)` in array order (no sort).
 ///
-/// Used for CommitID where coz order is significant (SPEC §8.5).
+/// Used where the order is defined, not sorted (SPEC §3.7): CommitID, where
+/// coz order is significant (SPEC §8.5), and the Arrow (SPEC §4.2).
 pub(crate) fn hash_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
-    use crate::hasher::CyphrHasher;
+    #[cfg(any(test, feature = "test-utils"))]
+    crate::probe::hashed();
     let mut concat = Vec::new();
     for c in components {
         concat.extend_from_slice(c);
     }
-    alg.hash(&concat)
+    alg.hash_bytes(&concat)
 }
 
 /// Hash raw bytes using the specified algorithm (SPEC §14.2 conversion).
 ///
 /// Used when converting a czd from one algorithm to another.
 pub(crate) fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
-    use crate::hasher::CyphrHasher;
-    alg.hash(data)
+    #[cfg(any(test, feature = "test-utils"))]
+    crate::probe::hashed();
+    alg.hash_bytes(data)
 }
 
 // ============================================================================
@@ -402,8 +537,8 @@ pub(crate) fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
 /// against each other. The two agree byte-for-byte for single-hash-algorithm
 /// keysets; for mixed-hash-algorithm keysets `KeyTree` additionally converts
 /// each non-native thumbprint to its target algorithm's canonical digest
-/// (the same `infer_alg_from_len`/`hash_bytes` mechanism [`compute_dr`] uses
-/// for czd content) before folding, which this function does not do — see
+/// (the same `hash_bytes` conversion [`compute_dr`] applies to czd content)
+/// before folding, which this function does not do — see
 /// `semantic_tree`'s `oracle_kr_*` differential tests for the exact,
 /// predicted divergence. `Principal`'s actual KR is produced by the tree
 /// itself, never by this function.
@@ -452,51 +587,6 @@ pub(crate) fn compute_kr(
     Ok(KeyRoot(MultihashDigest::new(variants)?))
 }
 
-/// Compute Commit ID (formerly ParsedCoz State) — SPEC §8.5.
-///
-/// The Commit ID is the Merkle root of the czds within a single commit.
-///
-/// - No cozies: CommitID = None
-/// - Single coz, no nonce: CommitID = czd (implicit promotion)
-/// - Otherwise: CommitID = H(czd₀ ‖ czd₁ ‖ nonce? ‖ ...) — array order, no sort
-pub fn compute_commit_id(
-    czds: &[&Czd],
-    nonce: Option<&[u8]>,
-    algs: &[HashAlg],
-) -> Option<CommitID> {
-    if czds.is_empty() && nonce.is_none() {
-        return None;
-    }
-
-    // Implicit promotion: single czd, no nonce
-    // Store the czd bytes as the digest for all algorithm variants
-    if czds.len() == 1 && nonce.is_none() {
-        let czd_bytes = czds[0].as_bytes();
-        return Some(CommitID(
-            MultihashDigest::from_single(
-                // Use first algorithm for single-variant multihash
-                algs.first().copied().unwrap_or(HashAlg::Sha256),
-                czd_bytes.to_vec(),
-            )
-            .ok()?,
-        ));
-    }
-
-    let mut components: Vec<&[u8]> = czds.iter().map(|c| c.as_bytes()).collect();
-    if let Some(n) = nonce {
-        components.push(n);
-    }
-
-    // Compute hash for each algorithm variant (array order, no sort)
-    let mut variants = BTreeMap::new();
-    for &alg in algs {
-        let digest = hash_concat_bytes(alg, &components);
-        variants.insert(alg, digest.into_boxed_slice());
-    }
-
-    Some(CommitID(MultihashDigest::new(variants).ok()?))
-}
-
 /// A czd tagged with its source hash algorithm.
 ///
 /// Used for cross-algorithm state computation where czds from different
@@ -528,55 +618,6 @@ impl<'a> TaggedCzd<'a> {
             hash_bytes(target, self.czd.as_bytes())
         }
     }
-}
-
-/// Compute Commit ID with cross-algorithm conversion (SPEC §14.2).
-///
-/// Like [`compute_commit_id`], but accepts czds tagged with their source algorithm.
-/// When computing a target hash variant, czds from different algorithms
-/// are converted (re-hashed) to the target algorithm.
-///
-/// - No cozies: CommitID = None
-/// - Single coz, no nonce: CommitID = czd (implicit promotion)
-/// - Otherwise: CommitID = H(converted_czd₀ ‖ converted_czd₁ ‖ nonce? ‖ ...) — array order
-pub fn compute_commit_id_tagged(
-    czds: &[TaggedCzd<'_>],
-    nonce: Option<&[u8]>,
-    algs: &[HashAlg],
-) -> Option<CommitID> {
-    if czds.is_empty() && nonce.is_none() {
-        return None;
-    }
-
-    // Implicit promotion: single czd, no nonce.
-    // Convert the single czd to all active target algorithms.
-    if czds.len() == 1 && nonce.is_none() {
-        let mut variants = BTreeMap::new();
-        for &target_alg in algs {
-            let converted = czds[0].convert_to(target_alg);
-            variants.insert(target_alg, converted.into_boxed_slice());
-        }
-        return Some(CommitID(MultihashDigest::new(variants).ok()?));
-    }
-
-    // Compute hash for each target algorithm variant
-    let mut variants = BTreeMap::new();
-    for &target_alg in algs {
-        // Convert each czd to target algorithm
-        let converted: Vec<Vec<u8>> = czds.iter().map(|tc| tc.convert_to(target_alg)).collect();
-
-        // Add nonce if present
-        let mut components: Vec<&[u8]> = converted.iter().map(|v| v.as_slice()).collect();
-        if let Some(n) = nonce {
-            components.push(n);
-        }
-
-        // Hash in array order (no sort — CommitID preserves coz order)
-        let digest = hash_concat_bytes(target_alg, &components);
-        variants.insert(target_alg, digest.into_boxed_slice());
-    }
-
-    Some(CommitID(MultihashDigest::new(variants).ok()?))
 }
 
 /// Compute Auth Root — SPEC §3.7.
@@ -691,29 +732,18 @@ pub(crate) fn compute_sr(
     Ok(StateRoot(MultihashDigest::new(variants)?))
 }
 
-/// Infer the hash algorithm that produced a raw digest from its byte length.
-///
-/// `pub(crate)`: also used by [`crate::semantic_tree::KeyTree`] to convert
-/// non-native thumbprints to their canonical digest under a target
-/// algorithm, the same cross-algorithm conversion mechanism this module
-/// already applies to czd content in [`compute_dr`].
-pub(crate) fn infer_alg_from_len(len: usize) -> Option<HashAlg> {
-    match len {
-        32 => Some(HashAlg::Sha256),
-        48 => Some(HashAlg::Sha384),
-        64 => Some(HashAlg::Sha512),
-        _ => None,
-    }
-}
-
 /// Compute Data State (SPEC §7.4).
 ///
 /// - No actions, no nonce: DS = None
 /// - Single action, no nonce: DS = czd (implicit promotion)
 /// - Otherwise: DS = H(sort(czd₀, czd₁, nonce?, ...))
+///
+/// Each component is converted to every target algorithm from the
+/// algorithm it is in (an action's signing key's, a nonce's label), never
+/// from one guessed from its width.
 pub fn compute_dr(
     actions: &[&crate::action::Action],
-    nonce: Option<&[u8]>,
+    nonce: Option<&TaggedDigest>,
     algs: &[HashAlg],
 ) -> crate::error::Result<Option<DataRoot>> {
     use std::collections::BTreeMap;
@@ -727,14 +757,7 @@ pub fn compute_dr(
     // Implicit promotion: single action, no nonce.
     // Convert the action's single-algorithm czd to all target algorithms.
     if actions.len() == 1 && nonce.is_none() {
-        let digest_bytes = actions[0].czd().as_bytes();
-        let source_alg = infer_alg_from_len(digest_bytes.len()).ok_or_else(|| {
-            crate::error::Error::UnsupportedAlgorithm(format!(
-                "invalid digest length: {}",
-                digest_bytes.len()
-            ))
-        })?;
-        let tagged = TaggedCzd::new(actions[0].czd(), source_alg);
+        let tagged = TaggedCzd::new(actions[0].czd(), actions[0].hash_alg());
         let mut variants = BTreeMap::new();
         for &target_alg in algs {
             let converted = tagged.convert_to(target_alg);
@@ -747,6 +770,7 @@ pub fn compute_dr(
     // Sort components: actions by now then czd, non-actions by digest bytes
     struct DrComponent<'a> {
         bytes: &'a [u8],
+        alg: HashAlg,
         now: i64,
     }
 
@@ -754,12 +778,14 @@ pub fn compute_dr(
     for a in actions {
         components.push(DrComponent {
             bytes: a.czd().as_bytes(),
+            alg: a.hash_alg(),
             now: a.now(),
         });
     }
     if let Some(n) = nonce {
         components.push(DrComponent {
-            bytes: n,
+            bytes: n.as_bytes(),
+            alg: n.alg(),
             now: i64::MAX,
         });
     }
@@ -773,13 +799,7 @@ pub fn compute_dr(
         // Convert components to the target algorithm
         let mut converted_components = Vec::new();
         for comp in &components {
-            let source_alg = infer_alg_from_len(comp.bytes.len()).ok_or_else(|| {
-                crate::error::Error::UnsupportedAlgorithm(format!(
-                    "invalid digest length: {}",
-                    comp.bytes.len()
-                ))
-            })?;
-            if source_alg == alg {
+            if comp.alg == alg {
                 converted_components.push(comp.bytes.to_vec());
             } else {
                 converted_components.push(hash_bytes(alg, comp.bytes));
@@ -873,49 +893,13 @@ pub(crate) fn derive_auth_state(
 mod tests {
     use super::*;
 
+    /// F46 regression: a digest of the wrong width for its algorithm is
+    /// refused with `DigestLengthMismatch`, not a panic; a 64-byte SHA-512
+    /// genesis is read as SHA-512. A unit test because the CLI reaches
+    /// this constructor only after it has picked the algorithm itself.
     #[test]
-    fn ks_single_key_promotion() {
-        // Single key: KS = tmb (no hashing), stored as single-variant multihash
-        let tmb = Thumbprint::from_bytes(vec![1; 32]);
-        let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-
-        // Should have exactly one variant
-        assert_eq!(ks.0.len(), 1);
-        // The variant value should equal the thumbprint bytes
-        assert_eq!(ks.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
-    }
-
-    #[test]
-    fn ks_multi_key_hashes() {
-        // Multiple keys: KS = H(sort(tmb₀, tmb₁))
-        let tmb1 = Thumbprint::from_bytes(vec![1; 32]);
-        let tmb2 = Thumbprint::from_bytes(vec![2; 32]);
-        let ks = compute_kr(&[&tmb1, &tmb2], None, &[HashAlg::Sha256]).unwrap();
-
-        let digest = ks.get(HashAlg::Sha256).unwrap();
-        // Should be hashed SHA-256 output
-        assert_eq!(digest.len(), 32);
-        assert_ne!(digest, tmb1.as_bytes());
-    }
-
-    #[test]
-    fn ks_with_nonce_hashes() {
-        // Single key with nonce: still hashes (no promotion)
-        let tmb = Thumbprint::from_bytes(vec![1; 32]);
-        let nonce = vec![0xAA, 0xBB];
-        let ks = compute_kr(&[&tmb], Some(&nonce), &[HashAlg::Sha256]).unwrap();
-
-        let digest = ks.get(HashAlg::Sha256).unwrap();
-        assert_eq!(digest.len(), 32);
-        assert_ne!(digest, tmb.as_bytes());
-    }
-
-    /// F46 regression: malformed (non-32-byte) input must be rejected with
-    /// `DigestLengthMismatch`, not panic — reachable from untrusted CLI
-    /// input via `parse_principal_genesis`.
-    #[test]
-    fn principal_genesis_from_bytes_rejects_wrong_length() {
-        let result = PrincipalGenesis::from_bytes(vec![0xAA; 31]);
+    fn principal_genesis_from_digest_follows_its_algorithm() {
+        let result = PrincipalGenesis::from_digest(HashAlg::Sha256, vec![0xAA; 31]);
         assert!(matches!(
             result,
             Err(crate::error::Error::DigestLengthMismatch {
@@ -924,72 +908,12 @@ mod tests {
                 actual: 31,
             })
         ));
+        let pg = PrincipalGenesis::from_digest(HashAlg::Sha512, vec![0xAA; 64]).unwrap();
+        assert_eq!(pg.0.algorithms().collect::<Vec<_>>(), [HashAlg::Sha512]);
     }
 
     #[test]
-    fn principal_genesis_from_bytes_accepts_correct_length() {
-        let pg = PrincipalGenesis::from_bytes(vec![0xAA; 32]).expect("32 bytes should succeed");
-        assert_eq!(pg.0.get(HashAlg::Sha256).unwrap(), &[0xAA; 32][..]);
-    }
-
-    #[test]
-    fn commit_id_empty_is_none() {
-        let cid = compute_commit_id(&[], None, &[HashAlg::Sha256]);
-        assert!(cid.is_none());
-    }
-
-    #[test]
-    fn commit_id_single_czd_promotion() {
-        let czd = Czd::from_bytes(vec![10; 32]);
-        let cid = compute_commit_id(&[&czd], None, &[HashAlg::Sha256]);
-        let cid_bytes = cid.as_ref().map(|c| c.get(HashAlg::Sha256).unwrap());
-        assert_eq!(cid_bytes.unwrap(), czd.as_bytes());
-    }
-
-    #[test]
-    fn as_promotion_from_ks() {
-        // Only KS, no RS: AS = KS (the specified algorithm variant)
-        let tmb = Thumbprint::from_bytes(vec![1; 32]);
-        let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
-
-        // AS should equal the KS variant for this algorithm
-        assert_eq!(
-            auth_root.get(HashAlg::Sha256).unwrap(),
-            ks.get(HashAlg::Sha256).unwrap()
-        );
-    }
-
-    #[test]
-    fn cs_with_ds_hashes() {
-        let tmb = Thumbprint::from_bytes(vec![1; 32]);
-        let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
-        let czd = Czd::from_bytes(vec![10; 32]);
-        let action = crate::action::Action::new(
-            "cyphr.me/comment/create".to_string(),
-            tmb.clone(),
-            1000,
-            czd,
-            coz::CozJson {
-                pay: serde_json::Value::Null,
-                sig: vec![],
-            },
-        );
-        let ds = compute_dr(&[&action], None, &[HashAlg::Sha256])
-            .unwrap()
-            .unwrap();
-
-        let cs = compute_sr(&auth_root, Some(&ds), None, &[HashAlg::Sha256]).unwrap();
-
-        // Should be hashed combination
-        let cs_bytes = cs.get(HashAlg::Sha256).unwrap();
-        assert_eq!(cs_bytes.len(), 32);
-        assert_ne!(cs_bytes, auth_root.get(HashAlg::Sha256).unwrap());
-    }
-
-    #[test]
-    fn cross_algorithm_promotion_dr_commit_id() {
+    fn cross_algorithm_promotion_dr() {
         let czd = Czd::from_bytes(vec![10; 32]); // SHA-256 size
         let active_algs = [HashAlg::Sha256, HashAlg::Sha384];
         let action = crate::action::Action::new(
@@ -997,6 +921,7 @@ mod tests {
             Thumbprint::from_bytes(vec![1; 32]),
             1000,
             czd.clone(),
+            HashAlg::Sha256,
             coz::CozJson {
                 pay: serde_json::Value::Null,
                 sig: vec![],
@@ -1017,153 +942,11 @@ mod tests {
             dr_sha384,
             hash_bytes(HashAlg::Sha384, czd.as_bytes()).as_slice()
         );
-
-        // 2. CommitID promotion test
-        let tagged = TaggedCzd::new(&czd, HashAlg::Sha256);
-        let commit_id = compute_commit_id_tagged(&[tagged], None, &active_algs).unwrap();
-        assert!(commit_id.0.contains(HashAlg::Sha256));
-        assert!(commit_id.0.contains(HashAlg::Sha384));
-
-        let cid_sha256 = commit_id.0.get(HashAlg::Sha256).unwrap();
-        let cid_sha384 = commit_id.0.get(HashAlg::Sha384).unwrap();
-
-        assert_eq!(cid_sha256, czd.as_bytes());
-        assert_eq!(
-            cid_sha384,
-            hash_bytes(HashAlg::Sha384, czd.as_bytes()).as_slice()
-        );
-    }
-
-    #[test]
-    fn pr_promotion_from_sr() {
-        // Only SR, no CR: PR = SR (implicit promotion)
-        let tmb = Thumbprint::from_bytes(vec![1; 32]);
-        let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
-        let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
-        let pr = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
-
-        assert_eq!(
-            pr.get(HashAlg::Sha256).unwrap(),
-            auth_root.get(HashAlg::Sha256).unwrap()
-        );
-    }
-
-    #[test]
-    fn full_promotion_chain() {
-        // Level 1: PR = SR = AR = KR = tmb
-        let tmb = Thumbprint::from_bytes(vec![0xDE; 32]);
-        let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
-        let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
-        let pr = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
-        let pg = PrincipalGenesis::from_initial(&pr);
-
-        // All should be identical to tmb
-        let ks_bytes = ks.get(HashAlg::Sha256).unwrap();
-        let as_bytes = auth_root.get(HashAlg::Sha256).unwrap();
-        assert_eq!(ks_bytes, tmb.as_bytes());
-        assert_eq!(as_bytes, tmb.as_bytes());
-        assert_eq!(pr.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
-        assert_eq!(pg.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
-    }
-
-    /// SPEC §14.2 Cross-Algorithm Conversion Test
-    ///
-    /// When computing a Merkle root with mixed-size digests, smaller digests
-    /// are fed directly into larger hash functions. This test verifies:
-    ///
-    /// 1. Mixed-size thumbprints (32B ES256, 48B ES384, 64B Ed25519) can be combined in a single KS
-    ///    computation
-    /// 2. Each algorithm variant processes all thumbprints correctly
-    /// 3. The resulting multihash contains variants for all active algorithms
-    #[test]
-    fn cross_algorithm_conversion_spec_14_2() {
-        // Simulate real thumbprint sizes from different key algorithms:
-        // ES256 → SHA-256 → 32 bytes
-        // ES384 → SHA-384 → 48 bytes
-        // Ed25519 → SHA-512 → 64 bytes
-        let tmb_es256 = Thumbprint::from_bytes(vec![0xAA; 32]); // 32-byte ES256 tmb
-        let tmb_es384 = Thumbprint::from_bytes(vec![0xBB; 48]); // 48-byte ES384 tmb
-        let tmb_ed25519 = Thumbprint::from_bytes(vec![0xCC; 64]); // 64-byte Ed25519 tmb
-
-        // Compute KS with all three algorithms active
-        let all_algs = [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512];
-        let ks = compute_kr(&[&tmb_es256, &tmb_es384, &tmb_ed25519], None, &all_algs).unwrap();
-
-        // Verify all algorithm variants are present
-        let sha256_variant = ks.get(HashAlg::Sha256);
-        let sha384_variant = ks.get(HashAlg::Sha384);
-        let sha512_variant = ks.get(HashAlg::Sha512);
-
-        assert!(sha256_variant.is_some(), "SHA-256 variant should exist");
-        assert!(sha384_variant.is_some(), "SHA-384 variant should exist");
-        assert!(sha512_variant.is_some(), "SHA-512 variant should exist");
-
-        // Verify each variant has the correct digest size
-        assert_eq!(
-            sha256_variant.unwrap().len(),
-            32,
-            "SHA-256 digest is 32 bytes"
-        );
-        assert_eq!(
-            sha384_variant.unwrap().len(),
-            48,
-            "SHA-384 digest is 48 bytes"
-        );
-        assert_eq!(
-            sha512_variant.unwrap().len(),
-            64,
-            "SHA-512 digest is 64 bytes"
-        );
-
-        // Verify all three variants are different (not trivially identical)
-        assert_ne!(sha256_variant, sha384_variant);
-        assert_ne!(sha384_variant, sha512_variant);
-        assert_ne!(sha256_variant, sha512_variant);
-
-        // Key insight: The 32-byte ES256 thumbprint is "converted" (fed directly)
-        // into SHA-384 and SHA-512 computations. The implementation handles this
-        // by concatenating all bytes regardless of size and hashing with each
-        // target algorithm—exactly as SPEC §14.2 specifies.
     }
 
     // ========================================================================
     // TaggedDigest tests
     // ========================================================================
-
-    #[test]
-    fn tagged_digest_parse_valid_sha256() {
-        // 32 bytes = 43 chars base64url (no padding)
-        let input = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
-        let digest: super::TaggedDigest = input.parse().expect("valid digest");
-
-        assert_eq!(digest.alg(), super::HashAlg::Sha256);
-        assert_eq!(digest.as_bytes().len(), 32);
-    }
-
-    #[test]
-    fn tagged_digest_display_roundtrip() {
-        let input = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
-        let digest: super::TaggedDigest = input.parse().expect("valid digest");
-        let output = digest.to_string();
-
-        assert_eq!(input, output);
-    }
-
-    #[test]
-    fn tagged_digest_serde_roundtrip() {
-        let input = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
-        let digest: super::TaggedDigest = input.parse().expect("valid digest");
-
-        // Serialize to JSON
-        let json = serde_json::to_string(&digest).expect("serialize");
-        assert_eq!(json, format!("\"{}\"", input));
-
-        // Deserialize from JSON
-        let parsed: super::TaggedDigest = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(digest, parsed);
-    }
 
     #[test]
     fn tagged_digest_missing_separator() {
@@ -1213,24 +996,6 @@ mod tests {
             ),
             "expected DigestLengthMismatch, got {:?}",
             err
-        );
-    }
-
-    #[test]
-    fn compute_dr_errors_on_ambiguous_component_length() {
-        // A 16-byte component maps to no known hash algorithm (32/48/64),
-        // so its source algorithm cannot be inferred. compute_dr's
-        // multi-component conversion path must surface an honest error
-        // rather than silently assuming SHA-256 (forge issue #15). A lone
-        // nonce is the minimal multi-component input: it skips the
-        // single-action implicit-promotion branch and reaches the
-        // per-component algorithm inference this fix hardens.
-        let nonce = [0u8; 16];
-        let result = compute_dr(&[], Some(&nonce), &[HashAlg::Sha256]);
-        assert!(
-            matches!(result, Err(crate::error::Error::UnsupportedAlgorithm(_))),
-            "ambiguous digest length must error, not default to SHA-256; got {:?}",
-            result
         );
     }
 }

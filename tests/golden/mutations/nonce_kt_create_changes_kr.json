@@ -1,0 +1,123 @@
+{
+  "name": "nonce_kt_create_changes_kr",
+  "principal": [
+    "golden"
+  ],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "commits": [
+    {
+      "v": 2,
+      "txs": [
+        [
+          {
+            "pay": {
+              "alg": "ES256",
+              "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "now": 1700000000,
+              "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "typ": "cyphr.me/cyphr/key/create"
+            },
+            "sig": "-FCNYXlZfktL0Ap8gLRbKUoYxm2H_mP1QH5sHf9eRE5OOEnMb8WO4H1c_ikF4cLrc2Rwxz9h4XysrHLCrArSwA"
+          }
+        ],
+        [
+          {
+            "pay": {
+              "alg": "ES256",
+              "id": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "now": 1700000000,
+              "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "typ": "cyphr.me/cyphr/principal/create"
+            },
+            "sig": "TJo4bJHic2iRSwu7q7HE4b462B3nBKo_vUOVJBKef1kF4Ewep7wNm7AWsPgIGvfEhE41P0YFA8oLX7ubGSNiIw"
+          }
+        ],
+        [
+          {
+            "pay": {
+              "alg": "ES256",
+              "arrow": "SHA-256:d523iS0q879s0pRJhHv2kWjKVbnF4PFYjW8jYUgExzc",
+              "now": 1700000000,
+              "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "typ": "cyphr.me/cyphr/commit/create"
+            },
+            "sig": "ebr9_LCjZ-OzEGf9eAZaqo1rRyS3binKa-zVs45486tYsBD5EbiP94ERT9KEnXCsfSL-MbvZYiXAcOXgWtK05g"
+          }
+        ]
+      ],
+      "keys": [
+        {
+          "alg": "ES256",
+          "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "tag": "Zami's Majuscule Key (SPEC §15.1)",
+          "now": 0
+        }
+      ],
+      "commit_id": "SHA-256:gfbiLe2FejIvm3Sju1ZSwkfWOqI1vMsMFTlxk7hRNsA",
+      "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "SHA-256:kE5VTpoHhPFC6QzkWiOpaBpU4AZBSUA6n4D52sJArVM"
+    },
+    {
+      "v": 2,
+      "txs": [
+        [
+          {
+            "pay": {
+              "alg": "ES256",
+              "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
+              "now": 1700000000,
+              "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "typ": "cyphr.me/cyphr/AT/KT/nonce/create"
+            },
+            "sig": "OH9jQYJ3uWgs51PSQcw8h9uS-RtP0-gcYeeR30GVQ9JWZ3WtltM8ut8B6m7BgvJIGFsBicxWseI7eSchh_m9wg"
+          }
+        ],
+        [
+          {
+            "pay": {
+              "alg": "ES256",
+              "arrow": "SHA-256:zt48CXOnJB2czOZ5AL18IdagJlkhS-UrGsRe5CJs7kw",
+              "now": 1700000000,
+              "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "typ": "cyphr.me/cyphr/commit/create"
+            },
+            "sig": "_xir66-S49tLc6QUq3BbwXhXAaG_mf52dvRN9H7R-QZ1MGR0s1yOfZ4NGE7Bj1pHz2hR_syFBDbuUprTVm80hw"
+          }
+        ]
+      ],
+      "keys": [],
+      "commit_id": "SHA-256:pAixPmG_7C1iReo-5AeM5nEHQrWTAvlAOGfs1qnovw0",
+      "ar": "SHA-256:-1ClzizG1b7Zagbn5l0cnX-mjGzctum8v86TWzVbiRU",
+      "sr": "SHA-256:-1ClzizG1b7Zagbn5l0cnX-mjGzctum8v86TWzVbiRU",
+      "pr": "SHA-256:lApnTWYgobCYPt5qlc1FLh9NJ9EgdoWzU9yZwbUj_4M"
+    }
+  ],
+  "digests": [
+    "bw1uwrvH0G_YM6DftXUREAuyCpmgJagKRTHjmBMn10I",
+    "41Mgu9G96DMWi0SumCWNJlsRkECRO4gBLi1IDL2UJl4",
+    "j_fzNsa3sAV9efSKZdsBNzUgVSSbnIjZzyqHpw5KmIQ",
+    "K0eGKwu3XcEManQPKK5mI2a46_St6Dsv5m37dffPmJg",
+    "k7Yk1VbW4LCRJY7z7vuXw8J8Ffzuk7Rl97tOJFUcOwk"
+  ],
+  "expected": {
+    "key_count": 1,
+    "level": 3,
+    "kr": "SHA-256:-1ClzizG1b7Zagbn5l0cnX-mjGzctum8v86TWzVbiRU",
+    "ar": "SHA-256:-1ClzizG1b7Zagbn5l0cnX-mjGzctum8v86TWzVbiRU",
+    "pr": "SHA-256:lApnTWYgobCYPt5qlc1FLh9NJ9EgdoWzU9yZwbUj_4M",
+    "cr": "SHA-256:NgiaX_3isDan0EFFmWJwe1ZojIr5TXwic6Kcs-e9dKA",
+    "tr": "SHA-256:pAixPmG_7C1iReo-5AeM5nEHQrWTAvlAOGfs1qnovw0",
+    "sr": "SHA-256:-1ClzizG1b7Zagbn5l0cnX-mjGzctum8v86TWzVbiRU",
+    "pg": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "deleted": false,
+    "frozen": false
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "name": "action_without_genesis_fails",
+  "principal": [
+    "golden"
+  ],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "commits": [
+    {
+      "v": 2,
+      "actions": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "Action before any genesis",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "xQ9oqlgazbJtnxwmLxs5voHQStFcGUkKSPDDu6dagr4FGmA-E5lkB4spf6rduhglvWaYzmvx8-T74VAHhcavHg"
+        }
+      ],
+      "txs": [],
+      "keys": [],
+      "commit_id": "",
+      "ar": null,
+      "sr": null,
+      "pr": ""
+    }
+  ],
+  "digests": [
+    "mQVqTYb9qLotGx03tzhzcc533NiMn4TcXzM4IMe406o"
+  ],
+  "expected": {
+    "key_count": 1,
+    "level": 1,
+    "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pg": "",
+    "error": "GenesisIncomplete",
+    "deleted": false,
+    "frozen": false
+  }
+}

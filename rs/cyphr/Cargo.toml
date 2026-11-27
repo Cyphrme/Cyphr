@@ -14,7 +14,6 @@ version                = "0.1.0"
 
 [dependencies]
 eml        = { workspace = true }
-futures    = { workspace = true }
 polydigest = { workspace = true }
 
 coz        = { workspace = true }
@@ -22,21 +21,32 @@ indexmap   = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 thiserror  = { workspace = true }
+zeroize    = { workspace = true }
 
 [features]
-# Exposes test-oracle functions (e.g. compute_pr) that are otherwise
-# cfg(test)-only, so dependent crates' own tests can cross-check against
-# them. Only ever enable this from a [dev-dependencies] declaration
-# (as cyphr-storage does): dev-dependency features aren't compiled into
-# a normal `cargo build`/release artifact. Enabling it from a
-# [dependencies] block instead would re-expose compute_pr in a real
-# production build, defeating the point of the gate.
+# Exposes test-oracle functions (e.g. compute_pr) and the state-setup hook
+# pre_revoke_key, which are otherwise cfg(test)-only, so dependent crates'
+# own tests can cross-check against them. Only enable this from test-only
+# crates: a [dev-dependencies] declaration (as cyphr-storage does) or the
+# test-fixtures crate, which no production crate depends on outside its
+# own [dev-dependencies]. Enabling it from a production [dependencies]
+# block would re-expose these in a real release build.
 test-utils = []
 
 [dev-dependencies]
+futures       = { workspace = true }
 proptest      = { workspace = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }
 storage-fjall = { workspace = true }
 tempfile      = "3"
 test-fixtures = { path = "../test-fixtures" }
+tokio         = { workspace = true }
+
+# coz's RustCrypto stack pulls two getrandom majors, and neither has a
+# wasm32-unknown-unknown backend by default; the core must build for the
+# browser. 0.2 takes the "js" feature; 0.4 (via crypto-bigint) selects its
+# wasm_js backend from the "wasm_js" feature alone.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom   = { version = "0.2", features = ["js"] }
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }

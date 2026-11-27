@@ -77,32 +77,29 @@ pub fn compute_tmr(txs: &[&MultihashDigest], algs: &[HashAlg]) -> Option<Transac
     ))
 }
 
-/// Compute the Transaction Commit Root from the commit transaction's czds.
-pub fn compute_tcr(czds: &[TaggedCzd<'_>], algs: &[HashAlg]) -> Option<TransactionCommitRoot> {
-    let mh = compute_tx(czds, algs)?;
-    Some(TransactionCommitRoot(mh))
-}
-
-/// Compute the Transaction Root from TMR and TCR.
+/// Compute the Transaction Root: the MR of every transaction's id in order,
+/// the commit transaction last (SPEC 3.7.5,
+/// `TR = MR(TXm0?, TXm1?, ..., TXc)`). With no mutation transaction the
+/// commit transaction's id is promoted unhashed. TR is not built from TMR:
+/// TMR promotes a lone mutation transaction, which would hide its grouping
+/// from TR; TMR's role is the arrow (SPEC 4.2).
 pub fn compute_tr(
-    tmr: Option<&TransactionMutationRoot>,
+    mutations: &[&MultihashDigest],
     tcr: &TransactionCommitRoot,
     algs: &[HashAlg],
 ) -> Option<TransactionRoot> {
-    // If no mutation transactions, implicit promotion: TR = TCR
-    let tmr = match tmr {
-        Some(t) => t,
-        None => return Some(TransactionRoot(tcr.0.clone())),
-    };
+    if mutations.is_empty() {
+        return Some(TransactionRoot(tcr.0.clone()));
+    }
 
     let mut variants = BTreeMap::new();
     for &alg in algs {
-        let tmr_bytes = tmr.0.get(alg)?;
-        let tcr_bytes = tcr.0.get(alg)?;
-
-        let refs = vec![tmr_bytes, tcr_bytes];
-        let merged_digest = hash_concat_bytes(alg, &refs);
-        variants.insert(alg, merged_digest.into_boxed_slice());
+        let mut refs = Vec::with_capacity(mutations.len() + 1);
+        for tx in mutations {
+            refs.push(tx.get(alg)?);
+        }
+        refs.push(tcr.0.get(alg)?);
+        variants.insert(alg, hash_concat_bytes(alg, &refs).into_boxed_slice());
     }
 
     Some(TransactionRoot(MultihashDigest::new(variants).ok()?))

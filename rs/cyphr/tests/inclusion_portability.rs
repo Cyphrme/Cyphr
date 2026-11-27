@@ -23,25 +23,29 @@ fn tx_leaf_payload(tr: &MultihashDigest) -> Vec<u8> {
     serde_json::to_vec(&mapped).unwrap()
 }
 
-#[test]
-fn transaction_inclusion_verifies_without_principal() {
+#[tokio::test]
+async fn transaction_inclusion_verifies_without_principal() {
     let alg = HashAlg::Sha256;
     let alg_id = hash_alg_to_u64(alg);
 
     // Build a Commit Tree directly (no Principal) and append two leaves.
-    let commit_trees = CommitTrees::open(eml::MemoryStorage::new()).unwrap();
+    let mut commit_trees = CommitTrees::open(eml::MemoryStorage::new()).await.unwrap();
     commit_trees
         .add_algorithm(alg_id, Box::new(MaltHasher::new(alg)))
+        .await
         .unwrap();
 
     let tr = MultihashDigest::from_single(alg, vec![0xAB; 32]).unwrap();
-    commit_trees.append(&tx_leaf_payload(&tr)).unwrap();
+    commit_trees.append(&tx_leaf_payload(&tr)).await.unwrap();
     let other_tr = MultihashDigest::from_single(alg, vec![0xCD; 32]).unwrap();
-    commit_trees.append(&tx_leaf_payload(&other_tr)).unwrap();
+    commit_trees
+        .append(&tx_leaf_payload(&other_tr))
+        .await
+        .unwrap();
 
     let index = 0u64;
     let tree_size = commit_trees.tree_size(alg_id).unwrap();
-    let hop1_proof = commit_trees.inclusion_proof(alg_id, index).unwrap();
+    let hop1_proof = commit_trees.inclusion_proof(alg_id, index).await.unwrap();
     let cr = CommitRoot(
         MultihashDigest::new(BTreeMap::from([(
             alg,
@@ -77,22 +81,23 @@ fn transaction_inclusion_verifies_without_principal() {
     ));
 }
 
-#[test]
-fn transaction_inclusion_rejects_forged_transaction_without_principal() {
+#[tokio::test]
+async fn transaction_inclusion_rejects_forged_transaction_without_principal() {
     let alg = HashAlg::Sha256;
     let alg_id = hash_alg_to_u64(alg);
 
-    let commit_trees = CommitTrees::open(eml::MemoryStorage::new()).unwrap();
+    let mut commit_trees = CommitTrees::open(eml::MemoryStorage::new()).await.unwrap();
     commit_trees
         .add_algorithm(alg_id, Box::new(MaltHasher::new(alg)))
+        .await
         .unwrap();
 
     let tr = MultihashDigest::from_single(alg, vec![0xAB; 32]).unwrap();
-    commit_trees.append(&tx_leaf_payload(&tr)).unwrap();
+    commit_trees.append(&tx_leaf_payload(&tr)).await.unwrap();
 
     let index = 0u64;
     let tree_size = commit_trees.tree_size(alg_id).unwrap();
-    let hop1_proof = commit_trees.inclusion_proof(alg_id, index).unwrap();
+    let hop1_proof = commit_trees.inclusion_proof(alg_id, index).await.unwrap();
     let cr = CommitRoot(
         MultihashDigest::new(BTreeMap::from([(
             alg,
@@ -143,9 +148,14 @@ fn build_key_inclusion_material(
     let alg_id = hash_alg_to_u64(alg);
     let tmb_a = Thumbprint::from_bytes(vec![0x01; 32]);
     let tmb_b = Thumbprint::from_bytes(vec![0x02; 32]);
-    let thumbprints = vec![&tmb_a, &tmb_b];
+    let thumbprints = [&tmb_a, &tmb_b];
 
-    let kt = KeyTree::build_tree(&thumbprints, &[alg]).unwrap();
+    // Synthetic 32-byte thumbprints: keys of a SHA-256 algorithm.
+    let leaves: Vec<_> = thumbprints
+        .iter()
+        .map(|t| (t.as_bytes(), HashAlg::Sha256))
+        .collect();
+    let kt = KeyTree::build_tree(&leaves, &[alg]).unwrap();
     let kr = kt.root(&[alg]).unwrap();
     let ar_node = AuthTree::build_tree(&kr, &[alg]).unwrap();
     let ar = ar_node.root(&[alg]).unwrap();
@@ -181,7 +191,12 @@ fn key_inclusion_verifies_without_principal() {
     let (hops, roots, tmb_a, _tmb_b) = build_key_inclusion_material(alg);
     let root_refs: Vec<&[u8]> = roots.iter().map(Vec::as_slice).collect();
 
-    assert!(cyphr::verify_key_inclusion(alg, &tmb_a, &hops, &root_refs));
+    assert!(cyphr::verify_key_inclusion(
+        alg,
+        (tmb_a.as_bytes(), HashAlg::Sha256),
+        &hops,
+        &root_refs
+    ));
 }
 
 /// The load-bearing regression this node exists to fix: hop material
@@ -196,5 +211,10 @@ fn key_inclusion_rejects_mismatched_thumbprint_without_principal() {
     let (hops, roots, _tmb_a, tmb_b) = build_key_inclusion_material(alg);
     let root_refs: Vec<&[u8]> = roots.iter().map(Vec::as_slice).collect();
 
-    assert!(!cyphr::verify_key_inclusion(alg, &tmb_b, &hops, &root_refs));
+    assert!(!cyphr::verify_key_inclusion(
+        alg,
+        (tmb_b.as_bytes(), HashAlg::Sha256),
+        &hops,
+        &root_refs
+    ));
 }

@@ -1,0 +1,33 @@
+# Past-256 key vectors (SPEC 4, line 463: a node holds more than 256 items).
+# Keys are the numbered pool keys `#0 ..`; "#0..#255" is a range of 256 keys
+# (see tests/README.md, "Numbered keys and repeated items").
+
+# The largest single-fold key set: exactly 256 keys at explicit genesis.
+[[test]]
+name      = "explicit_genesis_256_keys"
+principal = ["#0..#255"]
+
+# One key past a fold: 257 keys need a second tree level.
+[[test]]
+name      = "explicit_genesis_257_keys"
+principal = ["#0..#256"]
+
+[[test]]
+name      = "explicit_genesis_300_keys"
+principal = ["#0..#299"]
+
+# Deleting the 257th key leaves the 256 keys of explicit_genesis_256_keys:
+# KR equals that vector's (PR and CR differ, as the chain is longer).
+[[test]]
+name      = "key_delete_257th_matches_256_keys"
+principal = ["#0..#256"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "#0", target = "#256", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 256

@@ -13,38 +13,135 @@ principal = ["unsupported_key"]
 [test.expected]
 error = "UnknownAlg"
 
+# Genesis never creates a key implicitly (SPEC 5.1 step 1, 7.7 Example 1,
+# 15.6): a principal/create naming as its id the two-key root over golden
+# and key_a, with no key/create of key_a, names a state the genesis never
+# reached and is refused
+[[test]]
+name      = "principal_create_without_genesis_key_create_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", id = "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error = "StateMismatch"
+
+# A genesis opens with the genesis key's own key/create (SPEC 5.1 steps 1-2,
+# 5.3; 13.2 step 3: before it KR is empty, so no other coz verifies). Here
+# the genesis key first creates another key, before creating itself.
+[[test]]
+name      = "genesis_not_opened_by_self_create_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error = "UnknownKey"
+
+# A key signs only once its own key/create is applied (SPEC 5.1 steps 1-2;
+# 13.2 step 3: the signer's tmb must be in the current KR). Here key_a, a
+# key the genesis has not created, signs the key/create of alice.
+[[test]]
+name      = "uncreated_genesis_key_signs_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "key_a", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error = "UnknownKey"
+
+# The PG is the state at the principal/create (SPEC 5.1 step 3: its id is
+# the future SR), so only the commit/create may follow it in the genesis
+# commit; a key/create after it is refused.
+[[test]]
+name      = "mutation_after_principal_create_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error = "GenesisIncomplete"
+
 # ============================================================================
 # Revoked key tests
 # Need setup.revoke_key to pre-revoke a key before the test
 # ============================================================================
 
-# Transaction signed by pre-revoked key fails with KeyRevoked
+# Transaction signed by a revoked key fails with KeyRevoked (key_a revokes
+# itself in the commit after the genesis)
 [[test]]
 name      = "revoked_key_fails"
 principal = ["golden", "key_a"]
 
-[test.setup]
-revoke_at  = 1699999999
-revoke_key = "key_a"
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "key_a", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
 
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "key_a", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
+    { now = 1700000001, signer = "key_a", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
   ],
 ]
 
 [test.expected]
 error = "KeyRevoked"
 
-# Action signed by pre-revoked key fails with KeyRevoked
+# Action signed by a revoked key fails with KeyRevoked
 [[test]]
 name      = "action_revoked_key_fails"
 principal = ["golden", "key_a"]
 
-[test.setup]
-revoke_at  = 1699999999
-revoke_key = "key_a"
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "key_a", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
 
 [[test.action]]
 msg    = "Action from revoked key"
@@ -56,23 +153,37 @@ typ    = "cyphr.me/action"
 error = "KeyRevoked"
 
 # ============================================================================
-# Last key revoke guard (Level 1 protection)
-# Self-revoke of last key fails with NoActiveKeys
+# ds/create on a deleted principal fails with AlreadyDeleted
+# (SPEC 11.4: no transactions or actions on a closed account). The id is
+# MR(DT) over the recorded action, so only the lifecycle gate refuses it.
 # ============================================================================
 
 [[test]]
-name      = "last_key_revoke_fails"
+name      = "ds_create_after_delete_fails"
 principal = ["golden"]
+
+[[test.action]]
+msg    = "Recorded action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
 
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, rvk = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/key/revoke" },
+    { now = 1700000002, signer = "golden", typ = "cyphr.me/cyphr/principal/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000003, signer = "golden", typ = "cyphr.me/cyphr/ds/create" },
   ],
 ]
 
 [test.expected]
-error = "NoActiveKeys"
+error = "AlreadyDeleted"
 
 # ============================================================================
 # Duplicate key test
@@ -81,17 +192,69 @@ error = "NoActiveKeys"
 
 [[test]]
 name      = "duplicate_key_fails"
-principal = ["golden"]
+principal = ["golden", "key_a"]
 
+# The genesis commit already created both keys (SPEC 5.3); this key/create
+# re-adds the genesis key.
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000001, signer = "key_a", target = "golden", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
 [test.expected]
 error = "DuplicateKey"
+
+# A key/replace removes the signer and adds the new key (SPEC 6.3), and a
+# create of a key that exists is DUPLICATE (SPEC 7.6). Naming another key the
+# principal already holds would only delete the signer, so it is refused.
+[[test]]
+name      = "key_replace_onto_held_key_fails"
+principal = ["golden", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+error = "DuplicateKey"
+
+# Naming the signer itself would add nothing and then remove it, leaving the
+# principal with no key; it is refused for the same reason.
+[[test]]
+name      = "key_replace_onto_signer_fails"
+principal = ["golden", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+error = "DuplicateKey"
+
+# SPEC 7.6: a create of an item that exists is DUPLICATE, and the principal
+# is among them. A multi-key principal's genesis ran its principal/create, so
+# one in a later commit is refused before its id is compared.
+[[test]]
+name      = "principal_create_repeated_fails"
+principal = ["golden", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error = "DuplicatePrincipal"
 
 # ============================================================================
 # Unknown key test (signer not in principal)
@@ -116,6 +279,18 @@ error = "UnknownKey"
 name      = "action_unknown_signer_fails"
 principal = ["golden"]                    # Only golden in principal
 
+# The genesis commit (SPEC 5.1): a data action needs a principal to
+# record into.
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "Action from unknown key"
 now    = 1700000001
@@ -124,6 +299,21 @@ typ    = "cyphr.me/action"
 
 [test.expected]
 error = "UnknownKey"
+
+# A data action for a principal with no genesis commit is refused: there
+# is no principal to record it into, and no key history to authorize it.
+[[test]]
+name      = "action_without_genesis_fails"
+principal = ["golden"]
+
+[[test.action]]
+msg    = "Action before any genesis"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[test.expected]
+error = "GenesisIncomplete"
 
 # ============================================================================
 # Timestamp past tests (multi-commit, error on commit 2)
@@ -150,26 +340,6 @@ tx = [
 [test.expected]
 error = "TimestampPast"
 
-# Action timestamp past (multi-action, error on action 2)
-[[test]]
-name      = "action_timestamp_past_fails"
-principal = ["golden"]
-
-[[test.action]]
-msg    = "First action"
-now    = 1700000100
-signer = "golden"
-typ    = "cyphr.me/action"
-
-[[test.action]]
-msg    = "Second action with older timestamp"
-now    = 1700000050                           # Earlier than action 1!
-signer = "golden"
-typ    = "cyphr.me/action"
-
-[test.expected]
-error = "TimestampPast"
-
 # ============================================================================
 # Constraint-driven tests (from coverage audit)
 # ============================================================================
@@ -190,22 +360,6 @@ tx = [
 [test.expected]
 error = "[no-revoke-non-self]"
 
-# key/delete of last remaining key should fail with NoActiveKeys
-# (distinct from revoke — tests the delete path specifically)
-[[test]]
-name      = "delete_last_key_fails"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
-  ],
-]
-
-[test.expected]
-error = "NoActiveKeys"
-
 # key/delete of unknown key (key not in principal)
 [[test]]
 name      = "delete_unknown_key_fails"
@@ -220,3 +374,157 @@ tx = [
 
 [test.expected]
 error = "UnknownSigner"
+
+# ============================================================================
+# Transaction coz reuse (SPEC §7.6)
+# The identical key/create coz is submitted a second time after the key was
+# deleted, so it is state-valid again; the principal still rejects it with
+# CozReuse because the first inclusion is authoritative.
+# ============================================================================
+
+[[test]]
+name      = "coz_reuse_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error = "CozReuse"
+
+# ============================================================================
+# Nonce bit length (SPEC 10.2): a nonce must be as wide as the algorithm it
+# is under. `target` borrows a pool key's thumbprint as the value, so a bare
+# `id` is as wide as that key's hash.
+# ============================================================================
+
+# A 48-byte value under an ES256 signer (SHA-256, 32 bytes).
+[[test]]
+name      = "nonce_sha256_signer_with_48_byte_value_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "diana_es384", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+error = "MalformedPayload"
+
+# A 32-byte value under an ES384 signer (SHA-384, 48 bytes).
+[[test]]
+name      = "nonce_sha384_signer_with_32_byte_value_fails"
+principal = ["diana_es384"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "diana_es384", target = "golden", typ = "cyphr.me/cyphr/AT/nonce/create" },
+  ],
+]
+
+[test.expected]
+error = "MalformedPayload"
+
+# Stated ids (`id`) reach widths no pool thumbprint has.
+[[test]]
+name      = "nonce_sha256_with_31_bytes_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", id = "SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpQ", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+error = "MalformedPayload"
+
+[[test]]
+name      = "nonce_sha256_with_33_bytes_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", id = "SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWl", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+error = "MalformedPayload"
+
+# nonce/delete of a nonce the level does not hold.
+[[test]]
+name      = "nonce_delete_absent_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/delete" },
+  ],
+]
+
+[test.expected]
+error = "UnknownNonce"
+
+# The same nonce created twice at one level (SPEC 7.6).
+[[test]]
+name      = "nonce_create_twice_at_one_level_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+error = "DuplicateNonce"
+
+# archrev:A1, SPEC 4.3: a commit is finalized by commit/create alone, which
+# alone carries `arrow`. A key/create carrying one is no finalizer and is
+# refused.
+[[test]]
+name      = "arrow_on_non_commit_create_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { arrow = "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI", now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error = "MalformedPayload"

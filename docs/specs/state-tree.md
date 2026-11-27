@@ -52,8 +52,8 @@ TYPE AR = Digest    -- Auth Root
 TYPE KR = Digest    -- Key Root
 TYPE RR = Digest    -- Rule Root (Level 5+)
 TYPE DR = Digest    -- Data Root (Level 4+)
-TYPE TR = Digest    -- Transaction Root (commit ID): MR(TMR, TCR)
-TYPE TMR = Digest   -- Transaction Mutation Root
+TYPE TR = Digest    -- Transaction Root (commit ID): MR(TXm₀?, TXm₁?, ..., TXc)
+TYPE TMR = Digest   -- Transaction Mutation Root (an input of the arrow)
 TYPE TCR = Digest   -- Transaction Commit Root
 
 -- Trees (underlying data structures behind the digest identifiers)
@@ -69,12 +69,10 @@ TYPE DT            -- Data Tree (Level 4+)
 **[digest-encoding]**: All digest binary values MUST be encoded as `b64ut`
 (RFC 4648 base64 URL alphabet, canonical encoding, no padding). Non-canonical
 encodings MUST be rejected.
-`VERIFIED: agent-check`
 
 **[identifier-is-cid]**: All identifiers (PG, PR, SR, AR, KR, RR, DR, CR, TR,
 `tmb`, nonces) MUST be cryptographic digest Content Identifiers (CIDs) encoded
 as b64ut, providing both addressing and integrity of the reference.
-`VERIFIED: agent-check`
 
 **[mr-sort-order]**: Cyphr's state digests split into two ordering classes.
 **Fixed two-cell nodes** — Principal Root (PR, root of PT), Auth Root (AR,
@@ -88,46 +86,38 @@ KT) MUST sort lexically (opaque byte comparison); Data Root (DR) MUST sort by
 instance — see SPEC.md §3.7.8). Commit tree (CT) is an Epoch Merkle Log (EML)
 and uses append-only (array) order, not lexical sort. See `transactions.md`
 [commit-finality-arrow].
-`VERIFIED: agent-check, updated 2026-07-03 per two-class ordering correction`
 
 **[pg-immutable]**: The Principal Genesis (PG) MUST NOT change after genesis
 (Level 3+). PG is the first PR computed at genesis commit. No operation MAY
 alter it. Levels 1–2 do not have a PG (see [level-1-2-identity]).
-`VERIFIED: agent-check — updated 2026-03-09 per B-2`
 
 **[alg-alignment]**: Inside a coz, all digest references in `pay` (including
 `id`, `tmb`, nonces) MUST be aligned with the hash algorithm associated with
 `alg`, unless the reference is explicitly labeled with a different algorithm
 prefix.
-`VERIFIED: agent-check`
 
 **[digest-alg-from-coz]**: The hash algorithm for digest computation inside a
 coz is determined by Coz's `alg` field and its associated hash algorithm (see
 §20.1 Algorithm Mapping). The `alg` field in `pay` MUST determine the hash
 algorithm for all unlabeled digest values in that coz.
-`VERIFIED: agent-check`
 
 **[nonce-bit-length]**: A nonce's bit length MUST match the declared algorithm's
 output size (e.g., a nonce declared as SHA-256 MUST be exactly 256 bits).
-`VERIFIED: agent-check`
 
 **[nonce-indistinguishable]**: Unless explicitly revealed, nonces MUST be
 indistinguishable from key thumbprints and other digest values. The protocol
 MUST NOT expose whether a node is a nonce or another node type without explicit
 reveal.
-`VERIFIED: agent-check`
 
 **[nonce-injection-bounds]**: Although transaction nonces construct intermediate
 state parameters, a nonce MUST NOT arbitrarily introduce hashing algorithms that
 are entirely unsupported by the `multi-hash-multi-root` key space. The legitimate
 algorithm set is dictated explicitly by the active key capabilities (and their
 acceptable cross-algorithm conversion paths), never arbitrarily extended by nonces.
-`VERIFIED: agent-check`
 
 **[mhmr-equivalence]**: All MHMR variants of a given node MUST be considered
 equivalent references to the same logical state. The protocol MUST NOT enforce
 a relative strength ordering between algorithm variants.
-`VERIFIED: agent-check`
 
 ### Transitions
 
@@ -138,13 +128,11 @@ level without additional hashing. Promotion MUST be applied recursively.
 - **PRE**: Exactly one child digest exists at the given tree level.
 - **POST**: Parent digest == child digest (no hashing). If the parent also has
   exactly one child after promotion, recursion applies upward.
-  `VERIFIED: agent-check`
 
 **Corollary — [level-1-2-identity]**: For Levels 1 and 2 (single-key
 principal): `tmb` == KR == AR == SR == PR via recursive implicit
 promotion of the single key's thumbprint. Levels 1–2 do not have a commit
 chain or a PG.
-`VERIFIED: agent-check — updated 2026-04-07 per SPEC §5.1`
 
 **[state-computation]**: When computing a new state digest after a mutation:
 
@@ -159,7 +147,6 @@ chain or a PG.
 - **PRE**: Component digests are valid, correctly computed from their subtrees.
 - **POST**: New state digest is deterministic and reproducible from the same
   component digests.
-  `VERIFIED: agent-check`
 
 **[conversion]**: SUPERSEDED 2026-07-08 — see resolution note below. No
 per-child re-hashing step exists. A component's H-variant is produced by
@@ -185,7 +172,6 @@ promotion, no hashing at all.
   match), the single existing variant's raw bytes (genesis promotion, len==1),
   or `H(concat(sorted raw variant bytes))` (general fold, len>1). No
   intermediate per-child re-hash under H ever occurs.
-  `VERIFIED: rs/cyphr/src/multihash.rs — MultihashDigest::arrow_component_bytes`
 
 > [!NOTE]
 > **Resolution (2026-07-08, settled)**: This constraint previously required
@@ -214,7 +200,6 @@ implementations MUST compute an MHMR variant for every state node:
   KR plus any nonce-injected algorithms.
 - **POST**: One digest variant per supported H, all considered equivalent
   (per [mhmr-equivalence]).
-  `VERIFIED: agent-check`
 
 **[alg-set-evolution]**: When an algorithm is removed from support (e.g., a key
 using that algorithm is deleted), implementations MUST stop computing that
@@ -224,7 +209,6 @@ implementations MUST begin computing its MHMR variant.
 - **PRE**: Active key set changes (key/create or key/delete/revoke).
 - **POST**: The set of MHMR variants computed for the next commit reflects
   exactly the algorithms supported by the post-mutation key set.
-  `VERIFIED: agent-check`
 
 ### Forbidden States
 
@@ -232,7 +216,6 @@ implementations MUST begin computing its MHMR variant.
 Every state level that participates in the tree MUST have at least one child
 node. (Absent state components — e.g., no RR at Level < 5 — are excluded
 entirely, not represented as empty.)
-`VERIFIED: agent-check`
 
 > [!NOTE]
 > **Empty state representation (partially resolved)**: SPEC.md §9.1 and the
@@ -247,12 +230,10 @@ PR = EMT-root(SR, CR) [cell 0 = SR, cell 1 = CR]. AR and SR MUST NOT depend on
 TR or CR. The `arrow` field in the commit transaction covers `MR(pre, fwd,
 TMR)` where `fwd` is SR, not PR, precisely because PR depends on CR which
 depends on TR which includes the commit.
-`VERIFIED: agent-check, rewritten 2026-07-02 per EMT/EML realignment, B-4, §4.2/§3.3`
 
 **[no-non-canonical-b64ut]**: A b64ut string that uses padding characters (`=`),
 non-URL-safe characters (`+`, `/`), or non-canonical encoding MUST be rejected.
 Implementations MUST NOT accept non-canonical b64ut.
-`VERIFIED: agent-check`
 
 ### Behavioral Properties
 
@@ -263,14 +244,12 @@ implementation, platform, or language computing it. The combination of
 determinism.
 
 - **Type**: Safety
-  `VERIFIED: agent-check`
 
 **[promotion-recursive-termination]**: Recursive implicit promotion MUST
 terminate. Since the state tree has finite depth (PR → {SR, CR}, SR → {AR, DR},
 AR → {KR, RR}), promotion recurses at most through the tree height.
 
 - **Type**: Safety
-  `VERIFIED: agent-check`
 
 **[mhmr-no-rehash-children]**: When computing an MHMR, inner child digests MUST
 be fed directly into the parent hash function as raw bytes, without any
@@ -280,7 +259,6 @@ fold hash over the concatenated raw bytes of all children (per [conversion]);
 there is no separate "convert this one mismatched child first" step.
 
 - **Type**: Safety
-  `VERIFIED: rs/cyphr/src/multihash.rs — MultihashDigest::arrow_component_bytes`
 
 > [!NOTE]
 > **Resolution (2026-07-08)**: Previously phrased as an exception carve-out
@@ -299,7 +277,7 @@ AR_alg   = H(KR_alg ∥ RR_alg)                            -- when RR is present
 SR       = MR(AR, DR)                                    -- State Root: ST's root, cell 0 = AR, cell 1 = DR (positional); DR absent at Level < 4 (Singleton Promotion: SR = AR)
 SR_alg   = H(AR_alg ∥ DR_alg)                            -- when DR is present (cells 0-1 both populated)
 DR       = MR(czd₀, czd₁, ..., nonce?)                 -- Level 4+, sorted by `now` then `czd`; flat computed value, not yet a real tree instance
-TR       = MR(TMR, TCR)                                 -- Transaction Root (commit ID)
+TR       = MR(TXm₀?, TXm₁?, ..., TXc)                   -- Transaction Root (commit ID): every transaction id in order, the commit transaction last (SPEC 3.7.5); TMR is not an input
 CR       = EMLR(TR₀, TR₁, ...)                          -- Commit Root (EML root of commit tree)
 PR       = EMT(SR, CR, ...)                             -- Principal Root: PT's EMT root; cell 0 = SR, cell 1 = CR (positional; cells ≥ 2 are PT embeddings); CR absent at Level 1-2
 PR_alg   = H(SR_alg ∥ CR_alg)                            -- when only cells 0-1 are populated (no embeddings)

@@ -1,12 +1,11 @@
 //! ParsedCoz commands.
 
-use cyphr::StateDigest;
+use cyphr::{PrincipalGenesis, StateDigest};
 
 use super::common::{
     CliPrincipal, get_commits_from_engine, load_key_from_keystore, load_principal_from_engine,
     parse_store,
 };
-use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat, TxCommands};
 
 /// Run a tx subcommand.
@@ -18,12 +17,12 @@ pub fn run(cli: &Cli, command: &TxCommands) -> crate::Result<()> {
 }
 
 /// List cozies for an identity.
-fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
+fn list(cli: &Cli, identity: &PrincipalGenesis) -> crate::Result<()> {
     let principal = load_identity(cli, identity)?;
 
     let cozies: Vec<_> = principal.iter_all_cozies().collect();
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let tx_list: Vec<_> = cozies
                 .iter()
@@ -55,7 +54,7 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
             } else {
                 for (i, tx) in cozies.iter().enumerate() {
                     println!(
-                        "  [{}] {:?} by {} @ {}",
+                        "  [{}] {} by {} @ {}",
                         i,
                         tx.kind(),
                         &tx.signer().to_b64()[..12],
@@ -73,7 +72,7 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
 }
 
 /// Verify coz chain integrity for an identity.
-pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
+pub fn verify(cli: &Cli, identity: &PrincipalGenesis) -> crate::Result<()> {
     let store = parse_store(cli)?;
 
     // Load commits from store. A real storage error here (corrupted
@@ -85,27 +84,16 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 
     if commits.is_empty() {
         // Genesis state - verify by reconstructing from keystore
-        let keystore = JsonKeyStore::open(&cli.keystore)?;
-        let key = load_key_from_keystore(&keystore, identity)?;
-        let principal = cyphr::Principal::implicit(key)?;
+        let keystore = super::common::open_backend(cli)?;
+        let key = load_key_from_keystore(&keystore, &super::common::keystore_name(identity)?)?;
+        let principal = cyphr::PrincipalState::genesis(key)?;
 
         // Verify PG matches (L1 has no PG)
         if let Some(pg) = principal.pg() {
-            use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            let computed_pg = pg
-                .as_multihash()
-                .first_variant()
-                .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
-            if computed_pg != identity {
-                return Err(Error::Storage(format!(
-                    "PG mismatch: computed {} != {}",
-                    computed_pg, identity
-                )));
-            }
+            check_pg(pg, identity)?;
         }
 
-        match cli.output {
+        match cli.format {
             OutputFormat::Json => {
                 let output = serde_json::json!({
                     "identity": identity,
@@ -128,26 +116,16 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     }
 
     // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     // Verify PG matches
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
     if let Some(pg) = principal.pg() {
-        let computed_pg = pg
-            .as_multihash()
-            .first_variant()
-            .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
-        if computed_pg != identity {
-            return Err(Error::Storage(format!(
-                "PG mismatch: computed {} != expected {}",
-                computed_pg, identity
-            )));
-        }
+        check_pg(pg, identity)?;
     }
 
     // Verify state digests from commits match computed state
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
     let Some(last_commit) = commits.last() else {
         return Ok(());
     };
@@ -155,8 +133,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         .pr()
         .as_multihash()
         .first_variant()
-        .map(Base64UrlUnpadded::encode_string)
-        .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+        .map(Base64UrlUnpadded::encode_string)?;
 
     // Parse stored pr which may be in "alg:digest" format
     let stored_pr_digest = last_commit
@@ -166,15 +143,15 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         .unwrap_or(&last_commit.pr);
 
     if computed_pr != stored_pr_digest {
-        return Err(Error::Storage(format!(
-            "PR mismatch: computed {} != stored {}",
-            computed_pr, stored_pr_digest
-        )));
+        return Err(Error::PrMismatch {
+            computed: computed_pr,
+            stored: stored_pr_digest.to_owned(),
+        });
     }
 
     let tx_count: usize = principal.iter_all_cozies().count();
 
-    match cli.output {
+    match cli.format {
         OutputFormat::Json => {
             let output = serde_json::json!({
                 "identity": identity,
@@ -197,9 +174,21 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     Ok(())
 }
 
+/// Whether the PG the history computed names `identity`.
+fn check_pg(computed: &PrincipalGenesis, identity: &PrincipalGenesis) -> crate::Result<()> {
+    use cyphr::StateDigest;
+    if computed.as_multihash().matches(identity.as_multihash()) {
+        return Ok(());
+    }
+    Err(Error::PgMismatch {
+        computed: computed.to_string(),
+        expected: identity.to_string(),
+    })
+}
+
 /// Load identity from storage or keystore.
-fn load_identity(cli: &Cli, identity: &str) -> crate::Result<CliPrincipal> {
+fn load_identity(cli: &Cli, identity: &PrincipalGenesis) -> crate::Result<CliPrincipal> {
     let store = parse_store(cli)?;
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     load_principal_from_engine(&store, &keystore, identity)
 }

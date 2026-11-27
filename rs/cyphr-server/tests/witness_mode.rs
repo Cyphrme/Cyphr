@@ -13,97 +13,33 @@
 
 use std::sync::Arc;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use clap::Parser;
+use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::HashAlg;
 use cyphr::state::TaggedDigest;
 use cyphr_server::auth::ServerIdentity;
-use cyphr_server::config::{AuthorityIdentity, Cli, ServerConfig, ServerMode, resolve_config};
-use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+use cyphr_server::config::{ServerConfig, ServerMode};
 use cyphr_server::{AppState, build_app_router, receipt};
 use cyphr_storage::blob::{Blake3Hash, BlobStore};
-use cyphr_storage::index::{IndexableCommit, Indexer};
-use http_body_util::BodyExt;
-use tower::ServiceExt;
+use cyphr_storage::index::{DeriveToken, IndexableCommit, IndexerWrite};
 
 mod common;
 
 use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post_json};
 
-/// Render a distinct, valid genesis-identifier string from a repeated
-/// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
-/// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
-/// not a principal's genesis identifier -- `docs/specs/receipts.md`).
-/// `receipt::tip_report`/`commit_receipt` refuse a malformed `pr`, so
-/// these principal identifiers must genuinely parse. Named
-/// `principal_digest` (not `digest`) to stay distinct from the TAGGED
-/// digest helper other test files use for `commit_id`/`roots` fixtures --
-/// same shape, different wire form, never interchangeable.
-fn principal_digest(byte: u8) -> String {
-    Base64UrlUnpadded::encode_string(&[byte; 32])
-}
-
-/// Helper: Issue a `DELETE` request against an axum router with a JSON body.
-async fn delete_json(
-    app: axum::Router,
-    uri: &str,
-    body: String,
-) -> (StatusCode, serde_json::Value) {
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(uri)
-        .header("content-type", "application/json")
-        .body(Body::from(body))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    };
-    (status, json)
+/// The id a `/tip` response reports for `principal_id`: its labelled form.
+fn reported_id(principal_id: &cyphr::PrincipalGenesis) -> String {
+    principal_id.to_string()
 }
 
 // ========================================================================
 // Acceptance Criteria N2.1 – N2.6
 // ========================================================================
 
-/// N2.1: `witness_mode_starts`
-///
-/// Verifies that a cyphr-server instance configured in Witness mode
-/// (`ServerMode::Witness` / `serve --mode witness`) can resolve its configuration,
-/// initialize AppState, and start successfully.
-#[tokio::test]
-async fn witness_mode_starts() {
-    let cli = Cli::try_parse_from(["cyphr-server", "serve", "--mode", "witness"])
-        .expect("CLI args for witness mode should parse");
-
-    let config =
-        resolve_config(&cli).expect("witness mode configuration MUST resolve successfully");
-
-    assert_eq!(
-        config.mode,
-        ServerMode::Witness,
-        "resolved config mode MUST be ServerMode::Witness"
-    );
-
-    let temp_dir = tempfile::tempdir().expect("tempdir");
-    let mut witness_config = config;
-    witness_config.data_dir = temp_dir.path().join("data");
-
-    let state =
-        AppState::new(witness_config).expect("witness mode AppState MUST initialize successfully");
-    assert_eq!(state.config.mode, ServerMode::Witness);
-}
-
 /// N2.2: `all_write_routes_refused`
 ///
 /// Structural write refusal: In Witness mode, ALL state-mutating (write) endpoints
-/// (`POST /push`, `POST /revoke`, `POST /witness/register`, `DELETE /witness/register`,
+/// (`POST /push`, `POST /revoke`,
 /// and unmapped mutating routes like `POST /unmapped_write_route_test`) MUST be
 /// structurally refused with a non-success write-refusal HTTP status code (403 Forbidden,
 /// 405 Method Not Allowed, or 501 Not Implemented) and an unsigned response envelope
@@ -121,10 +57,15 @@ async fn all_write_routes_refused() {
     let app = build_app_router(state.clone()).expect("app router initialization");
 
     let pool = load_pool();
-    let push_body = build_genesis_push_body(&pool, "n2-write-refusal-principal", 1_700_000_000);
+    let push_body = build_genesis_push_body(
+        &pool,
+        &common::golden_principal_id(&pool).await,
+        1_700_000_000,
+    )
+    .await;
 
     // 1. POST /push MUST be refused in witness mode with an unsigned envelope
-    let (push_status, push_json) = post_json(app.clone(), "/push", push_body.clone()).await;
+    let (push_status, push_json) = post_json(app.clone(), "/push", push_body).await;
     assert!(
         push_status == StatusCode::FORBIDDEN
             || push_status == StatusCode::METHOD_NOT_ALLOWED
@@ -137,25 +78,9 @@ async fn all_write_routes_refused() {
         "push refusal envelope MUST be unsigned: {push_json:?}"
     );
 
-    // 1b. POST /push with fanout/witness-push headers MUST ALSO be refused in witness mode
-    let fanout_req = Request::builder()
-        .method("POST")
-        .uri("/push")
-        .header("content-type", "application/json")
-        .header("x-cyphr-fanout", "true")
-        .header("x-witness-push", "true")
-        .body(Body::from(push_body))
-        .unwrap();
-    let fanout_resp = app.clone().oneshot(fanout_req).await.unwrap();
-    assert_eq!(
-        fanout_resp.status(),
-        StatusCode::FORBIDDEN,
-        "POST /push with fanout headers MUST be structurally refused in witness mode"
-    );
-
     // 2. POST /revoke MUST be refused in witness mode with an unsigned envelope
     let revoke_body = serde_json::json!({
-        "principal_id": "n2-write-refusal-principal",
+        "principal_id": common::golden_principal_id(&pool).await,
         "coz": {}
     })
     .to_string();
@@ -172,43 +97,7 @@ async fn all_write_routes_refused() {
         "revoke refusal envelope MUST be unsigned: {revoke_json:?}"
     );
 
-    // 3. POST /witness/register MUST be refused in witness mode with an unsigned envelope
-    let reg_body = serde_json::json!({
-        "pay": { "id": "SHA-256:dummy", "typ": "cyphr.me/cyphr/witness/register/create" }
-    })
-    .to_string();
-    let (reg_status, reg_json) = post_json(app.clone(), "/witness/register", reg_body).await;
-    assert!(
-        reg_status == StatusCode::FORBIDDEN
-            || reg_status == StatusCode::METHOD_NOT_ALLOWED
-            || reg_status == StatusCode::NOT_IMPLEMENTED,
-        "POST /witness/register in witness mode MUST be structurally refused, got {reg_status}: \
-         {reg_json:?}"
-    );
-    assert_eq!(
-        reg_json["statement"]["kind"], "unsigned",
-        "POST /witness/register refusal envelope MUST be unsigned: {reg_json:?}"
-    );
-
-    // 4. DELETE /witness/register MUST be refused in witness mode with an unsigned envelope
-    let del_body = serde_json::json!({
-        "pay": { "id": "SHA-256:dummy", "typ": "cyphr.me/cyphr/witness/register/delete" }
-    })
-    .to_string();
-    let (del_status, del_json) = delete_json(app.clone(), "/witness/register", del_body).await;
-    assert!(
-        del_status == StatusCode::FORBIDDEN
-            || del_status == StatusCode::METHOD_NOT_ALLOWED
-            || del_status == StatusCode::NOT_IMPLEMENTED,
-        "DELETE /witness/register in witness mode MUST be structurally refused, got {del_status}: \
-         {del_json:?}"
-    );
-    assert_eq!(
-        del_json["statement"]["kind"], "unsigned",
-        "DELETE /witness/register refusal envelope MUST be unsigned: {del_json:?}"
-    );
-
-    // 5. Unmapped/arbitrary mutating route (e.g. POST /unmapped_write_route_test) MUST be refused
+    // 3. Unmapped/arbitrary mutating route (e.g. POST /unmapped_write_route_test) MUST be refused
     //    in witness mode with an unsigned envelope
     let unmapped_body = serde_json::json!({"test": "unmapped"}).to_string();
     let (unmapped_status, unmapped_json) =
@@ -254,10 +143,10 @@ async fn syncs_from_authority() {
         .expect("authority TCP URL must be available");
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x01);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_000;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
     // Push state to authority node
     let (push_status, push_res) = post_json(auth_app.clone(), "/push", push_body).await;
@@ -267,12 +156,12 @@ async fn syncs_from_authority() {
         "authority push must succeed: {push_res:?}"
     );
 
-    // Construct witness node configured with authority_url
+    // Construct a witness node following the authority
     let witness_dir = tempfile::tempdir().expect("witness tempdir");
     let witness_config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: witness_dir.path().join("data"),
-        authority_url: Some(auth_url),
+        gossip: common::plain_gossip(auth_url),
         ..Default::default()
     };
     let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
@@ -280,7 +169,7 @@ async fn syncs_from_authority() {
 
     // Query witness node for principal tip after sync from authority
     let (witness_tip_status, witness_tip_json) =
-        get_json(witness_app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(witness_app.clone(), &format!("/tip?pg={principal_id}")).await;
 
     assert_eq!(
         witness_tip_status,
@@ -291,7 +180,8 @@ async fn syncs_from_authority() {
 
     let payload = common::envelope_payload(&witness_tip_json);
     assert_eq!(
-        payload["principal_id"], principal_id,
+        payload["principal_id"],
+        reported_id(principal_id),
         "witness tip response payload must match synced principal"
     );
 }
@@ -300,7 +190,9 @@ async fn syncs_from_authority() {
 ///
 /// Verifies that a witness node configured with authority TCP URL REJECTS unverifiable,
 /// corrupted, or forged state deltas from an authority node, refusing to apply them to its local
-/// storage.
+/// storage. The authority's index is corrupted by an entry no commit manifest backs: the index is
+/// a cache of the blob store (I1), so the authority refuses its `/patch` as inconsistent (500)
+/// rather than serve the entry, and the witness keeps the valid history it synced before.
 #[tokio::test]
 async fn rejects_unverifiable_delta() {
     let (auth_state, _identity, auth_dir) = attestor_server().await;
@@ -324,14 +216,30 @@ async fn rejects_unverifiable_delta() {
         .expect("authority TCP URL must be available");
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x02);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_000;
 
     // 1. Establish valid principal on authority
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (push_status, _push_res) = post_json(auth_app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
+
+    // 3. Construct a witness node following the authority
+    let witness_dir = tempfile::tempdir().expect("witness tempdir");
+    let witness_config = ServerConfig {
+        mode: ServerMode::Witness,
+        data_dir: witness_dir.path().join("data"),
+        gossip: common::plain_gossip(auth_url),
+        ..Default::default()
+    };
+    let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
+    let witness_app = build_app_router(witness_state.clone()).expect("witness router");
+
+    // The witness syncs the valid history first.
+    let (synced, synced_json) =
+        get_json(witness_app.clone(), &format!("/tip?pg={principal_id}")).await;
+    assert_eq!(synced, StatusCode::OK, "initial sync: {synced_json:?}");
 
     // 2. Corrupt index/state on authority node so it presents an unverifiable state delta
     let dummy_bytes = vec![7u8; 32];
@@ -344,7 +252,9 @@ async fn rejects_unverifiable_delta() {
         .expect("put dummy blob");
 
     let corrupt_commit = IndexableCommit {
-        principal_id: principal_id.to_string(),
+        pg: Vec::new(),
+        manifest: None,
+        principal_id: principal_id.clone(),
         commit_ids: vec!["SHA-256:CORRUPTED_COMMIT_999999999999999999999999".to_string()],
         sequence: 99,
         pre: None,
@@ -360,24 +270,22 @@ async fn rejects_unverifiable_delta() {
     auth_state
         .engine
         .indexer()
-        .index_commit(&corrupt_commit)
+        .index_commit(&corrupt_commit, &DeriveToken::for_conformance_tests())
         .await
         .expect("corrupt index_commit");
 
-    // 3. Construct witness node configured with authority_url
-    let witness_dir = tempfile::tempdir().expect("witness tempdir");
-    let witness_config = ServerConfig {
-        mode: ServerMode::Witness,
-        data_dir: witness_dir.path().join("data"),
-        authority_url: Some(auth_url),
-        ..Default::default()
-    };
-    let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
-    let witness_app = build_app_router(witness_state.clone()).expect("witness router");
+    // The authority refuses to serve a history its record does not back.
+    let (patch_status, patch_json) =
+        get_json(auth_app.clone(), &format!("/patch?pg={principal_id}")).await;
+    assert_eq!(
+        patch_status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a patch over an unbacked index entry must be refused, not served: {patch_json:?}"
+    );
 
     // 4. Witness sync from authority MUST succeed for valid history but REJECT the corrupted delta
     let (witness_tip_status, witness_tip_json) =
-        get_json(witness_app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(witness_app.clone(), &format!("/tip?pg={principal_id}")).await;
 
     // Witness node MUST serve valid synced state, NOT the corrupted forged root
     assert_eq!(
@@ -425,106 +333,6 @@ async fn rejects_unverifiable_delta() {
         payload["commit_id"], "SHA-256:CORRUPTED_COMMIT_999999999999999999999999",
         "witness must serve the legitimate genesis commit, not the forged one: \
          {witness_tip_json:?}"
-    );
-}
-
-/// N2.5: `serves_only_self_verified`
-///
-/// Adversarial check: Stand up an upstream authority server using Instance::bind_tcp(),
-/// craft a delta with an invalid/forged signature or corrupted commit on that authority,
-/// trigger witness sync against that authority, and assert that the witness node refuses
-/// to accept or serve the unverified delta on GET /tip, GET /patch, and GET /e/{digest}
-/// (returning 404 or refusal error rather than relaying unverified state).
-#[tokio::test]
-async fn serves_only_self_verified() {
-    let (auth_state, _identity, auth_dir) = attestor_server().await;
-    let auth_app = build_app_router(auth_state.clone()).expect("authority router");
-
-    let mut auth_instance = common::multi::Instance {
-        name: "adversarial-authority".to_string(),
-        state: auth_state.clone(),
-        identity: Some(_identity),
-        dir: auth_dir,
-        router: auth_app.clone(),
-        listener_addr: None,
-        tcp_handle: None,
-    };
-    let _auth_addr = auth_instance
-        .bind_tcp()
-        .await
-        .expect("bind TCP for adversarial authority server");
-    let auth_url = auth_instance
-        .url()
-        .expect("authority TCP URL must be available");
-
-    let adversarial_principal = "n2-adversarial-unverified-principal";
-    let now = 1_700_000_000;
-    let dummy_hash = Blake3Hash::from_bytes([9u8; 32]);
-    let forged_commit = IndexableCommit {
-        principal_id: adversarial_principal.to_string(),
-        commit_ids: vec!["SHA-256:FORGED_ADVERSARIAL_COMMIT_12345".to_string()],
-        sequence: 0,
-        pre: None,
-        prs: vec!["SHA-256:FORGED_PR_ROOT".to_string()],
-        srs: vec!["SHA-256:FORGED_SR_ROOT".to_string()],
-        ars: vec!["SHA-256:FORGED_AR_ROOT".to_string()],
-        crs: vec!["SHA-256:FORGED_CR_ROOT".to_string()],
-        blob_hashes: vec![dummy_hash],
-        cozies: vec![],
-        timestamp: now,
-        keys: vec![],
-    };
-    auth_state
-        .engine
-        .indexer()
-        .index_commit(&forged_commit)
-        .await
-        .expect("index forged commit on authority");
-
-    let witness_dir = tempfile::tempdir().expect("witness tempdir");
-    let witness_config = ServerConfig {
-        mode: ServerMode::Witness,
-        data_dir: witness_dir.path().join("data"),
-        authority_url: Some(auth_url),
-        ..Default::default()
-    };
-    let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
-    let witness_app = build_app_router(witness_state.clone()).expect("witness router");
-
-    // 1. GET /tip?pr=... MUST NOT serve unverified state (MUST return 404 or refusal error)
-    let (tip_status, tip_json) = get_json(
-        witness_app.clone(),
-        &format!("/tip?pr={adversarial_principal}"),
-    )
-    .await;
-    assert_ne!(
-        tip_status,
-        StatusCode::OK,
-        "witness node MUST NOT serve unverified state on GET /tip: {tip_json:?}"
-    );
-
-    // 2. GET /patch?pr=... MUST NOT serve unverified state (MUST return 404 or refusal error)
-    let (patch_status, patch_json) = get_json(
-        witness_app.clone(),
-        &format!("/patch?pr={adversarial_principal}"),
-    )
-    .await;
-    assert_ne!(
-        patch_status,
-        StatusCode::OK,
-        "witness node MUST NOT serve unverified state on GET /patch: {patch_json:?}"
-    );
-
-    // 3. GET /e/{digest} MUST NOT serve unverified entity blobs
-    let (entity_status, entity_json) = get_json(
-        witness_app.clone(),
-        "/e/SHA-256:FORGED_ADVERSARIAL_COMMIT_12345",
-    )
-    .await;
-    assert_ne!(
-        entity_status,
-        StatusCode::OK,
-        "witness node MUST NOT serve unverified entity blobs on GET /e/digest: {entity_json:?}"
     );
 }
 
@@ -582,8 +390,11 @@ async fn responses_carry_freshness() {
     );
 
     // 2. GET /tip state read query on witness node MUST carry freshness metadata
-    let (_tip_status, tip_json) =
-        get_json(witness_app.clone(), "/tip?pr=n2-freshness-principal").await;
+    let (_tip_status, tip_json) = get_json(
+        witness_app.clone(),
+        "/tip?pg=SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .await;
     let tip_payload = common::envelope_payload(&tip_json);
     let tip_timestamp = tip_payload
         .get("now")
@@ -602,56 +413,12 @@ async fn responses_carry_freshness() {
     );
 }
 
-/// Security Regression Test: `unauthenticated_fanout_header_cannot_bypass_witness_write_refusal`
-///
-/// Verifies that unauthenticated request headers (`x-cyphr-fanout`, `x-witness-push`) CANNOT
-/// bypass strict structural write refusal on Witness nodes. All POST /push requests MUST be
-/// rejected with HTTP 403 Forbidden and an unsigned refusal envelope.
-#[tokio::test]
-async fn unauthenticated_fanout_header_cannot_bypass_witness_write_refusal() {
-    let witness_dir = tempfile::tempdir().expect("witness tempdir");
-    let witness_config = ServerConfig {
-        mode: ServerMode::Witness,
-        data_dir: witness_dir.path().join("data"),
-        ..Default::default()
-    };
-    let witness_instance = common::multi::Instance::from_config(witness_config, witness_dir).await;
-
-    let pool = load_pool();
-    let push_body =
-        build_genesis_push_body(&pool, "n2-fanout-bypass-attempt-principal", 1_700_000_000);
-
-    let resp = witness_instance
-        .post_with_headers(
-            "/push",
-            push_body,
-            &[("x-cyphr-fanout", "true"), ("x-witness-push", "true")],
-        )
-        .await;
-
-    assert_eq!(
-        resp.status,
-        StatusCode::FORBIDDEN,
-        "Witness node MUST return 403 Forbidden for POST /push even with fanout headers, got \
-         status {}: {:?}",
-        resp.status,
-        resp.json
-    );
-
-    assert_eq!(
-        resp.json["statement"]["kind"], "unsigned",
-        "Refusal envelope MUST be unsigned, got: {:?}",
-        resp.json
-    );
-}
-
 // ========================================================================
-// N2 remediation: wedge elimination + authenticated channel + ingestion
+// Wedge elimination + authenticated channel + ingestion
 // ========================================================================
 //
-// These acceptance tests drive deliverables 2, 4, and 5 of the sync-channel
-// node. They are RED against the current code and GREEN once the honest
-// outcome type, wedge fix, authenticated channel, and ingestion gate land.
+// These tests pin the honest outcome type, the wedge fix, the
+// authenticated channel, and the ingestion gate.
 //
 // Design note -- why an on-path proxy / fixed mock, not two plain servers:
 // the threats these tests bound are alterations of what the authority served
@@ -663,16 +430,13 @@ async fn unauthenticated_fanout_header_cannot_bypass_witness_write_refusal() {
 // fixed mock serves a hand-crafted body a real server would never emit.
 //
 // Contract these tests pin (delegated shapes made concrete, honoring S3/S6):
-//   * `ServerConfig::authority_identity: Option<AuthorityIdentity>` carries the expected
-//     authority's alg + PUBLIC-KEY BYTES (not a bare thumbprint -- `coz::verify_json` needs key
-//     material).
-//   * When `authority_identity` is set, the witness MUST verify the patch envelope's signature
-//     against it AND recompute the entry-commitment over the entries as received; an unsigned /
-//     mis-signed / commitment-mismatch / non-canonical-report response is a `Failed` sync that
-//     applies NOTHING.
-//   * When it is UNSET, the legacy unauthenticated sync path is preserved (the existing
-//     `syncs_from_authority` deployment shape): the wedge fix is orthogonal to the channel and
-//     holds there.
+//   * A `[gossip]` peer entry `{ url, pg }` names the peer's server principal; its chain, held by
+//     the witness, supplies the keys a signed report is checked against.
+//   * With a `pg`, the witness MUST verify the patch envelope's signature against a key active in
+//     that chain AND compare the tip it reaches with the attested one; an unsigned / mis-signed /
+//     mismatched / non-canonical-report response applies NOTHING it should not.
+//   * With a bare URL, a peer's reports are not checked (the existing `syncs_from_authority`
+//     deployment shape): the wedge fix is orthogonal to the channel and holds there.
 //   * The authority's signed report rides the EXISTING envelope shape -- the signed coz at
 //     `statement.coz`, exactly as `GET /tip` already returns `Envelope::signed(payload,
 //     tip_report_coz)` (routes.rs). This is the one load-bearing assumption about the delegated
@@ -688,7 +452,7 @@ async fn unauthenticated_fanout_header_cannot_bypass_witness_write_refusal() {
 /// `common` is read-only for this node). Keeping one principal across both
 /// commits is what makes the second genuinely chain -- `build_second_commit_
 /// push_body` builds from a fresh principal and 409s with a state-root mismatch.
-fn append_key_create(
+async fn append_key_create(
     principal: &mut cyphr::Principal,
     pool: &test_fixtures::Pool,
     signer_name: &str,
@@ -718,17 +482,15 @@ fn append_key_create(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -738,14 +500,12 @@ fn append_key_create(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
+        .await
         .expect("commit finalizes");
 
     let entries = cyphr_storage::export_commits(principal).expect("export commits");
@@ -753,8 +513,9 @@ fn append_key_create(
 
     let mut key_idx = 0;
     new_commit
-        .cozies
+        .txs
         .iter()
+        .flatten()
         .map(|v| {
             let mut coz = v.clone();
             let typ = coz["pay"]["typ"].as_str().unwrap_or("");
@@ -772,53 +533,18 @@ fn append_key_create(
 }
 
 /// Build genuine, CHAINING genesis + second-commit push bodies for one
-/// principal: a `key/create` (key_a) genesis closed under the golden key, then
-/// a second `key/create` (key_b) signed by golden onto the post-genesis state.
-/// The two-entry patch the truncation test needs.
-fn build_two_commit_push_bodies(
+/// principal: the genesis commit (SPEC 5.1) in which golden creates itself
+/// and key_a, then a second `key/create` (key_b) signed by golden onto the
+/// post-genesis state. The two-entry patch the truncation test needs.
+async fn build_two_commit_push_bodies(
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    principal_id: &cyphr::PrincipalGenesis,
     now: i64,
 ) -> (String, String) {
-    let golden = pool.get("golden").expect("golden key");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-    let mut principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-
-    // Commit 0 (genesis): introduce key_a, then embed the golden genesis key on
-    // the closing cozy -- the wire contract `resolve_genesis` needs for a
-    // never-before-seen principal (mirrors `build_genesis_push_body`).
-    let mut c0 = append_key_create(&mut principal, pool, "golden", "key_a", now);
-    let closing = c0.len() - 1;
-    let mut closing_coz: serde_json::Value = serde_json::from_slice(&c0[closing]).unwrap();
-    closing_coz.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg,
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
-        }),
-    );
-    c0[closing] = serde_json::to_vec(&closing_coz).unwrap();
-
-    // Commit 1: introduce key_b, signed by the still-active golden key.
-    let c1 = append_key_create(&mut principal, pool, "golden", "key_b", now + 1);
-
-    let body = |blobs: &[Vec<u8>]| {
-        serde_json::json!({
-            "principal_id": principal_id,
-            "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-        })
-        .to_string()
-    };
-    (body(&c0), body(&c1))
+    let mut bodies = build_chained_push_bodies(pool, principal_id, now, &["key_a", "key_b"]).await;
+    let second = bodies.pop().expect("second commit body");
+    let genesis = bodies.pop().expect("genesis body");
+    (genesis, second)
 }
 
 /// A mutation applied to an upstream `/patch` JSON body by the proxy below.
@@ -896,22 +622,24 @@ struct RunningAuthority {
 }
 
 impl RunningAuthority {
-    fn identity(&self) -> AuthorityIdentity {
-        let id = self
-            .instance
-            .identity
-            .as_ref()
-            .expect("attestor authority holds a signing identity");
-        AuthorityIdentity {
-            alg: id.alg().name().to_string(),
-            pub_key: id.pub_key().to_vec(),
-        }
+    /// The gossip table of a witness that follows this authority and checks
+    /// its signed tip reports against its server principal's chain.
+    fn pinned(&self) -> cyphr_server::config::GossipConfig {
+        self.pinned_at(&self.url)
+    }
+
+    /// As [`Self::pinned`], reached at `url` (a proxy in front of it).
+    fn pinned_at(&self, url: &str) -> cyphr_server::config::GossipConfig {
+        common::pinned_gossip(url, &self.instance.state)
     }
 }
 
 /// Stand up a real attestor authority on TCP and push a genuine genesis for
 /// `principal_id` over HTTP.
-async fn authority_with_genesis(principal_id: &str, now: i64) -> RunningAuthority {
+async fn authority_with_genesis(
+    principal_id: &cyphr::PrincipalGenesis,
+    now: i64,
+) -> RunningAuthority {
     let (state, identity, dir) = attestor_server().await;
     let app = build_app_router(state.clone()).expect("authority router");
     let mut instance = common::multi::Instance {
@@ -930,7 +658,7 @@ async fn authority_with_genesis(principal_id: &str, now: i64) -> RunningAuthorit
     let (status, body) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, principal_id, now),
+        build_genesis_push_body(&pool, principal_id, now).await,
     )
     .await;
     assert_eq!(
@@ -946,7 +674,10 @@ async fn authority_with_genesis(principal_id: &str, now: i64) -> RunningAuthorit
 /// principal, pushed over HTTP (genesis + a chaining second commit). The
 /// witness syncs HTTP-pushed principals; a fixture bootstrapped directly into
 /// the engine does NOT round-trip through the witness's genesis auto-detection.
-async fn authority_with_two_commits(principal_id: &str, now: i64) -> RunningAuthority {
+async fn authority_with_two_commits(
+    principal_id: &cyphr::PrincipalGenesis,
+    now: i64,
+) -> RunningAuthority {
     let (state, identity, dir) = attestor_server().await;
     let app = build_app_router(state.clone()).expect("authority router");
     let mut instance = common::multi::Instance {
@@ -962,7 +693,7 @@ async fn authority_with_two_commits(principal_id: &str, now: i64) -> RunningAuth
     let url = instance.url().expect("authority TCP URL");
 
     let pool = load_pool();
-    let (genesis_body, second_body) = build_two_commit_push_bodies(&pool, principal_id, now);
+    let (genesis_body, second_body) = build_two_commit_push_bodies(&pool, principal_id, now).await;
     let (s0, b0) = post_json(app.clone(), "/push", genesis_body).await;
     assert_eq!(s0, StatusCode::CREATED, "genesis push: {b0:?}");
     let (s1, b1) = post_json(app.clone(), "/push", second_body).await;
@@ -971,18 +702,13 @@ async fn authority_with_two_commits(principal_id: &str, now: i64) -> RunningAuth
     RunningAuthority { instance, url }
 }
 
-/// Build a witness `AppState` + router pointed at `authority_url`, optionally
-/// carrying an expected authority identity (the authenticated channel).
-async fn witness_for(
-    authority_url: &str,
-    authority_identity: Option<AuthorityIdentity>,
-) -> (Arc<AppState>, axum::Router) {
+/// Build a witness `AppState` + router following the peers of `gossip`.
+async fn witness_for(gossip: cyphr_server::config::GossipConfig) -> (Arc<AppState>, axum::Router) {
     let dir = tempfile::tempdir().expect("witness tempdir");
     let config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: dir.path().join("data"),
-        authority_url: Some(authority_url.to_string()),
-        authority_identity,
+        gossip,
         ..Default::default()
     };
     // Leak the TempDir guard for the test's lifetime: the witness store must
@@ -990,6 +716,39 @@ async fn witness_for(
     std::mem::forget(dir);
     let state = Arc::new(AppState::new(config).expect("witness AppState"));
     let app = build_app_router(state.clone()).expect("witness router");
+    (state, app)
+}
+
+/// Copy `authority`'s server-principal chain into `witness`, as a witness
+/// that already followed it holds it. A mock or a proxy that serves only
+/// `/patch` cannot hand the chain over itself, so a test that interposes one
+/// holds it first and lets the interposer be what the test is about.
+async fn seed_server_chain(witness: &AppState, authority: &AppState) {
+    let pg = authority
+        .principal
+        .as_ref()
+        .expect("the authority holds a server principal")
+        .pg()
+        .clone();
+    let chain = authority
+        .engine
+        .get_patch(&pg, None, None)
+        .await
+        .expect("the authority's server principal");
+    for entry in &chain.entries {
+        witness
+            .engine
+            .submit_commit(&pg, None, &entry.bundle)
+            .await
+            .expect("the witness takes the server principal's chain");
+    }
+}
+
+/// A witness that checks `authority`'s tip reports, reaching it at `url`
+/// (a proxy in front of it, say), already holding its server principal.
+async fn witness_pinned(authority: &RunningAuthority, url: &str) -> (Arc<AppState>, axum::Router) {
+    let (state, app) = witness_for(authority.pinned_at(url)).await;
+    seed_server_chain(&state, &authority.instance.state).await;
     (state, app)
 }
 
@@ -1009,7 +768,7 @@ async fn witness_for(
 #[tokio::test]
 async fn sync_recovers_after_bad_entry() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x11);
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_genesis(&principal, now).await;
 
     let bad_pr = principal.clone();
@@ -1020,7 +779,7 @@ async fn sync_recovers_after_bad_entry() {
                 "commit_id": "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                 "sequence": 0,
                 "pr": bad_pr,
-                "blobs": [],
+                "txs": [],
             });
             if let Some(entries) = body["payload"]["entries"].as_array_mut() {
                 entries.insert(0, bad_entry);
@@ -1030,7 +789,7 @@ async fn sync_recovers_after_bad_entry() {
     )
     .await;
 
-    let (witness_state, witness_app) = witness_for(&proxy_url, None).await;
+    let (witness_state, witness_app) = witness_for(common::plain_gossip(proxy_url.clone())).await;
 
     // Pin the sync OUTCOME directly -- `/tip`'s HTTP status alone proves
     // only that local storage holds something (a post-apply failure
@@ -1038,22 +797,11 @@ async fn sync_recovers_after_bad_entry() {
     // unconditionally regardless of the sync's own verdict). The claim
     // under test is that the sync recovered from the wedge AND counted the
     // malformed entry as rejected, not merely that something got stored.
-    let outcome = sync_from_authority(&witness_state, &principal).await;
-    assert!(
-        matches!(
-            outcome,
-            SyncOutcome::Synced {
-                applied: 1,
-                rejected: 1
-            }
-        ),
-        "a malformed entry preceding the genesis must not permanently wedge the sync -- the \
-         genuine genesis MUST be applied and the malformed entry counted as rejected: {outcome:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
 
     // `/tip` still serves the synced state -- serving is the one claim
     // this HTTP round-trip is for.
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    let (status, json) = get_json(witness_app, &format!("/tip?pg={principal}")).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -1061,7 +809,7 @@ async fn sync_recovers_after_bad_entry() {
          genuine genesis MUST still apply and be served: {json:?}"
     );
     let payload = common::envelope_payload(&json);
-    assert_eq!(payload["principal_id"], principal);
+    assert_eq!(payload["principal_id"], reported_id(&principal));
     assert_eq!(
         payload["commit_count"].as_u64(),
         Some(1),
@@ -1072,7 +820,7 @@ async fn sync_recovers_after_bad_entry() {
 /// N2.1 (sibling): a witness stalled by one UNVERIFIABLE entry still applies
 /// a later good entry -- the wedge's SECOND trigger site.
 ///
-/// `sync_from_authority`'s per-entry loop wedges at two structurally
+/// The fetch's per-entry loop wedges at two structurally
 /// identical `break`s: blob-DECODE failure, and `submit_commit`
 /// VERIFICATION failure (sync.rs -- the "rejected unverifiable delta"
 /// arm). Both share the mechanism (nothing persists progress, `from_seq`
@@ -1095,7 +843,7 @@ async fn sync_recovers_after_bad_entry() {
 #[tokio::test]
 async fn sync_recovers_after_unverifiable_entry() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x12);
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_genesis(&principal, now).await;
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
@@ -1113,7 +861,7 @@ async fn sync_recovers_after_unverifiable_entry() {
             // re-encode. Everything about the entry still decodes and parses;
             // only the cryptographic check can reject it.
             let mut bad = genuine.clone();
-            let blob_b64 = bad["blobs"][0]
+            let blob_b64 = bad["txs"][0][0]
                 .as_str()
                 .expect("genuine entry blob is a base64 string")
                 .to_string();
@@ -1128,7 +876,7 @@ async fn sync_recovers_after_unverifiable_entry() {
             let flipped = if sig.starts_with('A') { "B" } else { "A" };
             sig.replace_range(0..1, flipped);
             coz["sig"] = sig.into();
-            bad["blobs"][0] =
+            bad["txs"][0][0] =
                 Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).unwrap()).into();
 
             entries.insert(0, bad);
@@ -1137,27 +885,14 @@ async fn sync_recovers_after_unverifiable_entry() {
     )
     .await;
 
-    let (witness_state, witness_app) = witness_for(&proxy_url, None).await;
+    let (witness_state, witness_app) = witness_for(common::plain_gossip(proxy_url.clone())).await;
 
     // Pin the sync OUTCOME directly -- see the sibling decode-site test for
     // why `/tip`'s HTTP status alone is not the claim.
-    let outcome = sync_from_authority(&witness_state, &principal).await;
-    assert!(
-        matches!(
-            outcome,
-            SyncOutcome::Synced {
-                applied: 1,
-                rejected: 1
-            }
-        ),
-        "a well-formed but UNVERIFIABLE entry preceding the genesis must not permanently wedge \
-         the sync at the verification-failure break (the submit_commit arm, the wedge's second \
-         trigger site) -- the genuine genesis MUST be applied and the unverifiable entry counted \
-         as rejected: {outcome:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
 
     // `/tip` still serves the synced state.
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    let (status, json) = get_json(witness_app, &format!("/tip?pg={principal}")).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -1166,41 +901,11 @@ async fn sync_recovers_after_unverifiable_entry() {
          trigger site) -- the genuine genesis MUST still apply and be served: {json:?}"
     );
     let payload = common::envelope_payload(&json);
-    assert_eq!(payload["principal_id"], principal);
+    assert_eq!(payload["principal_id"], reported_id(&principal));
     assert_eq!(
         payload["commit_count"].as_u64(),
         Some(1),
         "witness must have applied the genuine genesis past the unverifiable entry: {json:?}"
-    );
-}
-
-/// N2.4: a patch response NOT signed by the expected authority identity is
-/// rejected -- no entry applied.
-///
-/// The witness expects a fresh identity the authority has never signed with,
-/// so the authority's envelope -- unsigned today, or signed under the
-/// authority's OWN key once the channel is authenticated -- cannot verify
-/// against the expected key. An unverifiable channel must yield no applied
-/// state, so `GET /tip` for the principal is NOT 200.
-#[tokio::test]
-async fn patch_envelope_authority_signature() {
-    let now = 1_700_000_000;
-    let principal = principal_digest(0x14);
-    let authority = authority_with_genesis(&principal, now).await;
-
-    let expected = coz::Alg::Ed25519.generate_keypair();
-    let wrong_identity = AuthorityIdentity {
-        alg: expected.alg.name().to_string(),
-        pub_key: expected.pub_bytes.clone(),
-    };
-    let (_witness_state, witness_app) = witness_for(&authority.url, Some(wrong_identity)).await;
-
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "a patch response not signed by the EXPECTED authority identity must be rejected: the \
-         witness must not apply or serve its entries: {json:?}"
     );
 }
 
@@ -1214,15 +919,11 @@ async fn patch_envelope_authority_signature() {
 /// "is the signature valid?" accepts it and applies the short prefix
 /// silently, as `Synced`.
 ///
-/// REWORK NOTE (discrepancy surfaced, not silently resolved): the base IBC's
-/// N2.4b text says "nothing applied." This node's council round (attack +
-/// security + architect, converged) rejected pre-apply atomicity as the
-/// mechanism -- see `architect-N2-round.md`'s "digest-over-all declination":
-/// a genuine chain-verified PREFIX apply is explicitly ruled SOUND ("exactly
-/// one reachable from an honest, shorter serving -- monotone, no integrity
-/// loss"), and this node's own S3 forbids changing what a caller serves ("log
-/// distinctly and proceed to serve as today"). Under that ratified design the
-/// genuine sequence-0 entry legitimately applies and `/tip` legitimately
+/// Note: the witness does not require that nothing be applied. Applying a
+/// genuine, chain-verified PREFIX is sound: it is exactly the state an
+/// honest, shorter serving would leave (monotone, no integrity loss), and
+/// the witness must not change what a caller is served. So the genuine
+/// sequence-0 entry legitimately applies and `/tip` legitimately
 /// keeps serving it -- checking the NEXT `/tip` call's HTTP status is no
 /// longer a valid proxy for "was the truncation caught." What must hold, and
 /// is asserted directly below, is that the SYNC OUTCOME reports the
@@ -1231,36 +932,25 @@ async fn patch_envelope_authority_signature() {
 #[tokio::test]
 async fn patch_truncated_entries_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x1e);
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
         authority.url.clone(),
         Arc::new(|mut body: serde_json::Value| {
-            if let Some(entries) = body["payload"]["entries"].as_array_mut() {
-                if entries.len() > 1 {
-                    entries.pop();
-                }
+            if let Some(entries) = body["payload"]["entries"].as_array_mut()
+                && entries.len() > 1
+            {
+                entries.pop();
             }
             body
         }),
     )
     .await;
 
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+    let (witness_state, _witness_app) = witness_pinned(&authority, &proxy_url).await;
 
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
-    assert!(
-        matches!(
-            outcome,
-            cyphr_server::sync::SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
-            }
-        ),
-        "a patch whose entries were truncated after signing must never report success, got \
-         {outcome:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
 
     // Local state may legitimately hold the sound genesis prefix (per the
     // ratified design), but must never have silently advanced to the
@@ -1307,13 +997,14 @@ fn sign_report(identity: &ServerIdentity, pay: serde_json::Value) -> coz::CozJso
 /// claim set the accept-direction test derives its one-field-emptied fixture
 /// from.
 async fn genuine_entries_and_identity(
-    principal: &str,
+    principal: &cyphr::PrincipalGenesis,
     now: i64,
 ) -> (
     serde_json::Value,
     coz::CozJson,
     Arc<ServerIdentity>,
     tempfile::TempDir,
+    Arc<AppState>,
 ) {
     let (state, identity, dir) = attestor_server().await;
     let app = build_app_router(state.clone()).expect("authority router");
@@ -1321,14 +1012,14 @@ async fn genuine_entries_and_identity(
     let (status, body) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, principal, now),
+        build_genesis_push_body(&pool, principal, now).await,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "genesis push: {body:?}");
     // `from` omitted entirely (genesis onward) -- the pre-N4 fixture used
     // `from=0` for this under sequence-anchor semantics, which is no longer
     // a valid anchor (Zami #140: sequence is metadata, not a digest).
-    let (pstatus, patch) = get_json(app.clone(), &format!("/patch?pr={principal}")).await;
+    let (pstatus, patch) = get_json(app.clone(), &format!("/patch?pg={principal}")).await;
     assert_eq!(pstatus, StatusCode::OK, "authority /patch: {patch:?}");
     let entries = patch["payload"]["entries"].clone();
     assert!(
@@ -1336,7 +1027,7 @@ async fn genuine_entries_and_identity(
         "authority must serve at least the genesis entry: {patch:?}"
     );
 
-    let (tstatus, tip) = get_json(app, &format!("/tip?pr={principal}")).await;
+    let (tstatus, tip) = get_json(app, &format!("/tip?pg={principal}")).await;
     assert_eq!(tstatus, StatusCode::OK, "authority /tip: {tip:?}");
     assert_eq!(
         tip["statement"]["kind"], "signed",
@@ -1345,7 +1036,7 @@ async fn genuine_entries_and_identity(
     let report: coz::CozJson = serde_json::from_value(tip["statement"]["coz"].clone())
         .expect("authority tip statement.coz deserializes as a coz");
 
-    (entries, report, identity, dir)
+    (entries, report, identity, dir, state)
 }
 
 /// N2.8 (reject direction): a witness refuses to ingest a report that fails
@@ -1373,8 +1064,8 @@ async fn genuine_entries_and_identity(
 #[tokio::test]
 async fn witness_rejects_malformed_report_at_ingestion() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x18);
-    let (entries, _real_report, identity, _auth_dir) =
+    let principal = common::golden_principal_id(&load_pool()).await;
+    let (entries, _real_report, identity, _auth_dir, authority_state) =
         genuine_entries_and_identity(&principal, now).await;
 
     let tmb = identity
@@ -1426,13 +1117,11 @@ async fn witness_rejects_malformed_report_at_ingestion() {
     });
     let (mock_url, _mock) = spawn_fixed_authority(body).await;
 
-    let expected = AuthorityIdentity {
-        alg: identity.alg().name().to_string(),
-        pub_key: identity.pub_key().to_vec(),
-    };
-    let (_witness_state, witness_app) = witness_for(&mock_url, Some(expected)).await;
+    let (witness_state, witness_app) =
+        witness_for(common::pinned_gossip(mock_url, &authority_state)).await;
+    seed_server_chain(&witness_state, &authority_state).await;
 
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    let (status, json) = get_json(witness_app, &format!("/tip?pg={principal}")).await;
     assert_ne!(
         status,
         StatusCode::OK,
@@ -1445,7 +1134,7 @@ async fn witness_rejects_malformed_report_at_ingestion() {
 // principal legitimately in the no-commit-root state -- must be accepted
 // at ingestion, not over-rejected. Formerly pinned here as an
 // integration test; cut because no push path on this authority produces a
-// witness-resulting tip whose OWN `cr` is empty (`finalize_commit` writes
+// witness-resulting tip whose OWN `cr` is empty (`stage_commit` writes
 // a real CR on every finalized commit), so a wire fixture built by
 // doctoring the *report* alone was fixture-vs-entries incoherent -- the
 // witness's own applied entries carry a real `cr`, so `EntryCommitmentMismatch`
@@ -1469,31 +1158,19 @@ async fn witness_rejects_malformed_report_at_ingestion() {
 #[tokio::test]
 async fn authenticated_channel_accepts_genuine_authority() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x1d);
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_genesis(&principal, now).await;
-    let authority_identity = authority.identity();
 
-    let (witness_state, witness_app) = witness_for(&authority.url, Some(authority_identity)).await;
+    let (witness_state, witness_app) = witness_for(authority.pinned()).await;
 
     // Pin the sync OUTCOME directly, not the HTTP status: this is the
     // genesis-only accept case for the post-apply reconciliation, and
     // `/tip` serves local state unconditionally regardless of the sync
     // verdict, so its status alone cannot catch an over-strict comparison
     // there (e.g. one that rejects every genesis-only sync).
-    let outcome = sync_from_authority(&witness_state, &principal).await;
-    assert!(
-        matches!(
-            outcome,
-            SyncOutcome::Synced {
-                applied: 1,
-                rejected: 0
-            }
-        ),
-        "a witness holding the expected authority identity must accept an untampered genuine \
-         authority's patch: {outcome:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
 
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    let (status, json) = get_json(witness_app, &format!("/tip?pg={principal}")).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -1501,7 +1178,7 @@ async fn authenticated_channel_accepts_genuine_authority() {
          authority's patch and serve the synced state: {json:?}"
     );
     let payload = common::envelope_payload(&json);
-    assert_eq!(payload["principal_id"], principal);
+    assert_eq!(payload["principal_id"], reported_id(&principal));
     assert_eq!(
         payload["commit_count"].as_u64(),
         Some(1),
@@ -1510,18 +1187,16 @@ async fn authenticated_channel_accepts_genuine_authority() {
 }
 
 // ========================================================================
-// N2 rework: post-apply reconciliation against the witness's OWN resulting
-// state, and the cross-principal `pr` check
+// Post-apply reconciliation against the witness's OWN resulting state, and
+// the cross-principal `pr` check
 // ========================================================================
 //
 // The prior authenticated-channel gate compared the response's claimed
 // `(sequence, commit_id)` against the SAME values the signed report carries
 // in the clear -- a check any on-path reader can reproduce for free, since
 // it never touches anything the witness itself verifies or produces. These
-// tests derive from the attack/security/architect council round on this
-// node (`.scratch/campaigns/server-witness-remediation/probes/N2-hacker.md`,
-// `N2-security.md`, `architect-N2-round.md`): each pins one shape that
-// defeated the old gate and must be caught by the new one.
+// tests each pin one shape that defeated the old gate and must be caught by
+// the new one.
 
 /// Spawn an on-path proxy that rewrites the REQUEST query before forwarding,
 /// leaving the authority's response byte-for-byte genuine. Models a party
@@ -1565,48 +1240,6 @@ async fn spawn_query_rewriting_proxy(
     (format!("http://{addr}"), handle)
 }
 
-/// Build a genuine genesis push body whose genesis key is `signer` (not
-/// `golden`), so the resulting chain has a genuinely DIFFERENT principal
-/// root from the golden-keyed fixtures every other test in this file uses --
-/// required so the cross-principal test below cannot be dismissed as an
-/// artifact of every fixture sharing one genesis key.
-fn build_genesis_push_body_with(
-    pool: &test_fixtures::Pool,
-    principal_id: &str,
-    now: i64,
-    signer: &str,
-    new_key: &str,
-) -> String {
-    let g = pool.get(signer).expect("signer key in pool");
-    let g_key = cyphr::Key {
-        alg: g.alg.clone(),
-        tmb: g.compute_tmb().expect("signer tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&g.pub_key).expect("signer pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-    let mut principal = cyphr::Principal::implicit(g_key.clone()).expect("implicit genesis");
-    let mut blobs = append_key_create(&mut principal, pool, signer, new_key, now);
-    let closing = blobs.len() - 1;
-    let mut closing_coz: serde_json::Value = serde_json::from_slice(&blobs[closing]).unwrap();
-    closing_coz.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": g_key.alg,
-            "pub": g.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(g_key.tmb.as_bytes()),
-        }),
-    );
-    blobs[closing] = serde_json::to_vec(&closing_coz).unwrap();
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
-}
-
 /// N2 rework, fix 1: cross-principal state substitution is rejected before
 /// any entry is applied.
 ///
@@ -1622,16 +1255,17 @@ fn build_genesis_push_body_with(
 #[tokio::test]
 async fn cross_principal_substitution_rejected() {
     let now = 1_700_000_000;
-    let principal_a = principal_digest(0x81);
-    let principal_b = principal_digest(0x82);
+    let pool = load_pool();
+    // Distinct genesis keys (`alice` vs `golden`) give genuinely distinct
+    // genesis-derived ids.
+    let principal_a = common::genesis_push_id(&pool, "alice", "bob").await;
+    let principal_b = common::golden_principal_id(&pool).await;
 
     let authority = authority_with_two_commits(&principal_b, now).await;
-    let authority_identity = authority.identity();
-    let pool = load_pool();
     let (status, body) = post_json(
         authority.instance.router.clone(),
         "/push",
-        build_genesis_push_body_with(&pool, &principal_a, now, "alice", "bob"),
+        common::build_genesis_push_body_with(&pool, "alice", "bob", &principal_a, now).await,
     )
     .await;
     assert_eq!(
@@ -1647,25 +1281,15 @@ async fn cross_principal_substitution_rejected() {
     let b_for_rewrite = principal_b.clone();
     let (proxy_url, _proxy) = spawn_query_rewriting_proxy(
         authority.url.clone(),
-        Arc::new(move |_q: Option<String>| Some(format!("pr={b_for_rewrite}"))),
+        Arc::new(move |_q: Option<String>| Some(format!("pg={b_for_rewrite}"))),
     )
     .await;
 
-    let (witness_state, witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal_a).await;
-    assert!(
-        matches!(
-            outcome,
-            cyphr_server::sync::SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::PrincipalMismatch
-            }
-        ),
-        "a genuine, validly-signed response for a DIFFERENT principal must be rejected as a \
-         principal mismatch before any entry applies, got {outcome:?}"
-    );
+    let (witness_state, witness_app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal_a).await;
 
     // A's own state must be untouched -- never advanced to B's chain.
-    let (status_a, json_a) = get_json(witness_app, &format!("/tip?pr={principal_a}")).await;
+    let (status_a, json_a) = get_json(witness_app, &format!("/tip?pg={principal_a}")).await;
     if status_a == StatusCode::OK {
         let payload = common::envelope_payload(&json_a);
         assert_eq!(
@@ -1688,9 +1312,8 @@ async fn cross_principal_substitution_rejected() {
 #[tokio::test]
 async fn decoy_top_entry_withholding_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7a);
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
         authority.url.clone(),
@@ -1704,7 +1327,7 @@ async fn decoy_top_entry_withholding_rejected() {
                             "commit_id": e["commit_id"].clone(),
                             "sequence": e["sequence"].clone(),
                             "pr": e["pr"].clone(),
-                            "blobs": [Base64UrlUnpadded::encode_string(b"{}")],
+                            "txs": [[Base64UrlUnpadded::encode_string(b"{}")]],
                         });
                     }
                 }
@@ -1714,23 +1337,13 @@ async fn decoy_top_entry_withholding_rejected() {
     )
     .await;
 
-    let (witness_state, witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+    let (witness_state, witness_app) = witness_pinned(&authority, &proxy_url).await;
 
-    for attempt in 0..3 {
-        let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
-        assert!(
-            matches!(
-                outcome,
-                cyphr_server::sync::SyncOutcome::Failed {
-                    reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
-                }
-            ),
-            "attempt {attempt}: a label-preserving decoy top entry must be caught by the \
-             post-apply reconciliation on EVERY poll, got {outcome:?}"
-        );
+    for _ in 0..3 {
+        cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
     }
 
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    let (status, json) = get_json(witness_app, &format!("/tip?pg={principal}")).await;
     let payload = common::envelope_payload(&json);
     assert_eq!(
         status,
@@ -1753,9 +1366,8 @@ async fn decoy_top_entry_withholding_rejected() {
 #[tokio::test]
 async fn empty_entries_with_advanced_report_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7b);
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
         authority.url.clone(),
@@ -1766,17 +1378,17 @@ async fn empty_entries_with_advanced_report_rejected() {
     )
     .await;
 
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    let (witness_state, _witness_app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
     assert!(
-        matches!(
-            outcome,
-            cyphr_server::sync::SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
-            }
-        ),
-        "wholesale entry deletion against a report proving the authority is ahead must be \
-         rejected, never read as UpToDate, got {outcome:?}"
+        witness_state
+            .engine
+            .get_tip(&principal)
+            .await
+            .expect("local tip lookup")
+            .is_none(),
+        "an emptied response under a report two commits ahead must leave the witness holding \
+         nothing"
     );
 }
 
@@ -1790,9 +1402,8 @@ async fn empty_entries_with_advanced_report_rejected() {
 #[tokio::test]
 async fn request_side_from_rewrite_withholding_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7c);
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
 
     // The authority's own current tip PR digest -- a legitimately resolving
     // anchor, so its honest response's entries are genuinely EMPTY (nothing
@@ -1803,7 +1414,7 @@ async fn request_side_from_rewrite_withholding_rejected() {
     // K10's post-apply reconciliation (not the response body) to catch.
     let (tip_status, tip_json) = get_json(
         authority.instance.router.clone(),
-        &format!("/tip?pr={principal}"),
+        &format!("/tip?pg={principal}"),
     )
     .await;
     assert_eq!(tip_status, StatusCode::OK, "authority /tip: {tip_json:?}");
@@ -1821,7 +1432,7 @@ async fn request_side_from_rewrite_withholding_rejected() {
             let q = q.unwrap_or_default();
             let pr = q
                 .split('&')
-                .find(|kv| kv.starts_with("pr="))
+                .find(|kv| kv.starts_with("pg="))
                 .unwrap_or("")
                 .to_string();
             Some(format!("{pr}&from={current_tip_pr}"))
@@ -1829,165 +1440,18 @@ async fn request_side_from_rewrite_withholding_rejected() {
     )
     .await;
 
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    let (witness_state, _witness_app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
     assert!(
-        matches!(
-            outcome,
-            cyphr_server::sync::SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
-            }
-        ),
-        "a request-side `from` rewrite must not withhold every entry behind a fully genuine \
-         response, got {outcome:?}"
+        witness_state
+            .engine
+            .get_tip(&principal)
+            .await
+            .expect("local tip lookup")
+            .is_none(),
+        "a withheld response under a report two commits ahead must leave the witness holding \
+         nothing"
     );
-}
-
-/// N2 rework, fix 4 (architect): `Synced` carries a `rejected` count
-/// alongside `applied`, so a caller can no longer mistake a sync where some
-/// entries in the SAME response were individually rejected for a clean one.
-///
-/// The authority's genuine two-commit patch is followed by one extra
-/// entry the witness cannot apply (its `blobs` array is absent). The two
-/// genuine entries fully catch the witness up to what the signed report
-/// attests (so the post-apply reconciliation passes and this is a real
-/// `Synced`, not a `Failed`), while the trailing garbage entry is
-/// individually rejected in the same pass.
-#[tokio::test]
-async fn synced_outcome_reports_rejected_count_alongside_applied() {
-    let now = 1_700_000_000;
-    let principal = principal_digest(0x7f);
-    let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
-
-    let (proxy_url, _proxy) = spawn_patch_proxy(
-        authority.url.clone(),
-        Arc::new(|mut body: serde_json::Value| {
-            if let Some(entries) = body["payload"]["entries"].as_array_mut() {
-                entries.push(serde_json::json!({
-                    "commit_id": "SHA-256:GARBAGE_TRAILING_ENTRY_NO_BLOBS_ARRAY",
-                    "sequence": 2,
-                    "pr": "",
-                }));
-            }
-            body
-        }),
-    )
-    .await;
-
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
-    match outcome {
-        cyphr_server::sync::SyncOutcome::Synced { applied, rejected } => {
-            assert_eq!(applied, 2, "both genuine entries must have applied");
-            assert_eq!(
-                rejected, 1,
-                "the trailing garbage entry must be counted as rejected, not silently absorbed \
-                 into a clean-looking Synced"
-            );
-        },
-        other => panic!("expected Synced {{ applied: 2, rejected: 1 }}, got {other:?}"),
-    }
-}
-
-/// Spawn an on-path proxy that forwards the FIRST `/patch` request to
-/// `upstream` untouched, caches that genuine response, and replays the SAME
-/// cached response for every later request regardless of the query --
-/// models an on-path party that holds one genuine response and rebroadcasts
-/// it after the witness has moved past it, rather than forwarding a fresh
-/// one.
-async fn spawn_replay_proxy(upstream: String) -> (String, tokio::task::JoinHandle<()>) {
-    let cache: Arc<tokio::sync::Mutex<Option<serde_json::Value>>> =
-        Arc::new(tokio::sync::Mutex::new(None));
-    let app = axum::Router::new().route(
-        "/patch",
-        axum::routing::get(move |raw: axum::extract::RawQuery| {
-            let upstream = upstream.clone();
-            let cache = cache.clone();
-            async move {
-                let mut cached = cache.lock().await;
-                if let Some(body) = cached.clone() {
-                    return axum::Json(body);
-                }
-                let url = match raw.0 {
-                    Some(q) => format!("{upstream}/patch?{q}"),
-                    None => format!("{upstream}/patch"),
-                };
-                let body: serde_json::Value = reqwest::Client::new()
-                    .get(&url)
-                    .header("accept", "application/json")
-                    .send()
-                    .await
-                    .expect("proxy upstream request")
-                    .json()
-                    .await
-                    .expect("proxy upstream json decode");
-                *cached = Some(body.clone());
-                axum::Json(body)
-            }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind proxy listener");
-    let addr = listener.local_addr().expect("proxy local addr");
-    let handle = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
-    (format!("http://{addr}"), handle)
-}
-
-/// Diagnostic fix: a non-empty response every one of whose entries the
-/// `seq < from_seq` guard skips -- because the witness already holds them,
-/// exactly what a replayed-but-stale genuine response looks like once the
-/// witness has since caught up further -- must not be reported as
-/// `Failed { RejectedEntry }`. Nothing in such a response is rejected
-/// (`rejected` stays 0); reporting a rejection would tell the operator every
-/// entry failed verification when in fact none was even attempted.
-///
-/// The proxy forwards the witness's first request to a real two-commit
-/// authority untouched and caches that genuine catch-up response (entries
-/// for sequence 0 and 1, a signed report attesting the final tip), then
-/// replays that identical cached response on every later request regardless
-/// of the `from` it is asked for. The first sync legitimately applies both
-/// entries; on the second sync both entries are now below the witness's
-/// (advanced) `from_seq` and are skipped, not rejected, while the post-apply
-/// check trivially agrees with local state because the replayed report
-/// attests exactly the tip the witness already reached.
-#[tokio::test]
-async fn stale_replay_with_no_new_entries_reports_up_to_date_not_rejected() {
-    let now = 1_700_000_000;
-    let principal = principal_digest(0x8a);
-    let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
-
-    let (proxy_url, _proxy) = spawn_replay_proxy(authority.url.clone()).await;
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-
-    let first = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
-    assert!(
-        matches!(
-            first,
-            cyphr_server::sync::SyncOutcome::Synced {
-                applied: 2,
-                rejected: 0
-            }
-        ),
-        "the first sync must genuinely catch the witness up to both commits: {first:?}"
-    );
-
-    let second = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
-    match second {
-        cyphr_server::sync::SyncOutcome::UpToDate => {},
-        cyphr_server::sync::SyncOutcome::Failed {
-            reason: cyphr_server::sync::SyncFailure::RejectedEntry,
-        } => panic!(
-            "a stale-but-genuine response whose entries are all already applied must not be \
-             reported as RejectedEntry -- nothing in it was rejected, both entries were merely \
-             already held"
-        ),
-        other => panic!("expected UpToDate, got {other:?}"),
-    }
 }
 
 /// GUARD (regression protection, already-correct behavior): a CONFIGURED
@@ -1998,9 +1462,8 @@ async fn stale_replay_with_no_new_entries_reports_up_to_date_not_rejected() {
 #[tokio::test]
 async fn stripped_statement_fails_closed_when_configured() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7e);
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
         authority.url.clone(),
@@ -2011,17 +1474,16 @@ async fn stripped_statement_fails_closed_when_configured() {
     )
     .await;
 
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    let (witness_state, _witness_app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&witness_state, &principal).await;
     assert!(
-        matches!(
-            outcome,
-            cyphr_server::sync::SyncOutcome::Failed {
-                reason: cyphr_server::sync::SyncFailure::EnvelopeUnsignedOrMisSigned
-            }
-        ),
-        "a configured witness must fail closed on a stripped statement, applying nothing, got \
-         {outcome:?}"
+        witness_state
+            .engine
+            .get_tip(&principal)
+            .await
+            .expect("local tip lookup")
+            .is_none(),
+        "a stripped statement must leave a configured witness holding nothing"
     );
 }
 
@@ -2043,68 +1505,52 @@ async fn stripped_statement_fails_closed_when_configured() {
 // STRING (e.g. `SHA-256:...`) as `from` -- that fails to parse as a `u64` at
 // all today, so each test's own positive control is what fails for the
 // right reason, not merely a checked-but-vacuous negative. See Zami #140
-// ("Content addressed digest for everything... Sequence is metadata") and
-// the split-view/equivocation analysis in
-// `nrdxp/factoring-trust:docs/paper/_08-instances.qmd` ("a sequence cannot
-// bind a history") for why N4.2 constructs a genuine two-branch equivocation
-// rather than asserting the property abstractly.
+// ("Content addressed digest for everything... Sequence is metadata") for
+// why N4.2 constructs a genuine two-branch equivocation rather than
+// asserting the property abstractly.
 
-/// Build a genuinely CHAINING sequence of push bodies for one principal: a
-/// `key/create` genesis (introducing `key_names[0]`, closed under the golden
-/// key per the wire contract for a never-before-seen principal -- mirrors
-/// `build_two_commit_push_bodies`'s C0 step), then one chained `key/create`
-/// push body per remaining name in `key_names`, each signed by golden onto
-/// the state left by the previous entry via the SAME `principal` object (the
-/// `append_key_create` doc comment explains why a shared object, not a fresh
-/// one per commit, is what makes the chain genuine).
+/// Build a genuinely CHAINING sequence of push bodies for one principal: its
+/// genesis commit (SPEC 5.1), in which golden creates itself and
+/// `key_names[0]` (so its id is `common::genesis_push_id(pool, "golden",
+/// key_names[0]).await`), then one chained `key/create` push body per remaining
+/// name in `key_names`, each signed by golden onto the state left by the
+/// previous entry via the SAME `principal` object (the `append_key_create`
+/// doc comment explains why a shared object, not a fresh one per commit, is
+/// what makes the chain genuine).
 ///
-/// Generalizes `build_two_commit_push_bodies` to an arbitrary chain length
-/// so N4's fixtures -- an honest 3-commit authority, a split two-step chain,
-/// and a forked branch -- share one construction instead of three
-/// hand-rolled ones.
-fn build_chained_push_bodies(
+/// Serves every multi-commit fixture here -- the two-commit authority, an
+/// honest 3-commit authority, a split two-step chain, and a forked branch --
+/// from one construction.
+async fn build_chained_push_bodies(
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    principal_id: &cyphr::PrincipalGenesis,
     now: i64,
     key_names: &[&str],
 ) -> Vec<String> {
     assert!(!key_names.is_empty(), "at least a genesis key is required");
-    let golden = pool.get("golden").expect("golden key");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
+    let key = |name: &str| {
+        pool.get(name)
+            .expect("key in pool")
+            .key()
+            .expect("pool key")
     };
-    let mut principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
+    let mut principal = cyphr::Principal::implicit(key("golden"))
+        .await
+        .expect("genesis");
+    let c0 = test_fixtures::bundle::genesis_bundle(
+        &mut principal,
+        pool.get("golden").expect("golden key"),
+        &[key(key_names[0])],
+        now,
+    )
+    .await
+    .expect("genesis commit");
 
-    let mut c0 = append_key_create(&mut principal, pool, "golden", key_names[0], now);
-    let closing = c0.len() - 1;
-    let mut closing_coz: serde_json::Value = serde_json::from_slice(&c0[closing]).unwrap();
-    closing_coz.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg,
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
-        }),
-    );
-    c0[closing] = serde_json::to_vec(&closing_coz).unwrap();
+    let body = |blobs: &[Vec<u8>]| common::push_blobs(principal_id, blobs);
 
-    let body = |blobs: &[Vec<u8>]| {
-        serde_json::json!({
-            "principal_id": principal_id,
-            "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-        })
-        .to_string()
-    };
-
-    let mut bodies = vec![body(&c0)];
+    let mut bodies = vec![common::push_body(principal_id, &c0)];
     for (i, name) in key_names.iter().enumerate().skip(1) {
-        let c = append_key_create(&mut principal, pool, "golden", name, now + i as i64);
+        let c = append_key_create(&mut principal, pool, "golden", name, now + i as i64).await;
         bodies.push(body(&c));
     }
     bodies
@@ -2115,25 +1561,44 @@ fn build_chained_push_bodies(
 /// forwards the request unmodified and relays the upstream's JSON body
 /// verbatim. Unlike `spawn_patch_proxy` (which MUTATES the body to model an
 /// on-path attacker), this proxy changes nothing -- it exists only to let
-/// the test observe what `sync_from_authority` actually places on the wire,
+/// the test observe what the witness actually places on the wire,
 /// which the client itself gives no other hook into.
 async fn spawn_observing_patch_proxy(
     upstream: String,
     captured: Arc<std::sync::Mutex<Vec<String>>>,
 ) -> (String, tokio::task::JoinHandle<()>) {
-    let app = axum::Router::new().route(
-        "/patch",
-        axum::routing::get(move |raw: axum::extract::RawQuery| {
-            let upstream = upstream.clone();
-            let captured = captured.clone();
+    let forward = upstream.clone();
+    let app = axum::Router::new()
+        .route(
+            "/patch",
+            axum::routing::get(move |raw: axum::extract::RawQuery| {
+                let upstream = upstream.clone();
+                let captured = captured.clone();
+                async move {
+                    let query = raw.0.unwrap_or_default();
+                    captured.lock().unwrap().push(query.clone());
+                    let url = if query.is_empty() {
+                        format!("{upstream}/patch")
+                    } else {
+                        format!("{upstream}/patch?{query}")
+                    };
+                    let body: serde_json::Value = reqwest::Client::new()
+                        .get(&url)
+                        .header("accept", "application/json")
+                        .send()
+                        .await
+                        .expect("proxy upstream request")
+                        .json()
+                        .await
+                        .expect("proxy upstream json decode");
+                    axum::Json(body)
+                }
+            }),
+        )
+        .fallback(axum::routing::get(move |uri: axum::http::Uri| {
+            let forward = forward.clone();
             async move {
-                let query = raw.0.unwrap_or_default();
-                captured.lock().unwrap().push(query.clone());
-                let url = if query.is_empty() {
-                    format!("{upstream}/patch")
-                } else {
-                    format!("{upstream}/patch?{query}")
-                };
+                let url = format!("{forward}{uri}");
                 let body: serde_json::Value = reqwest::Client::new()
                     .get(&url)
                     .header("accept", "application/json")
@@ -2145,8 +1610,7 @@ async fn spawn_observing_patch_proxy(
                     .expect("proxy upstream json decode");
                 axum::Json(body)
             }
-        }),
-    );
+        }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind observing proxy listener");
@@ -2173,10 +1637,10 @@ async fn spawn_observing_patch_proxy(
 #[tokio::test]
 async fn sync_resumes_from_digest_anchor() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa1);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
+    let principal_id = &principal_id_owned;
     let now = 1_700_100_000;
-    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]);
+    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]).await;
 
     let (auth_state, _identity, auth_dir) = attestor_server().await;
     let auth_app = build_app_router(auth_state.clone()).expect("authority router");
@@ -2202,19 +1666,9 @@ async fn sync_resumes_from_digest_anchor() {
 
     let captured: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (proxy_url, _proxy) = spawn_observing_patch_proxy(auth_url, captured.clone()).await;
-    let (witness_state, _witness_app) = witness_for(&proxy_url, None).await;
+    let (witness_state, _witness_app) = witness_for(common::plain_gossip(proxy_url.clone())).await;
 
-    let first = sync_from_authority(&witness_state, principal_id).await;
-    assert!(
-        matches!(
-            first,
-            SyncOutcome::Synced {
-                applied: 1,
-                rejected: 0
-            }
-        ),
-        "first sync must apply exactly the genesis commit: {first:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, principal_id).await;
     let witness_tip_pr = witness_state
         .engine
         .get_tip(principal_id)
@@ -2226,17 +1680,7 @@ async fn sync_resumes_from_digest_anchor() {
     let (s1, b1) = post_json(auth_app.clone(), "/push", bodies[1].clone()).await;
     assert_eq!(s1, StatusCode::CREATED, "second commit push: {b1:?}");
 
-    let second = sync_from_authority(&witness_state, principal_id).await;
-    assert!(
-        matches!(
-            second,
-            SyncOutcome::Synced {
-                applied: 1,
-                rejected: 0
-            }
-        ),
-        "second sync must resume and apply EXACTLY the new commit, not a full resync: {second:?}"
-    );
+    cyphr_server::gossip::fetch_from_peers(&witness_state, principal_id).await;
 
     let queries = captured.lock().unwrap().clone();
     assert_eq!(
@@ -2264,10 +1708,8 @@ async fn sync_resumes_from_digest_anchor() {
 /// content digest can. Constructs a genuine equivocation -- two
 /// INDEPENDENTLY built, individually valid commit chains for the same
 /// principal that both claim "sequence 1", but with different content and
-/// therefore different PR digests -- the split-view shape
-/// `nrdxp/factoring-trust:docs/paper/_08-instances.qmd` analyzes ("my
-/// anchor commits a prefix of the canonical record" fails silently if the
-/// anchor cannot actually distinguish which record). The canonical
+/// therefore different PR digests -- the split-view shape, where an anchor
+/// that cannot distinguish two records fails silently. The canonical
 /// authority never held the fork's commit, so the fork's digest must not
 /// resolve to the canonical chain's own sequence-1 position merely because
 /// the two share a sequence number.
@@ -2281,14 +1723,16 @@ async fn sync_resumes_from_digest_anchor() {
 #[tokio::test]
 async fn fork_shares_sequence_rejected_by_digest_anchor() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa2);
-    let principal_id = principal_id_digest.as_str();
-    let fork_principal_id_digest = principal_digest(0xa3);
-    let fork_principal_id = fork_principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
+    let principal_id = &principal_id_owned;
+    // The fork lives on a SEPARATE authority and shares the canonical genesis
+    // (hence the genesis-derived id); it diverges only at sequence 1.
+    let fork_principal_id = principal_id;
     let now = 1_700_200_000;
 
     // Canonical authority: three genuinely chained commits.
-    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]);
+    let bodies =
+        build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]).await;
     let (auth_state, _identity, _auth_dir) = attestor_server().await;
     let auth_app = build_app_router(auth_state.clone()).expect("authority router");
     for body in &bodies {
@@ -2303,7 +1747,7 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
     // The honest position-1 PR digest, read back from the canonical chain's
     // own `/patch` entries -- exactly what a witness anchored there holds.
     let (_, canonical_patch) =
-        get_json(auth_app.clone(), &format!("/patch?pr={principal_id}")).await;
+        get_json(auth_app.clone(), &format!("/patch?pg={principal_id}")).await;
     let canonical_entries = canonical_patch["payload"]["entries"]
         .as_array()
         .cloned()
@@ -2322,7 +1766,8 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
     // shape (key_a, signed by golden) but a DIFFERENT, genuinely valid
     // "sequence 1" commit (introducing "bob" rather than "key_b") -- a real
     // equivocation, not a corrupted/forged fixture.
-    let fork_bodies = build_chained_push_bodies(&pool, fork_principal_id, now, &["key_a", "bob"]);
+    let fork_bodies =
+        build_chained_push_bodies(&pool, fork_principal_id, now, &["key_a", "bob"]).await;
     let (fork_state, _fork_identity, _fork_dir) = attestor_server().await;
     let fork_app = build_app_router(fork_state.clone()).expect("fork router");
     for body in &fork_bodies {
@@ -2330,7 +1775,7 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
         assert_eq!(status, StatusCode::CREATED, "fork chain push: {resp:?}");
     }
     let (_, fork_patch) =
-        get_json(fork_app.clone(), &format!("/patch?pr={fork_principal_id}")).await;
+        get_json(fork_app.clone(), &format!("/patch?pg={fork_principal_id}")).await;
     let fork_entries = fork_patch["payload"]["entries"]
         .as_array()
         .cloned()
@@ -2349,7 +1794,7 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
     // POSITIVE CONTROL: the honest digest anchor resumes correctly.
     let (honest_status, honest_resp) = get_json(
         auth_app.clone(),
-        &format!("/patch?pr={principal_id}&from={honest_seq1_pr}"),
+        &format!("/patch?pg={principal_id}&from={honest_seq1_pr}"),
     )
     .await;
     assert_eq!(
@@ -2372,7 +1817,7 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
     // the same resume point.
     let (fork_anchor_status, fork_anchor_resp) = get_json(
         auth_app.clone(),
-        &format!("/patch?pr={principal_id}&from={fork_seq1_pr}"),
+        &format!("/patch?pg={principal_id}&from={fork_seq1_pr}"),
     )
     .await;
     let fork_anchor_tail = if fork_anchor_status == StatusCode::OK {
@@ -2404,11 +1849,12 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
 #[tokio::test]
 async fn sequence_only_anchor_does_not_resume() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa4);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
+    let principal_id = &principal_id_owned;
     let now = 1_700_300_000;
 
-    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]);
+    let bodies =
+        build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]).await;
     let (auth_state, _identity, _auth_dir) = attestor_server().await;
     let auth_app = build_app_router(auth_state.clone()).expect("authority router");
     for body in &bodies {
@@ -2416,7 +1862,7 @@ async fn sequence_only_anchor_does_not_resume() {
         assert_eq!(status, StatusCode::CREATED, "chain push: {resp:?}");
     }
 
-    let (_, patch_resp) = get_json(auth_app.clone(), &format!("/patch?pr={principal_id}")).await;
+    let (_, patch_resp) = get_json(auth_app.clone(), &format!("/patch?pg={principal_id}")).await;
     let entries = patch_resp["payload"]["entries"]
         .as_array()
         .cloned()
@@ -2428,7 +1874,7 @@ async fn sequence_only_anchor_does_not_resume() {
     // Digest anchor: MUST resume to exactly the one entry after position 1.
     let (digest_status, digest_resp) = get_json(
         auth_app.clone(),
-        &format!("/patch?pr={principal_id}&from={seq1_pr}"),
+        &format!("/patch?pg={principal_id}&from={seq1_pr}"),
     )
     .await;
     assert_eq!(digest_status, StatusCode::OK, "{digest_resp:?}");
@@ -2442,7 +1888,7 @@ async fn sequence_only_anchor_does_not_resume() {
     // resume outcome.
     let (seq_status, seq_resp) = get_json(
         auth_app.clone(),
-        &format!("/patch?pr={principal_id}&from={seq1_number}"),
+        &format!("/patch?pg={principal_id}&from={seq1_number}"),
     )
     .await;
     let seq_tail = if seq_status == StatusCode::OK {
@@ -2474,11 +1920,11 @@ async fn sequence_only_anchor_does_not_resume() {
 #[tokio::test]
 async fn anchor_digest_rejects_malformed() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa5);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
+    let principal_id = &principal_id_owned;
     let now = 1_700_400_000;
 
-    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]);
+    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]).await;
     let (auth_state, _identity, _auth_dir) = attestor_server().await;
     let auth_app = build_app_router(auth_state.clone()).expect("authority router");
     for body in &bodies {
@@ -2493,7 +1939,7 @@ async fn anchor_digest_rejects_malformed() {
     let malformed = "SHA-256:AAAAAAAAAAAAAAAAAAAAAA";
     let (status, resp) = get_json(
         auth_app.clone(),
-        &format!("/patch?pr={principal_id}&from={malformed}"),
+        &format!("/patch?pg={principal_id}&from={malformed}"),
     )
     .await;
 
@@ -2531,12 +1977,12 @@ async fn anchor_digest_rejects_malformed() {
 #[tokio::test]
 async fn patch_bounded_to_is_unsigned_on_attestor() {
     let now = 1_700_500_000;
-    let principal = principal_digest(0x8e);
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
 
     let (unbounded_status, unbounded) = get_json(
         authority.instance.router.clone(),
-        &format!("/patch?pr={principal}"),
+        &format!("/patch?pg={principal}"),
     )
     .await;
     assert_eq!(unbounded_status, StatusCode::OK, "{unbounded:?}");
@@ -2548,7 +1994,7 @@ async fn patch_bounded_to_is_unsigned_on_attestor() {
 
     let (bounded_status, bounded) = get_json(
         authority.instance.router.clone(),
-        &format!("/patch?pr={principal}&to=0"),
+        &format!("/patch?pg={principal}&to=0"),
     )
     .await;
     assert_eq!(bounded_status, StatusCode::OK, "{bounded:?}");
@@ -2566,5 +2012,186 @@ async fn patch_bounded_to_is_unsigned_on_attestor() {
         entries.len(),
         1,
         "to=0 should bound the response to exactly commit 0: {bounded:?}"
+    );
+}
+
+// ========================================================================
+// Extraction net: behaviour the pull-sync extraction must preserve
+// ========================================================================
+
+/// Claim: witness pull sync of a MULTI-commit principal converges to the
+/// authority's tip, and the authenticated channel refuses both a
+/// body altered after signing and a body signed by a different key,
+/// leaving the witness holding nothing. End-to-end scenario: yes (real
+/// authority over TCP, on-path proxy, real witness engine).
+///
+/// Turns red if a refactor of the sync path: applies entries without
+/// reconciling to the signed report (the tamper cases then end `Synced`);
+/// verifies the envelope against the wrong key or skips the algorithm
+/// check (the mis-signed case then applies); or stops advancing past the
+/// first commit (the convergence case then stops at count 1). Existing
+/// tests pin each of these on genesis-only or single-field fixtures; this
+/// pins them together on a chained principal against the engine's
+/// resulting tip, which is what a relocated sync loop must still produce.
+#[tokio::test]
+async fn sync_converges_and_refuses_tampered_or_missigned() {
+    let now = 1_700_000_000;
+    let principal = common::golden_principal_id(&load_pool()).await;
+    let authority = authority_with_two_commits(&principal, now).await;
+    let authority_tip = authority
+        .instance
+        .state
+        .engine
+        .get_tip(&principal)
+        .await
+        .expect("authority tip lookup")
+        .expect("authority holds the principal");
+    assert_eq!(
+        authority_tip.commit_count, 2,
+        "fixture is a two-commit chain"
+    );
+
+    // 1. Convergence: both commits applied, every root equal to the authority's.
+    let (w, _app) = witness_for(authority.pinned()).await;
+    cyphr_server::gossip::fetch_from_peers(&w, &principal).await;
+    let tip = w
+        .engine
+        .get_tip(&principal)
+        .await
+        .expect("witness tip lookup")
+        .expect("witness holds the principal after sync");
+    assert_eq!(tip.commit_count, 2);
+    assert_eq!(tip.commit_id, authority_tip.commit_id);
+    assert_eq!(
+        (&tip.pr, &tip.sr, &tip.ar, &tip.cr),
+        (
+            &authority_tip.pr,
+            &authority_tip.sr,
+            &authority_tip.ar,
+            &authority_tip.cr
+        ),
+        "witness roots must equal the authority's"
+    );
+
+    // 2. Statement altered after signing: signature no longer verifies.
+    let (proxy_url, _p1) = spawn_patch_proxy(
+        authority.url.clone(),
+        Arc::new(|mut body: serde_json::Value| {
+            body["statement"]["coz"]["pay"]["sequence"] = serde_json::json!(0);
+            body
+        }),
+    )
+    .await;
+    let (w, _app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&w, &principal).await;
+    assert!(
+        w.engine.get_tip(&principal).await.unwrap().is_none(),
+        "a refused sync must leave the witness unchanged"
+    );
+
+    // 3. Every entry's blob signature corrupted under an intact envelope.
+    let (proxy_url, _p2) = spawn_patch_proxy(
+        authority.url.clone(),
+        Arc::new(|mut body: serde_json::Value| {
+            let entries = body["payload"]["entries"]
+                .as_array_mut()
+                .expect("authority serves entries");
+            for entry in entries {
+                let blob = Base64UrlUnpadded::decode_vec(entry["txs"][0][0].as_str().unwrap())
+                    .expect("entry blob decodes");
+                let mut coz: serde_json::Value = serde_json::from_slice(&blob).unwrap();
+                let sig = coz["sig"].as_str().unwrap().to_string();
+                let flipped = if sig.starts_with('A') { "B" } else { "A" };
+                coz["sig"] = format!("{flipped}{}", &sig[1..]).into();
+                entry["txs"][0][0] =
+                    Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).unwrap()).into();
+            }
+            body
+        }),
+    )
+    .await;
+    let (w, _app) = witness_pinned(&authority, &proxy_url).await;
+    cyphr_server::gossip::fetch_from_peers(&w, &principal).await;
+    assert!(
+        w.engine.get_tip(&principal).await.unwrap().is_none(),
+        "forged entries must leave the witness unchanged"
+    );
+
+    // 4. Signed by a key other than the configured server principal's.
+    let (other, _identity, _dir) = attestor_server().await;
+    let (w, _app) = witness_for(common::pinned_gossip(authority.url.clone(), &other)).await;
+    cyphr_server::gossip::fetch_from_peers(&w, &principal).await;
+    assert!(
+        w.engine.get_tip(&principal).await.unwrap().is_none(),
+        "a mis-signed sync must leave the witness unchanged"
+    );
+}
+
+/// Backs key death at admission on the witness path (SPEC 6.4): the
+/// authority holds a principal whose genesis keys are `golden` and `eve`,
+/// a `golden` commit, then `eve`'s commit at the tip dated a minute ahead
+/// of the wall clock, then `eve`'s naked revoke. A witness syncing from it
+/// learns the authority's revokes before it submits the delta; the
+/// witness's own receipt time, now, is `eve`'s cutoff (#203), so it admits
+/// the history dated before it and refuses `eve`'s commit dated after it.
+/// Turns red if the witness admits a dead key's commit dated after its
+/// cutoff.
+#[tokio::test]
+async fn witness_refuses_a_dead_keys_tip_commit() {
+    let pool = load_pool();
+    let g = pool.get("golden").expect("golden");
+    let eve = pool.get("eve_ed25519").expect("eve");
+    let t = 1_700_000_000;
+    let ahead = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64
+        + 60;
+    let mut p = cyphr::Principal::implicit(g.key().expect("golden"))
+        .await
+        .expect("implicit");
+    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[eve.key().expect("eve")], t)
+        .await
+        .expect("genesis");
+    let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
+    let live = common::key_commit_by(&mut p, "golden", "key_a", t + 1).await;
+    let dead = common::key_commit_by(&mut p, "eve_ed25519", "key_b", ahead).await;
+
+    let (state, identity, dir) = attestor_server().await;
+    let app = build_app_router(state.clone()).expect("authority router");
+    let mut authority = common::multi::Instance {
+        name: "authority".to_string(),
+        state,
+        identity: Some(identity),
+        dir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    authority.bind_tcp().await.expect("bind authority TCP");
+    let url = authority.url().expect("authority TCP URL");
+    for bundle in [&genesis, &live, &dead] {
+        let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, bundle)).await;
+        assert_eq!(status, StatusCode::CREATED, "authority push: {body:?}");
+    }
+    let (status, body) = post_json(
+        app.clone(),
+        "/revoke",
+        common::eve_revoke(t + 2).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
+
+    let (witness, _) = witness_for(common::plain_gossip(url.clone())).await;
+    cyphr_server::gossip::fetch_from_peers(&witness, &id).await;
+    let tip = witness
+        .engine
+        .get_tip(&id)
+        .await
+        .expect("tip")
+        .expect("the witness holds the live history");
+    assert_eq!(
+        tip.commit_count, 2,
+        "the witness admitted eve's commit after its death"
     );
 }

@@ -1,0 +1,69 @@
+# Embedded principals at default weight (SPEC 10.3, 10.5)
+#
+# The test principal (A) embeds its `peer` (B) by putting a PR B held in
+# its Key Tree with `cyphr/AT/KT/nonce/create`; `id = "peer:<n>"` names
+# the PR B held after its n-th commit (0 its genesis commit). B's chain is
+# generated first and the verifier pins every PR B held to B's tip, so a
+# key B authorizes at its tip signs for A: B is one weight-1 member of
+# A's KR.
+
+# A key of B signs a key/create on A once A has embedded B's genesis PR.
+[[test]]
+name      = "embedded_member_signs_for_principal"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { id = "peer:0", now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "carol", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.peer]
+embedded  = true
+principal = ["bob", "carol"]
+
+[test.expected]
+key_count = 2
+
+# A embeds B's genesis PR; B later adds `golden`. The embedded PR is
+# followed to B's tip, so `golden`, a key B gained after the PR A holds,
+# signs for A.
+[[test]]
+name      = "embedded_member_followed_past_its_pr"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { id = "peer:0", now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.peer]
+embedded  = true
+principal = ["bob"]
+
+[[test.peer.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "bob", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2

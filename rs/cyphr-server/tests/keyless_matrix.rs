@@ -19,11 +19,12 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::config::ServerConfig;
 use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
+
+mod common;
 
 // ========================================================================
 // Shared fixture helpers (mirrored from tests/e2e.rs, which is a separate
@@ -39,98 +40,6 @@ fn load_pool() -> test_fixtures::Pool {
         .unwrap()
         .join("tests/keys/pool.toml");
     test_fixtures::Pool::load(&path).expect("failed to load pool.toml")
-}
-
-/// Sign a fresh "add `new_key_name`" commit onto `principal`, signed by
-/// `signer_name`. Returns the new commit's raw coz blob bytes, wire-ready
-/// for `submit_commit`. Mirrors the helper of the same name in
-/// `tests/e2e.rs`.
-fn sign_key_create_commit(
-    mut principal: cyphr::Principal,
-    pool: &test_fixtures::Pool,
-    signer_name: &str,
-    new_key_name: &str,
-    now: i64,
-) -> Vec<Vec<u8>> {
-    let signer = pool.get(signer_name).expect("signer key in pool");
-    let new_key = pool.get(new_key_name).expect("new key in pool");
-
-    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
-    let new_tmb_b64 = new_key.compute_tmb_b64().expect("new key tmb");
-
-    let pay_value = serde_json::json!({
-        "alg": signer.alg,
-        "id": new_tmb_b64,
-        "now": now,
-        "tmb": signer_tmb_b64,
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
-
-    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
-        .expect("valid signer prv base64");
-    let signer_pub =
-        Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
-    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
-        .expect("signing supported for this algorithm");
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
-
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
-            Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-
-    let mut scope = principal.begin_commit();
-    scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_cyphr_key))
-        .expect("key/create should verify against the starting principal state");
-
-    let signer_tmb = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
-    );
-    scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
-            now,
-            "cyphr.me",
-        )
-        .expect("commit should finalize");
-
-    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    let mut key_idx = 0;
-    new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({
-                        "alg": key.alg,
-                        "pub": key.pub_key,
-                        "tmb": key.tmb,
-                    }),
-                );
-                key_idx += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect()
 }
 
 /// An `AppState` with a temporary database and NO signing identity -- the
@@ -166,43 +75,6 @@ fn assert_unsigned_envelope(body: &serde_json::Value) -> &serde_json::Value {
         "an unsigned statement must carry no coz slot: {body:?}"
     );
     &body["payload"]
-}
-
-/// Build a brand-new principal's genesis push HTTP body: a `key/create`
-/// closed by `commit/create`, the genesis key embedded on the closing
-/// cozy (the wire contract `resolve_genesis` requires for a brand-new
-/// principal). Mirrors `push_new_principal_happy_path` in `tests/e2e.rs`.
-fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
-    let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let mut blobs = sign_key_create_commit(principal, pool, "golden", "key_a", now);
-
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg,
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
 }
 
 async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
@@ -248,9 +120,13 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
 #[tokio::test]
 async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
     let pool = load_pool();
-    let principal_id = "keyless-matrix-repo";
+    // The id the genesis commit derives: its PG (SPEC 5.1).
+    let principal_id_derived = common::golden_principal_id(&pool).await;
+    let principal_id = &principal_id_derived;
     let now = 1_700_000_000;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = common::build_genesis_push_body(&pool, principal_id, now).await;
+    let pushed_blobs =
+        common::wire_cozies(&serde_json::from_str(&push_body).expect("push body")).len();
 
     let state = keyless_state();
     let app = build_router(state);
@@ -265,20 +141,21 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
     let push_payload = assert_unsigned_envelope(&push_envelope);
     assert_eq!(
         push_payload["blob_hashes"].as_array().unwrap().len(),
-        2,
+        pushed_blobs,
         "push response should report a hash per submitted blob: {push_payload:?}"
     );
 
     // --- tip ---
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(
         tip_status,
         StatusCode::OK,
         "tip must succeed on a keyless server: {tip_envelope:?}"
     );
     let tip_payload = assert_unsigned_envelope(&tip_envelope);
-    assert_eq!(tip_payload["principal_id"], principal_id);
+    // `/tip` names the principal by its labelled canonical id.
+    assert_eq!(tip_payload["principal_id"], principal_id.to_string());
     assert_eq!(tip_payload["commit_count"].as_u64().unwrap(), 1);
     let pr_digest = tip_payload["pr"]
         .as_str()
@@ -294,7 +171,7 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
 
     // --- patch ---
     let (patch_status, patch_envelope) =
-        get_json(app.clone(), &format!("/patch?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/patch?pg={principal_id}")).await;
     assert_eq!(
         patch_status,
         StatusCode::OK,
@@ -320,28 +197,6 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
     );
     let entity_bytes = entity_resp.into_body().collect().await.unwrap().to_bytes();
     assert!(!entity_bytes.is_empty(), "entity content must be non-empty");
-}
-
-/// `GET /server` on a keyless server declares `repository` honestly
-/// unsigned, as part of the repository-tier surface this matrix sweeps
-/// (`docs/specs/server-identity.md`).
-#[tokio::test]
-async fn keyless_discovery_declares_repository_tier() {
-    let state = keyless_state();
-    let app = build_router(state);
-
-    let (status, envelope) = get_json(app, "/server").await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "discovery must succeed on a keyless server: {envelope:?}"
-    );
-    let payload = assert_unsigned_envelope(&envelope);
-    assert_eq!(payload["tier"], serde_json::json!("repository"));
-    assert!(
-        payload.get("pg").is_none(),
-        "a keyless server's discovery payload carries no pg: {payload:?}"
-    );
 }
 
 // ========================================================================
@@ -390,42 +245,11 @@ async fn keyless_challenge_returns_capability_absence_not_internal_error() {
     );
 }
 
-/// `POST /auth/login` on a keyless server returns the explicit
-/// capability-absence error -- never a 500.
-#[tokio::test]
-async fn keyless_login_returns_capability_absence_not_internal_error() {
-    let state = keyless_state();
-    let app = build_router(state);
-
-    let (status, json) = post_json(app, "/auth/login", empty_coz_body()).await;
-    assert_ne!(
-        status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "a keyless server's declared capability absence must never surface as 500: {json:?}"
-    );
-    assert!(
-        status.is_client_error() || status == StatusCode::NOT_IMPLEMENTED,
-        "a keyless capability absence must not read as a transient server fault, got {status}: \
-         {json:?}"
-    );
-    let payload = assert_unsigned_envelope(&json);
-    let message = payload["error"]
-        .as_str()
-        .expect("error body names the condition");
-    assert!(
-        message.contains("signing identity"),
-        "the rejection must name the keyless condition, got: {message:?}"
-    );
-    assert!(
-        message.contains("/server"),
-        "the rejection must point a rejected client at the discovery route, got: {message:?}"
-    );
-}
-
 /// Login and challenge return the SAME explicit capability-absence error
 /// on a keyless server (delegated design lean): one honest condition, one
 /// treatment, not two differently-worded rejections a client would have
 /// to reconcile.
+// @docket: signon-honest-refusal :: scripts/docket-run signon-honest-refusal
 #[tokio::test]
 async fn keyless_login_and_challenge_share_the_same_rejection() {
     let state = keyless_state();

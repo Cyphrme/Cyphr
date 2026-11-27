@@ -35,11 +35,10 @@ out of their identities.
 
 ## Implementation Status (re-verified 2026-07-08)
 
-**`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
-"implemented."** The table's uniform 25/25 `pass` reflects SPEC-internal
-consistency, not implementation status. The following revisions apply post-campaign:
+**`pass` below means "explicit in SPEC.md," not "implemented."** The table's uniform 25/25 `pass` reflects SPEC-internal
+consistency, not implementation status. The following revisions apply after the lifecycle work:
 
-**Implemented by N01 (lifecycle-state), N03 (lifecycle-transactions):**
+**Implemented (lifecycle state and lifecycle transactions):**
 
 - LifecycleState enum with full derivation from five boolean conditions (Active,
   Frozen, Deleted, Zombie, Dead, Nuked), orthogonal Errored flag —
@@ -49,22 +48,23 @@ consistency, not implementation status. The following revisions apply post-campa
   scenarios with fixture-backed assertions), `tests/golden/lifecycle/*.json`
 - Frozen/Deleted/Zombie/Dead/Nuked states now reach real code paths; all lifecycle
   gates enforced (mutual-exclusivity, no-mutations-on-frozen, Deleted subsumes
-  Frozen per F5 ruling)
+  Frozen)
 
-**Still unimplemented (correctly out of campaign scope):**
+**Still unimplemented (out of scope for the lifecycle work):**
 
 - principal/merge and principal/fork/create (no transactions, no tests)
 - Level 5+ weighted-key thresholds and CanMutateAR non-monotonicity
-- Errored state detection (flag always false in v1; CommitMismatch is candidate
-  future source per findings F8)
+- Errored detection inside `rs/cyphr`: `Principal::is_errored` reports the
+  flag, and the storage engine detects forks and holds the principal in
+  Error (`EngineError::Errored`), but the core does not set the flag itself
 
 **Partially implemented or with known limitations:**
 
 - `Principal::level()` still cannot return `Level::L2` —
-  `rs/cyphr/src/principal.rs` comment: "For now, single key with no commits = Level 1"
+  `Principal::level` in `rs/cyphr/src/principal/accessors.rs` carries the comment: "For now, single key with no commits = Level 1"
 - Nuked vs Dead distinguishability: KeyDelete erases keys; SelfRevoke preserves
   them in revoked set — both trace back to deletion state, making Nuked/Dead
-  separation not externally observable (findings F11, deferred refinement)
+  separation not externally observable (a deferred refinement)
 
 ## Constraints
 
@@ -91,29 +91,24 @@ TYPE IsErrored      = Boolean   -- fork detected or chain invalid
 **[level-1-static]**: A Level 1 principal MUST have exactly one key that never
 changes. No commit chain exists. `tmb` == KR == AR == SR == PR == PG via
 implicit promotion. Level 1 does not have a commit chain.
-`VERIFIED: agent-check — updated 2026-03-09 per B-2, SPEC §3.1/§5.1`
 
 **[level-2-single-key]**: A Level 2 principal MUST have exactly one active key
 at any time. Key changes are performed via `key/replace` (atomic swap) only.
 No commit chain exists. `tmb` == KR == AR == SR == PR == PG via implicit
 promotion. Level 2 does not have a commit chain.
-`VERIFIED: agent-check — updated 2026-03-09 per B-2, SPEC §3.2/§5.1`
 
 **[level-3-multi-key]**: A Level 3+ principal MUST support multiple concurrent
 keys. PR = MR(SR, CR). Initial PR equals PG.
 Any active key MAY perform `key/create`, `key/delete`, or `key/revoke` on any
 other key (subject to Level 5+ rules).
-`VERIFIED: agent-check — updated 2026-03-09 per A-3, SPEC §3.3`
 
 **[level-4-data-tree]**: A Level 4+ principal MUST support Data Tree (DT) for
 user actions. Data actions (AAA) are recorded in DT and signed by active keys.
-`VERIFIED: agent-check`
 
 **[level-not-authorization]**: Principal levels describe state composition
 complexity and MUST NOT be used as an authorization input. Authorization is
 determined by which state components exist and what rules govern them (per
 `transactions.md` [authorization-triple], SPEC.md §3).
-`VERIFIED: agent-check — citation updated 2026-03-09 per A-1`
 
 #### Lifecycle State Definitions
 
@@ -121,7 +116,6 @@ determined by which state components exist and what rules govern them (per
 deterministically derived from the following conditions: `IsDeleted`,
 `IsFrozen`, `CanMutateAR`, `HasActiveKeys`, `CanDataAction`. No additional
 inputs determine lifecycle state.
-`VERIFIED: agent-check`
 
 **[lifecycle-state-matrix]**: The mapping from conditions to base states MUST be:
 
@@ -134,13 +128,10 @@ inputs determine lifecycle state.
 | **Dead**    | —         | —        | false       | false                       | false         |
 | **Nuked**   | true      | —        | —           | false (all revoked/deleted) | —             |
 
-`VERIFIED: agent-check`
-
 **[errored-orthogonal]**: The `Errored` flag MUST be orthogonal to the base
 lifecycle state. Any base state (Active, Frozen, Deleted, Zombie, Dead, Nuked)
 MAY simultaneously be errored. `Errored` indicates fork detection or chain
 invalidity (see `consensus.md`).
-`VERIFIED: agent-check`
 
 **[zombie-state-bounds]**: A principal is definitively classified as a `Zombie`
 when it possesses active keys (`HasActiveKeys=true`) but the mathematical
@@ -149,30 +140,25 @@ conditions to sign an Authorization Transition evaluate to `false`
 remains true as long as active keys exist; thus, this rule dictates that
 `Zombie` states emerge naturally only at Level 5+ when the combined key weights
 fail to satisfy explicitly configured authorization thresholds.
-`VERIFIED: agent-check`
 
 **[freeze-mutation-lockout]**: The `Frozen` lifecycle state stops **all mutations**,
 which functionally halts the append mechanism of the Commit Tree. Consequently,
 both Auth Operations and Data Operations are universally blocked, rendering any
 theoretical `CanMutateAR=true` evaluation locally moot until the freeze is lifted.
-`VERIFIED: agent-check`
 
 **[fork-pg-derivation]**: When a principal creates a fork, the initial `PG` computation
 of the fork strictly reflects the mathematical snapshot of the fork initialization. If
 the fork purely clones the authorizing keys and nothing else, `PG` strictly equals
 `KR`. If rules or data dependencies are preserved across the fork boundary, `PG` MUST
 mathematically map to the fully populated state topology exactly.
-`VERIFIED: agent-check`
 
 **[deleted-frozen-exclusive]**: `Deleted` and `Frozen` MUST be mutually
 exclusive. A principal MUST NOT be both frozen and deleted simultaneously.
-`VERIFIED: agent-check`
 
 **[canmutate-non-monotonic]**: At Level 5+, `CanMutateAR` is NOT monotonic in
 key count. A principal with active keys MAY have `¬CanMutateAR` if no key
 combination meets the threshold for AR mutation. Implementations MUST NOT assume
 that having active keys implies the ability to mutate AR.
-`VERIFIED: agent-check`
 
 ### Transitions
 
@@ -183,9 +169,9 @@ principal. This transition is irreversible.
 
 - **PRE**: Principal is Active or Frozen. Signing key MUST be active.
 
-  _Ruling note (SPEC F5)_: SPEC.md §11.2 states Freeze permits "no mutations until
+  _Ruling note_: SPEC.md §11.2 states Freeze permits "no mutations until
   unfrozen" (unqualified), while §14.9 discretionarily restricts Freeze to key
-  mutations. The architect ruling (findings.yaml F5) permits principal/delete from
+  mutations. The implementation permits principal/delete from
   both Active and Frozen states. When signed by a Frozen principal, the resulting
   Deleted state subsumes Frozen (per §11.2 mutual-exclusivity): POST sets both
   `IsDeleted` = true and `IsFrozen` = false.
@@ -194,9 +180,8 @@ principal. This transition is irreversible.
   The three lifecycle transactions (principal/delete, freeze/create, freeze/delete)
   each carry their own individual checks rejecting AlreadyDeleted; however, no
   blanket gate rejects all other transaction types against a Deleted principal.
-  This narrow gate is tracked as a follow-up gap (findings.yaml F23 / GitHub issue #65).
+  This narrow gate is tracked as a follow-up gap (GitHub issue #65).
   PR MAY be reused for a new principal only if the keys were not revoked.
-  `VERIFIED: agent-check`
 
 **[nuke-sequence]**: To ensure no aspect of a deleted principal can be reused,
 the recommended sequence is: revoke all keys, delete all keys, sign
@@ -205,7 +190,6 @@ the recommended sequence is: revoke all keys, delete all keys, sign
 - **PRE**: Principal is Active or Frozen.
 - **POST**: All keys revoked and deleted, `IsDeleted` = true. No key reuse
   is possible for new principals.
-  `VERIFIED: agent-check`
 
 #### Merge
 
@@ -216,16 +200,13 @@ by merging in their state (merge attack).
 - **PRE**: Source signs `principal/merge` with `merge_to_pr` = target's PR.
 - **POST**: Merge is not complete until target signs `principal/merge-ack`
   with `merge_from_pr` = source's PR.
-  `VERIFIED: agent-check`
 
 **[merge-implicit]**: Alternatively, an implicit merge MAY be performed where
 the source deletes all keys and both principals add each other's PR.
-`VERIFIED: agent-check`
 
 **[merge-key-transfer]**: If the target wants to reuse keys from the source,
 it MUST explicitly add them via `key/create`. Key transfer is not automatic in
 a merge.
-`VERIFIED: agent-check`
 
 #### Fork
 
@@ -236,17 +217,14 @@ PG. At least one key MUST be added to the forked principal.
 - **PRE**: Source principal is Active. Signing key MUST be active on source.
 - **POST**: New principal exists with its own PR and commit chain. Source
   principal is unaffected (its PR and state are preserved).
-  `VERIFIED: agent-check`
 
 **[fork-equivalent-to-genesis]**: The fork transaction bundle MUST be
 equivalent to a genesis transaction — it establishes a new PG via the same
 bootstrap model.
-`VERIFIED: agent-check`
 
 **[key-sharing-across-principals]**: Nothing in the protocol prevents multiple
 principals from sharing keys, as long as genesis does not result in the same
 PR. Any set of non-revoked keys MAY be used to create a new PG.
-`VERIFIED: agent-check`
 
 #### Freeze
 
@@ -256,34 +234,28 @@ the principal is unfrozen.
 
 - **PRE**: Principal is Active. Signing key MUST be active.
 - **POST**: `IsFrozen` = true. No mutations permitted.
-  `VERIFIED: agent-check`
 
 **[unfreeze]**: `freeze/delete` removes the freeze. After unfreezing, the
 principal returns to Active (assuming keys still meet mutation thresholds).
 
 - **PRE**: Principal is Frozen. Signing key MUST be active.
 - **POST**: `IsFrozen` = false.
-  `VERIFIED: agent-check`
 
 ### Forbidden States
 
 **[no-deleted-and-frozen]**: A principal MUST NOT be simultaneously Deleted and
 Frozen (per [deleted-frozen-exclusive]).
-`VERIFIED: agent-check`
 
 **[no-transactions-on-deleted]**: A Deleted principal MUST NOT accept any new
 transactions or actions, including data actions. Any such attempt MUST be
 rejected.
-`VERIFIED: agent-check`
 
 **[no-mutations-on-frozen]**: A Frozen principal MUST NOT accept any mutations
 until unfrozen. Freeze is a full stop on all state changes.
-`VERIFIED: agent-check`
 
 **[no-level-1-recovery]**: A Level 1 principal that self-revokes MUST NOT have
 a protocol-level recovery path. The result is permanent DEAD state. Recovery
 requires sideband intervention.
-`VERIFIED: agent-check`
 
 > [!NOTE]
 > **PLACEHOLDER — Level 5 Rules**: SPEC.md §10 describes Rule Root (RR) with
@@ -304,21 +276,18 @@ lifecycle state MUST be identical across all implementations. The lifecycle is
 a pure function of the condition set.
 
 - **Type**: Safety
-  `VERIFIED: agent-check`
 
 **[delete-irreversible]**: Once `IsDeleted` = true, the principal MUST NOT
 return to any non-deleted state. Deletion is a terminal, irreversible
 transition.
 
 - **Type**: Safety
-  `VERIFIED: agent-check`
 
 **[dead-terminal]**: The Dead state (¬HasActiveKeys, ¬CanDataAction) is
 terminal absent recovery mechanisms. No protocol-level operation can restore
 keys once all are revoked/deleted and no recovery path exists.
 
 - **Type**: Safety
-  `VERIFIED: agent-check`
 
 ## Formal Specification
 

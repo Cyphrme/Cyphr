@@ -31,3 +31,28 @@ tx = [
 [test.expected]
 key_count = 2
 level     = 3
+
+# A two-algorithm principal (SHA-256 and SHA-384 keys) with a data commit.
+# The ds/create's id names DR under the signer's algorithm only; in the
+# SHA-384 variant tree the DR node is not calculated and stays null
+# (SPEC 12.2), so DR carries one variant and SR, PR carry both.
+[[test]]
+name      = "two_algorithm_data_commit"
+principal = ["golden", "diana_es384"]
+
+[[test.action]]
+msg    = "Data under two algorithms"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", typ = "cyphr.me/cyphr/ds/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 4

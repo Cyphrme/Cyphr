@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+# Bounded id-indirection runner for docket claims whose `@docket:` marker
+# names this script plus a claim id. A conjunctive requirement needing
+# several tests to jointly close it registers them all under one id.
+#
+# CLAIMS_INDEX maps a claim id to the name of a real bash ARRAY (via
+# nameref, below) — not a single joined shell string (`a && b`), which
+# would satisfy a black-box exit code without the underlying data
+# actually being list-shaped. Every command in the array runs, in
+# order; the claim only passes if every one of them exits 0.
+#
+# A marker naming this script plus a short id is fixed-length regardless
+# of how long the underlying commands are or how many a claim needs —
+# `@docket: <id> :: scripts/docket-run <id>` never risks a comment's
+# column-wrap limit the way inlining a raw multi-command invocation
+# would.
+#
+# Usage: docket-run <claim-id>
+#        docket-run --self-check   (prove the zero-test rule; see below)
+set -uo pipefail
+
+# claim id -> name of the bash array holding its command list. Bash
+# variable names cannot contain '-', so the index translates each
+# hyphenated claim id to its array's underscored name; a new claim adds
+# one line here plus the array it names.
+declare -A CLAIMS_INDEX=(
+  [list-valued-both-green]="_claim_list_valued_both_green"
+  [list-valued-one-failing]="_claim_list_valued_one_failing"
+
+  # Equivocation claims (docs/architecture/equivocation-detection.md).
+  # Entries for claims the documents no longer define, and for claims
+  # with no test yet, are absent rather than vacuous: `docket run` then
+  # reports them absent until their owner writes the test and adds the
+  # entry. A claim with several tests lists them all; every one must pass.
+  [arch-detection-is-comparison]="_claim_arch_detection_is_comparison"
+  [arch-principal-resolves]="_claim_arch_principal_resolves"
+  [arch-tip-reports-are-material]="_claim_arch_tip_reports_are_material"
+  [arch-behind-is-not-fork]="_claim_arch_behind_is_not_fork"
+  [arch-signing-stays-stateless]="_claim_arch_signing_stays_stateless"
+  [arch-verifier-chooses-peers]="_claim_arch_verifier_chooses_peers"
+  [arch-principal-fork-evidence]="_claim_arch_principal_fork_evidence"
+  [arch-both-branches-kept]="_claim_arch_both_branches_kept"
+  [arch-evidence-is-portable]="_claim_arch_evidence_is_portable"
+
+  # Sign-on claims (docs/architecture/path-a-sovereign-sign-on.md); each
+  # names the one scenario test that closes it.
+  [signon-honest-refusal]="_claim_signon_honest_refusal"
+  [signon-disowned-key]="_claim_signon_disowned_key"
+  [signon-token-kind-binding]="_claim_signon_token_kind_binding"
+  [signon-claimed-principal]="_claim_signon_claimed_principal"
+  [signon-key-active-in-principal]="_claim_signon_key_active_in_principal"
+  [signon-replay-bound]="_claim_signon_replay_bound"
+  [signon-audience-binding]="_claim_signon_audience_binding"
+
+  # SPEC conformance claims (SC1): each id is the SPEC line a
+  # `@docket: sc-l<N>` marker in a spec_conformance.rs names.
+  [sc-l119]="_claim_sc_l119"
+  [sc-l203]="_claim_sc_l203"
+  [sc-l237]="_claim_sc_l237"
+  [sc-l240]="_claim_sc_l240"
+  [sc-l246]="_claim_sc_l246"
+  [sc-l592]="_claim_sc_l592"
+  [sc-l944]="_claim_sc_l944"
+  [sc-l1059]="_claim_sc_l1059"
+  [sc-l1287]="_claim_sc_l1287"
+  [sc-l1300]="_claim_sc_l1300"
+  [sc-l298]="_claim_sc_l298"
+  [sc-l1869]="_claim_sc_l1869"
+  [sc-l1673]="_claim_sc_l1673"
+  [sc-l1674]="_claim_sc_l1674"
+  [sc-l2814]="_claim_sc_l2814"
+  [sc-l2822]="_claim_sc_l2822"
+  [sc-l2827]="_claim_sc_l2827"
+  [sc-l2828]="_claim_sc_l2828"
+  [sc-l3054]="_claim_sc_l3054"
+  [sc-l3350]="_claim_sc_l3350"
+  [sc-l3353]="_claim_sc_l3353"
+
+  # Record-verification claims (docs/architecture/record-verification.md);
+  # each names the replay-rule tests that close it.
+  [rv-coz-wellformed]="_claim_rv_coz_wellformed"
+  [rv-sig-verifies]="_claim_rv_sig_verifies"
+  [rv-timestamp-range]="_claim_rv_timestamp_range"
+  [rv-alg-alignment]="_claim_rv_alg_alignment"
+  [rv-timestamp-monotone]="_claim_rv_timestamp_monotone"
+  [rv-key-set]="_claim_rv_key_set"
+  [rv-alg-support]="_claim_rv_alg_support"
+  [rv-key-material]="_claim_rv_key_material"
+  [rv-digest-wellformed]="_claim_rv_digest_wellformed"
+  [rv-arrow-chain]="_claim_rv_arrow_chain"
+  [rv-state-recomputed]="_claim_rv_state_recomputed"
+  [rv-key-active-gate]="_claim_rv_key_active_gate"
+  [rv-lifecycle-gate]="_claim_rv_lifecycle_gate"
+  [rv-genesis-immutable]="_claim_rv_genesis_immutable"
+  [rv-intra-commit-shape]="_claim_rv_intra_commit_shape"
+  [rv-no-coz-reuse]="_claim_rv_no_coz_reuse"
+  [rv-nonce-ledger]="_claim_rv_nonce_ledger"
+
+  # Self-checks of the zero-test rule itself, run by
+  # `docket-run --self-check`; not project claims. The first must FAIL
+  # (its test name matches nothing), the second must pass.
+  [selfcheck-zero-tests]="_claim_selfcheck_zero_tests"
+  [selfcheck-env-prefix-zero]="_claim_selfcheck_env_prefix_zero"
+  [selfcheck-cd-prefix-zero]="_claim_selfcheck_cd_prefix_zero"
+  [selfcheck-piped-failure]="_claim_selfcheck_piped_failure"
+  [selfcheck-real-test]="_claim_selfcheck_real_test"
+)
+
+# scripts/docket-fixtures/list-valued-map/CONTRACT.md's own self-check
+# entries, proving the list-valued mechanism itself rather than any
+# project claim. Real entries join this table as docs/architecture and
+# docs/use gain markers that reference them.
+_claim_list_valued_both_green=(
+  "true"
+  "true"
+)
+_claim_list_valued_one_failing=(
+  "true"
+  "false"
+)
+
+_claim_arch_detection_is_comparison=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation fewer_than_two_reports_settles_nothing -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-cli --test gossip_exchange bundle_carries_commits_actions_and_both_fork_branches_between_clients -- --exact"
+)
+_claim_arch_principal_resolves=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-cli --test verify_verdict verdict_follows_the_branch_the_principal_resolves_to -- --exact"
+)
+_claim_arch_tip_reports_are_material=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation wrong_typ_pair_is_not_equivocation -- --exact"
+)
+_claim_arch_behind_is_not_fork=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-net --test pull_step pull_classifies_peers_from_the_own_record -- --exact"
+)
+_claim_arch_signing_stays_stateless=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence signing_is_unchanged_by_held_evidence -- --exact"
+)
+_claim_arch_verifier_chooses_peers=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test no_registration register_route_is_gone_and_push_never_dials_out -- --exact"
+)
+_claim_arch_principal_fork_evidence=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence fork_evidence_is_served_and_verified_offline -- --exact"
+)
+_claim_arch_both_branches_kept=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence fork_evidence_is_served_and_verified_offline -- --exact"
+)
+_claim_arch_evidence_is_portable=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence fork_evidence_is_served_and_verified_offline -- --exact"
+)
+
+_claim_signon_honest_refusal=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test keyless_matrix keyless_login_and_challenge_share_the_same_rejection -- --exact"
+)
+_claim_signon_disowned_key=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test naked_revoke revoked_key_refused_at_login_sibling_survives -- --exact"
+)
+_claim_signon_token_kind_binding=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test route_protection bearer_refuses_server_signed_non_token -- --exact"
+)
+_claim_signon_claimed_principal=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test login login_binds_key_to_claimed_principal_not_thumbprint -- --exact"
+)
+_claim_signon_key_active_in_principal=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test login login_rejects_key_revoked_in_claimed_principal -- --exact"
+)
+_claim_signon_replay_bound=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test login login_rejects_replayed_challenge -- --exact"
+)
+_claim_signon_audience_binding=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test login login_rejects_mismatched_audience -- --exact"
+)
+
+# SC1: each array runs the spec_conformance test(s) its marker sits on.
+_claim_sc_l119=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_2_2_non_canonical_b64ut_is_rejected -- --exact"
+)
+_claim_sc_l203=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_2_13_key_create_without_revealed_pub_is_rejected -- --exact"
+)
+_claim_sc_l237=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_second_commit_on_a_stale_pre_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test spec_conformance s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put -- --exact"
+)
+_claim_sc_l240=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_no_operation_changes_the_principal_genesis -- --exact"
+)
+_claim_sc_l246=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_inactive_key_cannot_authorize_its_own_admission -- --exact"
+)
+_claim_sc_l592=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s4_6_commit_coz_must_be_last_in_txs -- --exact"
+)
+_claim_sc_l944=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s6_no_wire_form_carries_private_key_material -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test spec_conformance s6_no_http_response_carries_private_key_material -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test spec_conformance s6_exported_commits_carry_no_private_key_material -- --exact"
+)
+_claim_sc_l1059=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s6_4_one_key_cannot_revoke_another -- --exact"
+)
+_claim_sc_l1287=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_7_fork_create_does_not_create_a_principal -- --exact"
+)
+_claim_sc_l1300=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_7_fork_create_does_not_create_a_principal -- --exact"
+)
+_claim_sc_l298=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s3_1_dead_principal_after_last_key_revoke_records_no_action -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance dead_principal_roots_are_absent_and_pr_is_cr_without_data -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance dead_principal_roots_state_root_is_the_data_root -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance dead_principal_roots_hash_under_the_pre_commit_algorithm_set -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance dead_principal_roots_key_delete_of_the_last_key_leaves_dead -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance dead_principal_roots_are_final_no_further_commit -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test nonce dead_principal_roots_keep_the_nonces_that_remain -- --exact"
+)
+_claim_sc_l1869=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s11_2_dead_principal_accepts_no_transaction_or_action -- --exact"
+)
+_claim_sc_l1673=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s10_2_nonce_bit_length_must_match_the_declared_algorithm -- --exact"
+)
+_claim_sc_l1674=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s10_2_nonce_bit_length_must_match_the_declared_algorithm -- --exact"
+)
+_claim_sc_l2814=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test fork_rule both_extended_is_error_at_any_heights -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test fork_rule building_on_a_both_extended_fork_never_leaves_error -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test fork_rule one_extended_selects_and_the_other_extended_reopens -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-storage --test fork_rule one_extension_resolves_and_the_abandoned_branch_reopens_it -- --exact"
+)
+_claim_sc_l2822=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test resync_assert one_asserted_child_is_followed_whatever_is_extended_elsewhere -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test resync_assert assertions_in_two_children_are_error_for_good -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-storage --test resync a_pop_selects_the_asserted_line_in_every_order -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-storage --test resync an_unfit_pop_is_refused_and_stores_nothing -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test resync a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-scenarios --test s03_resync s03_resync_resolves_the_double_offline_fork -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-scenarios --test s04_resync s04_a_second_branchs_pop_is_error_for_good -- --exact"
+)
+_claim_sc_l2827=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_second_commit_on_a_stale_pre_is_rejected -- --exact"
+)
+_claim_sc_l2828=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_second_commit_on_a_stale_pre_is_rejected -- --exact"
+)
+_claim_sc_l3054=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test spec_conformance s17_2_challenge_is_256_bits_and_unique -- --exact"
+)
+_claim_sc_l3350=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s19_5_failed_commit_leaves_no_partial_state -- --exact"
+)
+_claim_sc_l3353=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s19_5_failed_commit_leaves_no_partial_state -- --exact"
+)
+
+# Record-verification: each array runs the tests its marker's rule rests on.
+_claim_rv_coz_wellformed=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_1_coz_missing_tmb_now_or_typ_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_1_coz_missing_alg_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_2_2_non_canonical_b64ut_is_rejected -- --exact"
+)
+_claim_rv_sig_verifies=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors es256_high_s_signature_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors ed25519_non_canonical_s_is_rejected -- --exact"
+)
+_claim_rv_timestamp_range=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s6_4_revoke_now_must_be_a_positive_bounded_integer -- --exact"
+)
+_claim_rv_arrow_chain=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test properties test_finalize_commit_rejects_tampered_arrow -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_second_commit_on_a_stale_pre_is_rejected -- --exact"
+)
+_claim_rv_state_recomputed=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors forged_action_spliced_before_delete_commit_is_left_out -- --exact"
+)
+_claim_rv_key_active_gate=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors deleted_key_action_dated_after_delete_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors deleted_key_action_backdated_into_old_active_period_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_inactive_key_cannot_authorize_its_own_admission -- --exact"
+)
+_claim_rv_lifecycle_gate=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s11_2_frozen_principal_rejects_key_mutations -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance frozen_principal_rejects_data_actions_until_thawed -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s11_2_dead_principal_accepts_no_transaction_or_action -- --exact"
+)
+_claim_rv_genesis_immutable=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_no_operation_changes_the_principal_genesis -- --exact"
+)
+_claim_rv_intra_commit_shape=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s4_6_commit_coz_must_be_last_in_txs -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s4_1_transaction_cozies_must_share_one_typ -- --exact"
+)
+_claim_rv_no_coz_reuse=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_6_reuse_is_typed_and_scoped_to_one_principal -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance multihash_replay_of_an_es384_signed_coz_is_reuse -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test properties prop_data_action_replay_is_idempotent -- --exact"
+)
+
+_claim_rv_alg_alignment=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_action_pay_alg_must_equal_key_alg -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_commit_coz_pay_alg_must_equal_key_alg -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_es256_action_pay_alg_must_equal_key_alg -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_es256_commit_coz_pay_alg_must_equal_key_alg -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_wrong_caller_czd_is_not_recorded_for_actions -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_wrong_caller_czd_is_not_recorded_for_commit_cozies -- --exact"
+)
+_claim_rv_timestamp_monotone=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test golden_fixtures test_golden_errors -- --exact"
+)
+
+_claim_rv_key_material=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_2_13_key_create_without_revealed_pub_is_rejected -- --exact"
+)
+_claim_rv_digest_wellformed=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test properties test_tagged_digest_parsing_roundtrip -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test properties test_tagged_digest_invalid_parsing_does_not_panic -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test properties test_multihash_digest_validation -- --exact"
+)
+
+_claim_rv_nonce_ledger=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test nonce nonce_created_twice_at_one_level_is_refused -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test nonce nonce_delete_removes_only_the_named_nonce_at_the_named_path -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s10_2_nonce_bit_length_must_match_the_declared_algorithm -- --exact"
+)
+_claim_rv_key_set=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test golden_fixtures test_golden_errors -- --exact"
+)
+_claim_rv_alg_support=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test golden_fixtures test_golden_errors -- --exact"
+)
+
+_claim_selfcheck_zero_tests=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib no_such_test_exists_anywhere -- --exact"
+)
+_claim_selfcheck_env_prefix_zero=(
+  "CARGO_TERM_COLOR=never cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib no_such_test_exists_anywhere -- --exact"
+)
+_claim_selfcheck_cd_prefix_zero=(
+  "cd rs && cargo test -p cyphr-server --lib no_such_test_exists_anywhere -- --exact"
+)
+# A self-owned synthetic failure: one passing and one failing result line,
+# exit 101, and a pipe between the producer and the exit code. The pipe
+# must not mask the failure, and no project test is borrowed, so fixing a
+# project bug cannot turn this check vacuous.
+_claim_selfcheck_piped_failure=(
+  "( echo 'test result: ok. 1 passed;'; echo 'test result: FAILED. 0 passed; 1 failed;'; exit 101 ) | cat"
+)
+_claim_selfcheck_real_test=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test route_protection bearer_refuses_server_signed_non_token -- --exact"
+)
+
+# --self-check: the zero-test rule's own acceptance test. A command
+# naming a missing test must fail, one naming a real test must pass;
+# each assertion runs independently and the exit code is nonzero iff any
+# failed.
+if [ "${1:-}" = "--self-check" ]; then
+  bad=0
+  for sc in selfcheck-zero-tests selfcheck-env-prefix-zero selfcheck-cd-prefix-zero selfcheck-piped-failure; do
+    if "${BASH_SOURCE[0]}" "$sc" >/dev/null 2>&1; then
+      echo "FAIL  $sc passed though it must fail" >&2
+      bad=1
+    else
+      echo "PASS  $sc fails"
+    fi
+  done
+  if "${BASH_SOURCE[0]}" selfcheck-real-test >/dev/null 2>&1; then
+    echo "PASS  a command naming a real test passes"
+  else
+    echo "FAIL  a command naming a real test failed" >&2
+    bad=1
+  fi
+  exit "$bad"
+fi
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: docket-run <claim-id> | --self-check" >&2
+  exit 2
+fi
+
+id="$1"
+arrname="${CLAIMS_INDEX[$id]:-}"
+if [ -z "$arrname" ]; then
+  echo "docket-run: no CLAIMS entry for claim id '$id'" >&2
+  exit 2
+fi
+
+declare -n cmds="$arrname"
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root" || exit 2
+
+# Zero-test rule: a command that runs no test proves nothing, so it
+# fails. cargo exits 0 for a name filter that matches nothing ("0 passed;
+# 0 failed; N filtered out"), which let a claim pass by naming a test
+# that does not exist. The rule sums the "N passed" counts of every
+# "test result:" line a command printed, and applies to EVERY command
+# however it is spelled (env prefix, `cd x &&`, wrapper): a rule keyed on
+# the command's text is dodged by rewording it. Only the fixture claims
+# below are exempt, because their `true`/`false` commands run no test by
+# design.
+_exempt_from_zero_test_rule=(list-valued-both-green list-valued-one-failing)
+
+failures=0
+out="$(mktemp)"
+trap 'rm -f "$out"' EXIT
+for cmd in "${cmds[@]}"; do
+  # pipefail: a claim command that pipes cargo through another tool
+  # must not let the tool's exit 0 hide cargo's failure.
+  bash -o pipefail -c "$cmd" 2>&1 | tee "$out"
+  rc="${PIPESTATUS[0]}"
+  if [ "$rc" -ne 0 ]; then
+    echo "docket-run: '$id' command failed: $cmd" >&2
+    failures=1
+    continue
+  fi
+  # A FAILED summary line fails the command whatever its exit code said.
+  if grep -q '^test result: FAILED' "$out"; then
+    echo "docket-run: '$id' command reported failing tests: $cmd" >&2
+    failures=1
+    continue
+  fi
+  for ex in "${_exempt_from_zero_test_rule[@]}"; do
+    [ "$id" = "$ex" ] && continue 2
+  done
+  passed="$(sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p' "$out" | awk '{n += $1} END {print n + 0}')"
+  if [ "${passed:-0}" -lt 1 ]; then
+    echo "docket-run: '$id' command ran zero tests: $cmd" >&2
+    failures=1
+  fi
+done
+
+exit "$failures"

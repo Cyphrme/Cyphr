@@ -7,6 +7,18 @@
 //! Transactions use `[[test.commit]]` + `[[test.commit.tx]]`.
 //! Actions use `[[test.action]]`.
 //! See `.sketches/2026-02-18-fixture-format-alignment.md` for design rationale.
+//!
+//! ## Numbered keys and repeated items
+//!
+//! Two shorthands keep large vectors readable; both are expanded when an
+//! intent is loaded, so the generator only ever sees the long form:
+//!
+//! - A `principal` entry `"#a..#b"` stands for the numbered keys `#a` through `#b` inclusive (see
+//!   [`crate::pool::NumberedKeys`]).
+//! - A commit with `repeat = { from = 0, count = 255 }` repeats its `tx` list for each `n` in
+//!   `from..from + count`, replacing `{n}` in every `target`. A target `nonce:<n>` is the nonce
+//!   value of item `n`: the SHA-256 digest-shaped id whose bytes are `n` as big-endian `u16`
+//!   followed by thirty `0xEE` bytes.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -24,7 +36,7 @@ pub struct Intent {
 }
 
 /// A single test case intent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TestIntent {
     /// Test name.
     pub name: String,
@@ -39,6 +51,9 @@ pub struct TestIntent {
     /// Action sequence (Level 4 data recording).
     #[serde(default)]
     pub action: Vec<ActionIntent>,
+    /// The second principal, for a test about two (a merge).
+    #[serde(default)]
+    pub peer: Option<PeerIntent>,
     /// Override fields (for error tests).
     #[serde(default, rename = "override")]
     pub override_: Option<OverrideIntent>,
@@ -60,7 +75,7 @@ pub struct CommitIntent {
 /// A single coz within a commit.
 ///
 /// Flat struct merging the old `PayIntent` + `CryptoIntent` fields.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TxIntent {
     /// ParsedCoz type (e.g., "cyphr.me/key/create").
     pub typ: String,
@@ -68,26 +83,67 @@ pub struct TxIntent {
     pub now: i64,
     /// Signer key name (from pool).
     pub signer: String,
-    /// Target key name (for key/create, key/revoke).
+    /// Target key name (for key/create, key/revoke): the pay `id` is its
+    /// thumbprint.
     #[serde(default)]
     pub target: Option<String>,
+    /// The pay `id` stated verbatim, for values no pool key's thumbprint
+    /// can express (a nonce, an off-by-one width, a `principal/create` or
+    /// `ds/create` naming a state it does not reach). Takes the place of
+    /// `target` and of a derived `id`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// `merge_from` of a `principal/merge` or `principal/merge-ack` (SPEC
+    /// 11.5.1): PRs named by reference, `self:<n>` or `peer:<n>` for the
+    /// PR that principal held after its `n`-th commit (`0` the genesis
+    /// commit). The test's principal is `self`, its `peer` the other.
+    #[serde(default)]
+    pub merge_from: Option<Vec<String>>,
+    /// `merge_to_pr` of a merge or merge-ack, by the same reference.
+    #[serde(default)]
+    pub merge_to_pr: Option<String>,
     /// Optional message.
     #[serde(default)]
     pub msg: Option<String>,
     /// Optional revocation timestamp.
     #[serde(default)]
     pub rvk: Option<i64>,
+    /// An `arrow` stated verbatim on the coz, for a vector that puts it
+    /// where only `commit/create` may carry it (SPEC 4.3).
+    #[serde(default)]
+    pub arrow: Option<String>,
 }
 
 /// Setup modifiers for test.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SetupIntent {
-    /// Key name to pre-revoke before test.
+    /// A key of `principal` that is already revoked when the principal is
+    /// created: genesis is given it carrying a revocation at `revoke_at`
+    /// (SPEC 6.4: a revoked key is never trusted again; 7.7: genesis
+    /// creates every key, its first included).
     #[serde(default)]
     pub revoke_key: Option<String>,
     /// Timestamp for the revocation.
     #[serde(default)]
     pub revoke_at: Option<i64>,
+}
+
+/// The second principal of a two-principal test: its genesis keys and
+/// commits, generated after the test principal's (SPEC 11.5.1 merge), or
+/// before them when `embedded` (SPEC 10.3).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PeerIntent {
+    /// Genesis key set (key names from pool).
+    pub principal: Vec<String>,
+    /// Commit sequence.
+    #[serde(default)]
+    pub commit: Vec<CommitIntent>,
+    /// The peer is an embedded principal of the test principal: its chain
+    /// comes first, and the verifier pins every PR it held to its tip, so
+    /// a test-principal coz may name `id = "peer:<n>"` to embed it and be
+    /// signed by a key of the peer.
+    #[serde(default)]
+    pub embedded: bool,
 }
 
 /// Override fields for error tests.
@@ -99,13 +155,19 @@ pub struct OverrideIntent {
     /// Override timestamp (for TimestampPast tests).
     #[serde(default)]
     pub now: Option<i64>,
-    /// Force-inject a `pre` field onto actions (for [data-action-no-pre] tests).
+    /// Force-inject a `pre` field onto actions (for [data-action-pre-ignored] tests).
     #[serde(default)]
     pub inject_pre: Option<bool>,
     /// Bypass the empty commit validation to force an empty commit generation (for
     /// [commit-one-or-more] tests).
     #[serde(default)]
     pub empty_commit: Option<bool>,
+    /// Finalize the commit with each coz as its own transaction, then emit it
+    /// with all its mutation cozies regrouped into one transaction under the
+    /// same signed arrow, the commit transaction last (for tests of a grouping
+    /// the arrow does not cover).
+    #[serde(default)]
+    pub regroup: Option<bool>,
 }
 
 /// An action intent (Level 4).
@@ -158,36 +220,171 @@ pub struct ExpectedAssertions {
     /// Expected `Principal::is_frozen()` (SPEC.md §11.1 `Frozen`).
     #[serde(default)]
     pub frozen: Option<bool>,
+    /// Expected `merge_status` of the test principal (the source) into its
+    /// peer (the target): `None`, `Pending` or `Merged` (SPEC 11.5.1).
+    #[serde(default)]
+    pub merge_status: Option<String>,
 }
 
 impl Intent {
-    /// Load an intent file from TOML.
+    /// Load an intent file from TOML and expand its shorthands.
     pub fn load(path: &Path) -> Result<Self, Error> {
         let content = std::fs::read_to_string(path).map_err(|e| Error::Read {
             path: path.display().to_string(),
             source: e,
         })?;
-        toml::from_str(&content).map_err(|e| Error::TomlParse {
-            path: path.display().to_string(),
-            source: e,
-        })
+        Self::parse(&content, &path.display().to_string())
+    }
+
+    /// Parse TOML text, expanding the numbered-key and repeat shorthands
+    /// to their long form. `origin` names the source in errors.
+    fn parse(text: &str, origin: &str) -> Result<Self, Error> {
+        let toml_err = |source| Error::TomlParse {
+            path: origin.to_string(),
+            source,
+        };
+        let mut doc: toml::Table = toml::from_str(text).map_err(toml_err)?;
+        expand_repeats(&mut doc)?;
+        let mut intent: Self = doc.try_into().map_err(toml_err)?;
+        for test in &mut intent.test {
+            test.principal = expand_principal(&test.name, &test.principal)?;
+            let peer = test.peer.iter_mut().flat_map(|p| p.commit.iter_mut());
+            for coz in test
+                .commit
+                .iter_mut()
+                .chain(peer)
+                .flat_map(|c| c.tx.iter_mut().flatten())
+            {
+                resolve_nonce(&test.name, coz)?;
+            }
+        }
+        Ok(intent)
     }
 }
 
 impl FromStr for Intent {
-    type Err = toml::de::Error;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        toml::from_str(s)
+        Self::parse(s, "<string>")
     }
 }
 
-impl TestIntent {
-    /// Returns true if this test has commits (state-mutating cozies).
-    pub fn has_commits(&self) -> bool {
-        !self.commit.is_empty()
+fn invalid(test: &str, why: String) -> Error {
+    Error::InvalidIntent {
+        message: format!("test '{test}': {why}"),
     }
+}
 
+/// Expand `"#a..#b"` entries (inclusive) to the numbered keys they name.
+fn expand_principal(test: &str, names: &[String]) -> Result<Vec<String>, Error> {
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let Some((lo, hi)) = name.split_once("..") else {
+            out.push(name.clone());
+            continue;
+        };
+        let number = |s: &str| {
+            s.strip_prefix('#')
+                .and_then(|n| n.parse::<u32>().ok())
+                .ok_or_else(|| invalid(test, format!("bad key range '{name}', want \"#a..#b\"")))
+        };
+        let (lo, hi) = (number(lo)?, number(hi)?);
+        if lo > hi {
+            return Err(invalid(test, format!("empty key range '{name}'")));
+        }
+        out.extend((lo..=hi).map(|n| format!("#{n}")));
+    }
+    Ok(out)
+}
+
+/// The nonce value of item `n`: SHA-256 digest-shaped, `n` as big-endian
+/// `u16` then thirty `0xEE` bytes.
+fn nonce_id(n: u32) -> Option<String> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let n = u16::try_from(n).ok()?;
+    let mut raw = [0xEE_u8; 32];
+    raw[..2].copy_from_slice(&n.to_be_bytes());
+    Some(format!(
+        "SHA-256:{}",
+        Base64UrlUnpadded::encode_string(&raw)
+    ))
+}
+
+/// Resolve a `nonce:<n>` target to the `id` it stands for.
+fn resolve_nonce(test: &str, coz: &mut TxIntent) -> Result<(), Error> {
+    let Some(item) = coz.target.as_deref().and_then(|t| t.strip_prefix("nonce:")) else {
+        return Ok(());
+    };
+    let id = item
+        .parse::<u32>()
+        .ok()
+        .and_then(nonce_id)
+        .ok_or_else(|| invalid(test, format!("bad nonce item '{item}', want 0..=65535")))?;
+    coz.target = None;
+    coz.id = Some(id);
+    Ok(())
+}
+
+/// Expand every commit's `repeat = { from, count }` in the raw document.
+///
+/// Done on the TOML tree, before typing, so the typed `CommitIntent` has no
+/// shorthand-only field: the `tx` list is repeated for each item number and
+/// `{n}` in every `target` becomes that number.
+fn expand_repeats(doc: &mut toml::Table) -> Result<(), Error> {
+    use toml::Value;
+
+    let bad = |why: &str| Error::InvalidIntent {
+        message: format!("commit repeat: {why}"),
+    };
+    let tests = doc.get_mut("test").and_then(Value::as_array_mut);
+    let commits = tests
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.get_mut("commit").and_then(Value::as_array_mut))
+        .flatten();
+    for commit in commits {
+        let Some(table) = commit.as_table_mut() else {
+            continue;
+        };
+        let Some(repeat) = table.remove("repeat") else {
+            continue;
+        };
+        let field = |k: &str| {
+            repeat
+                .get(k)
+                .and_then(Value::as_integer)
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(|| bad("want repeat = { from = <u32>, count = <u32> }"))
+        };
+        let (from, count) = (field("from")?, field("count")?);
+        let template = table
+            .get("tx")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut txs = Vec::new();
+        for n in from..from.saturating_add(count) {
+            let mut round = template.clone();
+            for coz in round
+                .iter_mut()
+                .filter_map(Value::as_array_mut)
+                .flatten()
+                .filter_map(Value::as_table_mut)
+            {
+                if let Some(Value::String(t)) = coz.get_mut("target") {
+                    *t = t.replace("{n}", &n.to_string());
+                }
+            }
+            txs.extend(round);
+        }
+        table.insert("tx".to_string(), Value::Array(txs));
+    }
+    Ok(())
+}
+
+impl TestIntent {
     /// Returns true if this test has actions (Level 4 data recording).
     pub fn has_action(&self) -> bool {
         !self.action.is_empty()
@@ -206,165 +403,5 @@ impl TestIntent {
     /// Returns true if this test expects an error.
     pub fn is_error_test(&self) -> bool {
         self.expected.as_ref().is_some_and(|e| e.error.is_some())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SINGLE_COMMIT_INTENT: &str = r#"
-[[test]]
-name = "key_add_increases_count"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [[{typ = "cyphr.me/key/create", now = 1700000000, signer = "golden", target = "key_a"}]]
-
-[test.expected]
-key_count = 2
-level = 3
-"#;
-
-    const MULTI_COMMIT_INTENT: &str = r#"
-[[test]]
-name = "transaction_sequence"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [[{typ = "cyphr.me/key/create", now = 1700000001, signer = "golden", target = "key_a"}]]
-
-[[test.commit]]
-tx = [[{typ = "cyphr.me/key/create", now = 1700000002, signer = "golden", target = "key_b"}]]
-
-[test.expected]
-key_count = 3
-"#;
-
-    const ACTION_INTENT: &str = r#"
-[[test]]
-name = "single_action"
-principal = ["golden"]
-
-[[test.action]]
-typ = "cyphr.me/action"
-now = 1700000001
-signer = "golden"
-msg = "Only action"
-
-[test.expected]
-level = 4
-"#;
-
-    const MULTI_ACTION_INTENT: &str = r#"
-[[test]]
-name = "multi_action"
-principal = ["golden"]
-
-[[test.action]]
-typ = "cyphr.me/action"
-now = 1700000001
-signer = "golden"
-msg = "First"
-
-[[test.action]]
-typ = "cyphr.me/action"
-now = 1700000002
-signer = "golden"
-msg = "Second"
-
-[test.expected]
-level = 4
-"#;
-
-    const GENESIS_ONLY_INTENT: &str = r#"
-[[test]]
-name = "genesis_only"
-principal = ["golden"]
-
-[test.expected]
-key_count = 1
-level = 1
-"#;
-
-    #[test]
-    fn test_parse_single_commit() {
-        let intent = Intent::from_str(SINGLE_COMMIT_INTENT).expect("failed to parse");
-        assert_eq!(intent.test.len(), 1);
-        let test = &intent.test[0];
-        assert_eq!(test.name, "key_add_increases_count");
-        assert_eq!(test.principal, vec!["golden"]);
-        assert!(test.has_commits());
-        assert!(!test.is_genesis_only());
-        assert_eq!(test.commit.len(), 1);
-        assert_eq!(test.commit[0].tx.len(), 1);
-        assert_eq!(test.commit[0].tx[0].len(), 1);
-        let cz = &test.commit[0].tx[0][0];
-        assert_eq!(cz.typ, "cyphr.me/key/create");
-        assert_eq!(cz.now, 1700000000);
-        assert_eq!(cz.signer, "golden");
-        assert_eq!(cz.target.as_deref(), Some("key_a"));
-        let expected = test.expected.as_ref().expect("missing expected");
-        assert_eq!(expected.key_count, Some(2));
-        assert_eq!(expected.level, Some(3));
-    }
-
-    #[test]
-    fn test_parse_multi_commit() {
-        let intent = Intent::from_str(MULTI_COMMIT_INTENT).expect("failed to parse");
-        assert_eq!(intent.test.len(), 1);
-        let test = &intent.test[0];
-        assert!(test.has_commits());
-        assert_eq!(test.commit.len(), 2);
-        assert_eq!(test.commit[0].tx[0][0].now, 1700000001);
-        assert_eq!(test.commit[0].tx[0][0].target.as_deref(), Some("key_a"));
-        assert_eq!(test.commit[1].tx[0][0].now, 1700000002);
-        assert_eq!(test.commit[1].tx[0][0].target.as_deref(), Some("key_b"));
-        let expected = test.expected.as_ref().expect("missing expected");
-        assert_eq!(expected.key_count, Some(3));
-    }
-
-    #[test]
-    fn test_parse_action() {
-        let intent = Intent::from_str(ACTION_INTENT).expect("failed to parse");
-        let test = &intent.test[0];
-        assert!(test.has_action());
-        assert_eq!(test.action.len(), 1);
-        assert_eq!(test.action[0].typ, "cyphr.me/action");
-        assert_eq!(test.action[0].msg.as_deref(), Some("Only action"));
-    }
-
-    #[test]
-    fn test_parse_multi_action() {
-        let intent = Intent::from_str(MULTI_ACTION_INTENT).expect("failed to parse");
-        let test = &intent.test[0];
-        assert!(test.has_action());
-        assert_eq!(test.action.len(), 2);
-        assert_eq!(test.action[0].msg.as_deref(), Some("First"));
-        assert_eq!(test.action[1].msg.as_deref(), Some("Second"));
-    }
-
-    #[test]
-    fn test_parse_genesis_only() {
-        let intent = Intent::from_str(GENESIS_ONLY_INTENT).expect("failed to parse");
-        let test = &intent.test[0];
-        assert!(test.is_genesis_only());
-        assert!(!test.has_commits());
-        assert!(!test.has_action());
-    }
-
-    #[test]
-    fn test_expected_has_sr_field() {
-        let toml_str = r#"
-[[test]]
-name = "with_sr"
-principal = ["golden"]
-
-[test.expected]
-sr = "SHA-256:abc123"
-"#;
-        let intent = Intent::from_str(toml_str).expect("failed to parse");
-        let expected = intent.test[0].expected.as_ref().unwrap();
-        assert_eq!(expected.sr.as_deref(), Some("SHA-256:abc123"));
     }
 }

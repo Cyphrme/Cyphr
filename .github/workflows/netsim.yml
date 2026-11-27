@@ -1,0 +1,73 @@
+name: NETSIM
+
+# The large randomized network scenario: 9 attestors and a witness, 60
+# principals, 600 seeded operations in 6 epochs, at the servers' default
+# limits. Too long for the pull-request gate, which runs the small size on one
+# pinned seed inside `cargo test --workspace`. Not gating: a red run is a
+# finding to read, and its seed is added to the gate or filed.
+on:
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: Seed to run (a failing seed from an earlier run replays here)
+        required: false
+        type: string
+  schedule:
+    # Mondays, 03:17 UTC.
+    - cron: "17 3 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  large:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    defaults:
+      run:
+        working-directory: rs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rs
+      - name: Pick the seed
+        # A new seed each scheduled run, so the weekly runs explore.
+        env:
+          INPUT_SEED: ${{ inputs.seed }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          seed="${INPUT_SEED:-$RUN_ID}"
+          if ! [[ "$seed" =~ ^[0-9]+$ ]]; then
+            echo "seed must be decimal digits, got: $seed" >&2
+            exit 1
+          fi
+          echo "CYPHR_SCENARIO_SEED=$seed" >> "$GITHUB_ENV"
+      # The scenarios drive the shipped server build, which never reads
+      # `CYPHR_KEPT_SHADOW`. This lane alone builds the servers with the
+      # engine's test switches and hands them to the harness.
+      - name: Build the servers with the kept-state shadow check
+        run: cargo build -p cyphr-server -p cyphr-cli --features cyphr-storage/test-utils
+      - name: Run the large network
+        env:
+          CYPHR_NETSIM_SIZE: large
+          CYPHR_SERVER_BIN: ${{ github.workspace }}/rs/target/debug/cyphr-server
+          CYPHR_CLI_BIN: ${{ github.workspace }}/rs/target/debug/cyphr
+          # Every server the harness spawns inherits this: each use of a
+          # kept state is checked against a cold replay, so a kept-state
+          # divergence fails the run instead of passing silently.
+          CYPHR_KEPT_SHADOW: "1"
+        run: cargo test -p cyphr-scenarios --test netsim netsim_network -- --nocapture
+      # The harness keeps the op log and every peer's log on a failure; the
+      # op log replays the run with CYPHR_NETSIM_REPLAY.
+      - name: Keep the op log and peer logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: netsim-${{ env.CYPHR_SCENARIO_SEED }}
+          path: |
+            /tmp/cyphr-netsim-*
+            /tmp/cyphr-scenario-logs-*
+          if-no-files-found: warn

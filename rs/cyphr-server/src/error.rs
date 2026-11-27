@@ -11,6 +11,9 @@ use axum::response::{IntoResponse, Response};
 pub struct AppError {
     status: StatusCode,
     message: String,
+    /// A stable, machine-readable refusal kind (snake_case) a client may
+    /// match on instead of the message; `None` where the status says it all.
+    kind: Option<&'static str>,
 }
 
 impl AppError {
@@ -19,6 +22,7 @@ impl AppError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: msg.into(),
+            kind: None,
         }
     }
 
@@ -27,6 +31,7 @@ impl AppError {
         Self {
             status: StatusCode::NOT_FOUND,
             message: msg.into(),
+            kind: None,
         }
     }
 
@@ -35,6 +40,7 @@ impl AppError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: msg.into(),
+            kind: None,
         }
     }
 
@@ -43,6 +49,17 @@ impl AppError {
         Self {
             status: StatusCode::CONFLICT,
             message: msg.into(),
+            kind: None,
+        }
+    }
+
+    /// 422 Unprocessable Entity: a well-formed request for what the log
+    /// does not hold.
+    pub fn unprocessable(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: msg.into(),
+            kind: None,
         }
     }
 
@@ -57,6 +74,7 @@ impl AppError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: msg.into(),
+            kind: None,
         }
     }
 
@@ -65,6 +83,7 @@ impl AppError {
         Self {
             status: StatusCode::FORBIDDEN,
             message: msg.into(),
+            kind: None,
         }
     }
 
@@ -79,26 +98,40 @@ impl AppError {
         Self {
             status: StatusCode::NOT_IMPLEMENTED,
             message: msg.into(),
+            kind: None,
         }
     }
 
-    /// Map an observation-store failure to a 500. The store is durable
-    /// server infrastructure, so a failure to read or write it is a server
-    /// fault, never a client error. The specific cause is logged, not
-    /// leaked to the client.
-    pub fn observation(err: crate::observation::ObservationError) -> Self {
-        tracing::error!(error = %err, "naked-revoke observation store error");
-        Self::internal("observation store error")
+    /// The operator's ceiling on the naked-revoke death set refuses a new
+    /// record: storage pressure relieved by refusal (507), logged as a
+    /// warning, not a fault.
+    pub fn death_set_full(ceiling: u64) -> Self {
+        let message = format!("death set is full ({ceiling} keys)");
+        tracing::warn!(error = %message, "naked revoke refused: death set at its ceiling");
+        Self {
+            status: StatusCode::INSUFFICIENT_STORAGE,
+            message,
+            kind: None,
+        }
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // The client is told only the message; a server fault is otherwise
+        // invisible to the operator.
+        if self.status.is_server_error() {
+            tracing::error!(status = %self.status, error = %self.message, "server error");
+        }
         let now = crate::auth::server_now();
-        let body = crate::envelope::Envelope::unsigned(serde_json::json!({
+        let mut payload = serde_json::json!({
             "error": self.message,
             "now": now,
-        }));
+        });
+        if let Some(kind) = self.kind {
+            payload["kind"] = kind.into();
+        }
+        let body = crate::envelope::Envelope::unsigned(payload);
         (self.status, axum::Json(body)).into_response()
     }
 }
@@ -120,15 +153,27 @@ where
             Ok(value) => Ok(Self(value.0)),
             Err(rejection) => {
                 let status = rejection.status();
-                let msg = rejection.body_text();
+                // axum's text for a body that parses but does not fit the type
+                // quotes the offending value; only a fixed sentence goes back.
+                let msg = match &rejection {
+                    axum::extract::rejection::JsonRejection::JsonDataError(_)
+                    | axum::extract::rejection::JsonRejection::JsonSyntaxError(_) => {
+                        "request body is not valid JSON of the expected shape".to_string()
+                    },
+                    _ => rejection.body_text(),
+                };
                 if status == StatusCode::PAYLOAD_TOO_LARGE || msg.contains("length limit exceeded")
                 {
                     Err(AppError {
                         status: StatusCode::PAYLOAD_TOO_LARGE,
                         message: msg,
+                        kind: Some("too_large"),
                     })
                 } else {
-                    Err(AppError::bad_request(msg))
+                    Err(AppError {
+                        kind: Some("malformed_body"),
+                        ..AppError::bad_request(msg)
+                    })
                 }
             },
         }
@@ -153,6 +198,7 @@ impl AppError {
     /// Variant mapping:
     /// - `NotFound` → 404
     /// - `InvalidInput`, `MalformedBlob` → 400
+    /// - `Ambiguous` → 409 Conflict (the key names several principals)
     /// - `Protocol(cyphr::Error::StateMismatch | cyphr::Error::CommitMismatch)` → 409 Conflict (the
     ///   submitted commit's claimed predecessor state no longer matches the principal's actual
     ///   current state — the signature that a concurrent writer already claimed this principal's
@@ -161,12 +207,16 @@ impl AppError {
     ///   surface through the protocol layer, not a genuine protocol violation)
     /// - `Protocol` (any other wrapped [`cyphr::Error`]) → 422 Unprocessable Entity (valid JSON,
     ///   invalid protocol)
-    /// - `BlobStore`, `Indexer`, `Load`, `Storage` → 500
+    /// - `Errored` → 423 Locked (the principal is in Error, SPEC 15.5: nothing but a fork
+    ///   resolution is processed until it is resolved)
+    /// - `BlobStore`, `Indexer`, `Load`, `LegacyManifest`, `Storage` → 500
     pub fn engine(err: cyphr_storage::engine::EngineError) -> Self {
         use cyphr_storage::engine::EngineError;
 
-        match &err {
+        let kind = Self::engine_kind(&err);
+        let mapped = match &err {
             EngineError::NotFound(_) => Self::not_found(err.to_string()),
+            EngineError::Ambiguous(_) => Self::conflict(err.to_string()),
             EngineError::InvalidInput(_) | EngineError::MalformedBlob(_) => {
                 Self::bad_request(err.to_string())
             },
@@ -177,17 +227,63 @@ impl AppError {
                 tracing::error!(error = %err, "internal engine error");
                 Self::internal("internal storage error")
             },
+            EngineError::BranchLimit { .. } => Self::conflict(err.to_string()),
+            // The operator's storage ceiling: pressure relieved by refusal,
+            // as the dead-key ceiling is (507).
+            EngineError::StorageFull { .. } => {
+                tracing::warn!(error = %err, "write refused: storage ceiling reached");
+                Self {
+                    status: StatusCode::INSUFFICIENT_STORAGE,
+                    message: err.to_string(),
+                    kind: None,
+                }
+            },
+            // Key death at admission (SPEC 6.4) is an auth refusal, never a
+            // stale-predecessor 409.
+            EngineError::DeadKey { .. } => Self::unauthorized("push signing key was revoked"),
+            EngineError::Errored { .. } => Self {
+                status: StatusCode::LOCKED,
+                message: err.to_string(),
+                kind: None,
+            },
             EngineError::Protocol(_) => Self {
                 status: StatusCode::UNPROCESSABLE_ENTITY,
                 message: err.to_string(),
+                kind: None,
             },
-            EngineError::BlobStore(_)
-            | EngineError::Indexer(_)
-            | EngineError::Load(_)
-            | EngineError::Storage(_) => {
+            // `BlobStore`, `Indexer`, `Load`, `LegacyManifest`, `Storage`, and any
+            // variant added later (the enum is non-exhaustive): an unclassified
+            // engine failure is the server's, never the caller's.
+            _ => {
                 tracing::error!(error = %err, "internal engine error");
                 Self::internal("internal storage error")
             },
+        };
+        Self { kind, ..mapped }
+    }
+
+    /// The machine-readable kind of a refusal the caller can act on, so a
+    /// client tells a state mismatch from a reused coz or a malformed one
+    /// without reading the message. `None` for a server fault: its cause
+    /// is the server's, not the caller's to branch on.
+    fn engine_kind(err: &cyphr_storage::engine::EngineError) -> Option<&'static str> {
+        use cyphr_storage::engine::EngineError;
+
+        match err {
+            EngineError::NotFound(_) => Some("not_found"),
+            EngineError::Ambiguous(_) => Some("ambiguous"),
+            EngineError::InvalidInput(_) => Some("invalid_input"),
+            EngineError::MalformedBlob(_) => Some("malformed_blob"),
+            EngineError::BranchLimit { .. } => Some("branch_limit"),
+            EngineError::StorageFull { .. } => Some("storage_full"),
+            EngineError::Errored { .. } => Some("errored"),
+            EngineError::Protocol(cyphr::Error::Storage(_)) => None,
+            EngineError::Protocol(cyphr::Error::StateMismatch) => Some("state_mismatch"),
+            EngineError::Protocol(cyphr::Error::CommitMismatch) => Some("commit_mismatch"),
+            EngineError::Protocol(cyphr::Error::CozReuse) => Some("coz_reuse"),
+            EngineError::Protocol(cyphr::Error::GenesisIncomplete) => Some("genesis_incomplete"),
+            EngineError::Protocol(_) => Some("protocol"),
+            _ => None,
         }
     }
 }
@@ -198,24 +294,13 @@ mod tests {
 
     use super::*;
 
+    /// Backs: a stale-`pre` push is a 409 on the wire (SPEC 2.3.2).
+    /// Unit: the HTTP path is `s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put`; this
+    /// pins the status mapping alone.
     #[test]
     fn state_mismatch_maps_to_conflict() {
         let resp =
             AppError::engine(EngineError::Protocol(cyphr::Error::StateMismatch)).into_response();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
-    }
-
-    #[test]
-    fn commit_mismatch_maps_to_conflict() {
-        let resp =
-            AppError::engine(EngineError::Protocol(cyphr::Error::CommitMismatch)).into_response();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-    }
-
-    #[test]
-    fn other_protocol_errors_remain_unprocessable_entity() {
-        let resp =
-            AppError::engine(EngineError::Protocol(cyphr::Error::InvalidSignature)).into_response();
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

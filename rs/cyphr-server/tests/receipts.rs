@@ -9,7 +9,7 @@
 //!
 //! The spine test, `offline_verification_replays_chain_and_verifies_commit_receipt`,
 //! proves offline verification end-to-end: a client pins the PG from `/server`,
-//! reconstructs `Genesis::Explicit` from the published genesis-key hint,
+//! reconstructs `Genesis::Disclosed` from the published genesis-key hint,
 //! replays the server's own chain (fetched via the ordinary public
 //! `/patch` surface) into a second, independent local engine, and verifies
 //! the receipt's signature with plain `coz::verify_json` -- never touching
@@ -26,22 +26,10 @@ use cyphr_server::build_router;
 mod common;
 
 use common::{
-    attestor_server, build_genesis_push_body, envelope_payload, get_json, keyed_appstate,
-    keyless_server, load_pool, post_json, write_signing_key,
+    attestor_server, build_genesis_push_body, build_genesis_push_body_with, envelope_payload,
+    genesis_push_id, get_json, golden_principal_id, keyed_appstate, load_pool, post_json,
+    write_signing_key,
 };
-
-/// Render a distinct, valid genesis-identifier string from a repeated
-/// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
-/// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
-/// not a principal's genesis identifier -- `docs/specs/receipts.md`).
-/// `receipt::tip_report`/`commit_receipt` refuse a malformed `pr`, so
-/// these principal identifiers must genuinely parse. Named
-/// `principal_digest` (not `digest`) to stay distinct from the TAGGED
-/// digest helper other test files use for `commit_id`/`roots` fixtures --
-/// same shape, different wire form, never interchangeable.
-fn principal_digest(byte: u8) -> String {
-    Base64UrlUnpadded::encode_string(&[byte; 32])
-}
 
 /// Assert `body` carries a signed statement stamped `expected_typ`, whose
 /// signature verifies against `identity`'s key. Returns `(payload,
@@ -100,10 +88,10 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x01);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = golden_principal_id(&pool).await;
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_000;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
     let (push_status, push_envelope) = post_json(app, "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
@@ -114,7 +102,8 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     // Cross-check the claims against the push response's OWN payload,
     // claim-by-claim -- the payload now carries the accepted commit's
     // facts directly, so no follow-up read is needed to verify them.
-    assert_eq!(claims["pr"], serde_json::json!(principal_id));
+    // The receipt names the principal by its labelled id.
+    assert_eq!(claims["pg"], serde_json::json!(principal_id.to_string()));
     assert_eq!(claims["sequence"], payload["sequence"]);
     assert_eq!(claims["commit_id"], payload["commit_id"]);
     assert_eq!(claims["roots"]["pr"], payload["roots"]["pr"]);
@@ -131,21 +120,22 @@ async fn attestor_tip_response_carries_signed_tip_report() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x02);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = golden_principal_id(&pool).await;
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_100;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
 
     let (tip_status, tip_envelope) =
-        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+        get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
 
     let (payload, claims) =
         assert_signed_envelope_claims(&tip_envelope, "cyphr-server/receipt/tip", &identity);
 
-    assert_eq!(claims["pr"], serde_json::json!(principal_id));
+    // The receipt names the principal by its labelled id.
+    assert_eq!(claims["pg"], serde_json::json!(principal_id.to_string()));
     assert_eq!(
         claims["sequence"],
         serde_json::json!(payload["commit_count"].as_u64().unwrap() - 1)
@@ -160,29 +150,98 @@ async fn attestor_tip_response_carries_signed_tip_report() {
 }
 
 // ========================================================================
-// Non-attestor configurations stay honestly unsigned (c-attestor-only-signs)
+// #147: absent cr is a sentinel, not a type, at the receipt origin
 // ========================================================================
 
-/// A keyless server's push and tip responses stay explicitly unsigned --
-/// byte-compatible with the pre-receipts behavior the keyless matrix
-/// pins.
+/// (#147, GREEN under the landed fix): `receipt::Roots.cr` was a plain
+/// `String`, and storage's own convention for "no commit root yet" -- a
+/// principal that is key-established but has not finalized a data commit
+/// (`rs/cyphr-storage/src/engine/mod.rs`'s `roots_of`:
+/// `DerivedRoots.cr: String::new()` when `principal.cr()` is `None`) -- was
+/// a bare empty string, with nothing in the TYPE distinguishing it from
+/// "the empty digest." The consuming side already fixed this in its own
+/// model (`receipt::TipReportRoots.cr: Option<TaggedDigest>`,
+/// `rs/cyphr-server/src/receipt.rs`) -- the defect was that the origin type
+/// a receipt is actually SIGNED from wasn't. It now is: `Roots.cr` is
+/// `Option<String>`, and `roots.cr = ""` (this test's original RED
+/// construction) no longer even compiles -- the type itself closes the
+/// ambiguity this test used to have to catch behaviorally.
+///
+/// Constructs `Roots` with `cr: None`, the typed counterpart of what
+/// `roots_of`'s own no-commit-yet branch used to hand `sign_receipt`
+/// as `cr: String::new()` -- the routes.rs call sites now perform that
+/// empty-string-to-`None` conversion at the boundary (`routes.rs`'s
+/// `sign_tip_attestation`/`push`), so this test exercises the receipt
+/// layer's own half of the contract directly, the same no-live-server,
+/// no-push pattern the golden-vector tests below already use for `Roots`.
+/// (A genuinely empty `cr` was checked NOT to be reachable via an ordinary
+/// genesis push in this codebase today: `PrincipalState::stage_commit`
+/// unconditionally appends a leaf and writes a real `cr` for every
+/// finalized commit, key-only or not -- confirmed empirically while
+/// drafting this suite. The one reachable path found,
+/// `StorageEngine::heal`'s mock-genesis reindex recovery at
+/// `rs/cyphr-storage/src/engine/mod.rs:1426-1441`, requires fabricating
+/// legacy raw blob-store content and is out of this node's reasonable
+/// test surface; see this node's test deposit.)
+///
+/// Pins the stronger, wire-visible reading of this node's own
+/// `ac-defects-closed` ("genesis receipts carry absent cr, not empty
+/// string"): the signed claim is JSON `null`, never `""`.
+///
+/// RESOLVED (was flagged, not silently assumed): issue #147's own text
+/// permits the weaker reading -- keep `""` on the wire, change only
+/// `Roots.cr`'s Rust-level type -- but the implementer ruled for the
+/// stronger, wire-visible reading (a receipt is signed and verified
+/// offline by third parties; a sentinel a verifier cannot distinguish
+/// from "genuinely empty" without out-of-band knowledge is exactly the
+/// defect class #147 exists to close). `Roots.cr: Option<String>`
+/// serializes `None` to JSON `null` ([`cyphr_server::receipt::Roots`]),
+/// and the wire-reading half of the contract
+/// (`receipt::TipReport::parse`) now accepts `null` as absence and
+/// rejects `""` as a malformed digest like any other non-digest string --
+/// this is a genuine wire-shape delta from what existed before this node,
+/// reported here per this node's IBC `reserved` clause rather than landed
+/// silently.
 #[tokio::test]
-async fn keyless_push_and_tip_responses_stay_unsigned() {
-    let pool = load_pool();
-    let principal_id = "receipt-keyless-principal";
-    let now = 1_700_000_200;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+async fn commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string() {
+    let (_dir, identity) = fixed_identity();
+    let roots = cyphr_server::receipt::Roots {
+        cr: None, // the typed counterpart of storage's former "" sentinel
+        ..vector_roots()
+    };
+    let coz = cyphr_server::receipt::commit_receipt(
+        &identity,
+        1_700_000_000,
+        &vector_pr(),
+        0,
+        VECTOR_COMMIT_ID,
+        &roots,
+    )
+    .await
+    .expect("an absent cr must still compose and sign -- absence is accepted, not refused");
 
-    let (state, _dir) = keyless_server();
-    let app = build_router(state);
-    let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
-    assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
-    envelope_payload(&push_envelope);
+    // Positive control: the sibling `pr` root is unaffected -- proves
+    // this genuinely reached the roots claim rather than being refused
+    // earlier for an unrelated reason.
+    assert_eq!(
+        coz.pay["roots"]["pr"],
+        serde_json::json!(roots.pr),
+        "positive control: pr must still be the real digest supplied: {:?}",
+        coz.pay
+    );
 
-    let (tip_status, tip_envelope) = get_json(app, &format!("/tip?pr={principal_id}")).await;
-    assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
-    envelope_payload(&tip_envelope);
+    assert_eq!(
+        coz.pay["roots"]["cr"],
+        serde_json::Value::Null,
+        "a receipt signed from an absent cr must carry typed absence (JSON null), never the \
+         empty-string sentinel: {:?}",
+        coz.pay
+    );
 }
+
+// ========================================================================
+// Non-attestor configurations stay honestly unsigned (c-attestor-only-signs)
+// ========================================================================
 
 /// A keyed-but-unbootstrapped server (only reachable when the router is
 /// built without `serve()`, e.g. this test) is not yet an attestor: no
@@ -200,16 +259,17 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
     );
 
     let pool = load_pool();
-    let principal_id = "receipt-unbootstrapped-principal";
+    let principal_id_owned = golden_principal_id(&pool).await;
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_300;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
     let app = build_router(Arc::new(state));
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
     envelope_payload(&push_envelope);
 
-    let (tip_status, tip_envelope) = get_json(app, &format!("/tip?pr={principal_id}")).await;
+    let (tip_status, tip_envelope) = get_json(app, &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     envelope_payload(&tip_envelope);
 }
@@ -219,7 +279,7 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
 // ========================================================================
 
 /// An attestor's discovery payload carries the genesis-key fields the
-/// offline verifier needs to reconstruct `Genesis::Explicit`, distinct
+/// offline verifier needs to reconstruct `Genesis::Disclosed`, distinct
 /// from the current-key fields already published.
 #[tokio::test]
 async fn attestor_discovery_payload_carries_genesis_key_fields() {
@@ -256,7 +316,7 @@ async fn attestor_discovery_payload_carries_genesis_key_fields() {
 // Offline verification: this section's spine test
 // ========================================================================
 
-/// A client pins the PG from `/server`, reconstructs `Genesis::Explicit`
+/// A client pins the PG from `/server`, reconstructs `Genesis::Disclosed`
 /// from the published genesis-key hint, replays the server's own chain
 /// (fetched via the ordinary public `/patch` surface) into a SECOND,
 /// independent local engine, and verifies a push receipt's signature with
@@ -268,10 +328,10 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x03);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = golden_principal_id(&pool).await;
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_400;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
     assert_eq!(
@@ -284,29 +344,30 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     // Step 1: pin the PG and the genesis-key hint from discovery.
     let (_, discovery_envelope) = get_json(app.clone(), "/server").await;
     let discovery = &discovery_envelope["payload"];
-    let pinned_pg = discovery["pg"].as_str().expect("attestor pg").to_string();
+    let pinned_pg: cyphr::PrincipalGenesis = discovery["pg"]
+        .as_str()
+        .expect("attestor pg")
+        .parse()
+        .expect("a labelled attestor pg");
     let genesis = &discovery["genesis"];
-    let genesis_key = cyphr::Key {
-        alg: genesis["alg"].as_str().expect("genesis alg").to_string(),
-        tmb: coz::Thumbprint::from_bytes(
+    let genesis_key = cyphr::Key::new(
+        genesis["alg"].as_str().expect("genesis alg").to_string(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(genesis["tmb"].as_str().expect("genesis tmb"))
                 .expect("valid genesis tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(genesis["pub"].as_str().expect("genesis pub"))
+        Base64UrlUnpadded::decode_vec(genesis["pub"].as_str().expect("genesis pub"))
             .expect("valid genesis pub base64"),
-        first_seen: genesis["first_seen"].as_i64().expect("genesis first_seen"),
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(genesis["first_seen"].as_i64().expect("genesis first_seen"));
 
     // Step 2: the genesis key is a HINT, made trustless by re-deriving the
     // PG from it alone -- never trusting discovery's `pg` claim directly.
-    let client = cyphr::Principal::explicit(vec![genesis_key.clone()])
-        .expect("the published genesis key reconstructs an explicit genesis");
-    let derived_pg = client
-        .pr_tagged()
-        .expect("pr_tagged for the reconstructed genesis");
+    let client = cyphr::Principal::implicit(genesis_key.clone())
+        .await
+        .expect("the published genesis key reconstructs the genesis");
+    let derived_pg = client.pr_id().expect("pr_id for the reconstructed genesis");
     assert_eq!(
         derived_pg, pinned_pg,
         "the genesis key must derive the pinned PG"
@@ -315,7 +376,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     // Step 3: fetch the server's own chain via the ordinary public /patch
     // surface -- the server is an ordinary principal in its own store.
     let (patch_status, patch_envelope) =
-        get_json(app.clone(), &format!("/patch?pr={pinned_pg}")).await;
+        get_json(app.clone(), &format!("/patch?pg={pinned_pg}")).await;
     assert_eq!(patch_status, StatusCode::OK, "{patch_envelope:?}");
     let entries = patch_envelope["payload"]["entries"]
         .as_array()
@@ -332,21 +393,13 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
         cyphr_storage::index::MemoryIndexer::new(),
     );
     for entry in entries {
-        let blobs: Vec<Vec<u8>> = entry["blobs"]
-            .as_array()
-            .expect("entry blobs")
-            .iter()
-            .map(|b| {
-                Base64UrlUnpadded::decode_vec(b.as_str().expect("blob is base64url string"))
-                    .expect("valid blob base64")
-            })
-            .collect();
-        let blob_refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        let blobs: cyphr::replay::WireBundle =
+            serde_json::from_value(entry.clone()).expect("entry bundle");
         local_engine
             .submit_commit(
                 &pinned_pg,
-                Some(cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()])),
-                &blob_refs,
+                Some(cyphr_storage::Genesis::Disclosed(vec![genesis_key.clone()])),
+                &blobs,
             )
             .await
             .expect("replay a server-chain commit into the local engine");
@@ -355,7 +408,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     let replayed = local_engine
         .load_principal(
             &pinned_pg,
-            cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()]),
+            cyphr_storage::Genesis::Disclosed(vec![genesis_key.clone()]),
         )
         .await
         .expect("load the fully replayed principal");
@@ -383,7 +436,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
             .expect("valid receipt sig base64");
     let pay_json = serde_json::to_vec(&receipt_coz["pay"]).expect("pay re-serializes");
     assert_eq!(
-        coz::verify_json(&pay_json, &receipt_sig, receipt_alg, &active_key.pub_key),
+        coz::verify_json(&pay_json, &receipt_sig, receipt_alg, active_key.pub_key()),
         Some(true),
         "the receipt signature must verify against the replay-derived active key"
     );
@@ -393,23 +446,22 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
 // Golden vectors: byte-exact receipt payloads (ac-vectors)
 // ========================================================================
 
-/// A fixed principal genesis id, reused from the token/envelope vectors
-/// for a stable, recognizable payload -- the same bytes (0x01..0x20),
-/// BARE: a receipt's top-level `pr` is the attested principal's genesis
-/// identifier, SPEC §2.2.3's DEFAULT (untagged) identifier form, not the
-/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption --
-/// the SAME untagged form `token.rs`/`envelope_vectors.rs`'s
-/// `pr`/`principal_id` claims already use.
-const VECTOR_PR: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+/// A fixed principal genesis id (digest bytes 0x01..0x20), reused from the
+/// token/envelope vectors for a stable, recognizable payload. Signed in
+/// its labelled `SHA-256:<digest>` spelling.
+fn vector_pr() -> cyphr::PrincipalGenesis {
+    cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, (1u8..=32).collect())
+        .expect("32 bytes is SHA-256's digest length")
+}
 
 const VECTOR_COMMIT_ID: &str = "SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao";
 
 fn vector_roots() -> cyphr_server::receipt::Roots {
     cyphr_server::receipt::Roots {
         pr: "SHA-256:GOJBQfC618_bQh9QHQ5ZCWwH1I6tbtDx9-RP1i6Rcjc".to_string(),
-        sr: "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string(),
-        ar: "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string(),
-        cr: "SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao".to_string(),
+        sr: Some("SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string()),
+        ar: Some("SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string()),
+        cr: Some("SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao".to_string()),
     }
 }
 
@@ -427,6 +479,7 @@ fn fixed_identity() -> (tempfile::TempDir, ServerIdentity) {
     let file = serde_json::json!({
         "alg": coz::Alg::Ed25519.name(),
         "pub_key": Base64UrlUnpadded::encode_string(&pub_key),
+        "v": 1,
         "prv_key": Base64UrlUnpadded::encode_string(&prv_key),
     });
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
@@ -447,17 +500,20 @@ fn golden(name: &str) -> String {
         .to_string()
 }
 
-#[test]
-fn commit_receipt_matches_golden_vector() {
+/// Backs: the commit receipt wire bytes are pinned by a golden vector
+/// (ac-commit-receipt); a field-order or encoding drift turns it red.
+#[tokio::test]
+async fn commit_receipt_matches_golden_vector() {
     let (_dir, identity) = fixed_identity();
     let coz = cyphr_server::receipt::commit_receipt(
         &identity,
         1_700_000_000,
-        VECTOR_PR,
+        &vector_pr(),
         0,
         VECTOR_COMMIT_ID,
         &vector_roots(),
     )
+    .await
     .expect("compose and sign commit receipt");
 
     let wire = serde_json::to_string(&coz).unwrap();
@@ -471,19 +527,22 @@ fn commit_receipt_matches_golden_vector() {
     );
 }
 
-#[test]
-fn tip_report_matches_golden_vector() {
+/// Backs: the tip report wire bytes are pinned by a golden vector
+/// (ac-tip-report); a field-order or encoding drift turns it red.
+#[tokio::test]
+async fn tip_report_matches_golden_vector() {
     let (_dir, identity) = fixed_identity();
     let coz = cyphr_server::receipt::tip_report(
         &identity,
         1_700_000_000,
-        VECTOR_PR,
+        &vector_pr(),
         0,
         VECTOR_COMMIT_ID,
         &vector_roots(),
         1,
         1_700_000_000,
     )
+    .await
     .expect("compose and sign tip report");
 
     let wire = serde_json::to_string(&coz).unwrap();
@@ -495,4 +554,34 @@ fn tip_report_matches_golden_vector() {
         Some(true),
         "the golden tip report must itself verify against its fixed key"
     );
+}
+
+/// Every id the push edge accepts gets its receipt signed after the commit
+/// lands, whatever hash family the id is in. The attestor's key is Ed25519
+/// (SHA-512); a principal on an ES256 key has a SHA-256 id, not in the
+/// server key's family, and so has one whose keys span both families. The receipt's
+/// `pg` is the labelled id, so no width has to match the signer's.
+#[tokio::test]
+async fn receipt_is_signed_for_an_id_of_any_hash_family() {
+    let pool = load_pool();
+    for (genesis, second, family) in [
+        ("golden", "key_a", "SHA-256"),
+        // Keys of two families: the PG holds both variants, the id is the
+        // first, and the server key's own family (SHA-512) is the second.
+        ("eve_ed25519", "key_a", "SHA-256"),
+    ] {
+        let (state, identity, _dir) = attestor_server().await;
+        let app = build_router(state);
+        let id = genesis_push_id(&pool, genesis, second).await;
+        assert!(
+            id.to_string().starts_with(&format!("{family}:")),
+            "premise: {genesis}'s id is in {family}: {id}"
+        );
+        let body = build_genesis_push_body_with(&pool, genesis, second, &id, 1_700_000_000).await;
+        let (status, envelope) = post_json(app, "/push", body).await;
+        assert_eq!(status, StatusCode::CREATED, "{genesis}: {envelope:?}");
+        let (_, claims) =
+            assert_signed_envelope_claims(&envelope, "cyphr-server/receipt/commit", &identity);
+        assert_eq!(claims["pg"], serde_json::json!(id.to_string()), "{genesis}");
+    }
 }

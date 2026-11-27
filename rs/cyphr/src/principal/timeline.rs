@@ -1,0 +1,226 @@
+//! The key timeline table (SPEC 6.5): which key was authorized at which
+//! timestamp, derived from the commit chain and the naked revokes a
+//! verifier holds, with the spans the principal was frozen and the time it
+//! was deleted, so a data action is judged at its own `now`.
+
+use std::collections::BTreeMap;
+
+use coz::Thumbprint;
+use indexmap::IndexMap;
+
+use crate::error::{Error, Result};
+use crate::key::Key;
+use crate::revoke::Cutoff;
+
+/// Every key's active periods (SPEC 6.2: a key may have several). A
+/// period opens at the commit that leaves the key in KT and closes at the
+/// commit that takes it out, each dated by the commit's `now`, or at a
+/// naked revoke's cutoff (SPEC 6.4).
+///
+/// The periods are those of the commits alone, and a naked revoke is held
+/// beside them and applied when a period is read. So the timeline is the
+/// same whether a revoke arrived before a later commit (a live
+/// principal) or after every commit (a replay), and a state kept past a
+/// revoke equals the replay of its history.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct KeyTimeline {
+    periods: Vec<Period>,
+    /// Naked revokes by key: each takes effect from the cutoff it was
+    /// noted with.
+    revoked_from: BTreeMap<String, Cutoff>,
+    /// The spans the principal was frozen (SPEC 14.9), by commit `now`.
+    frozen: Vec<(i64, Option<i64>)>,
+    /// The `now` of the commit that deleted the principal (SPEC 11.4).
+    deleted_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Period {
+    key: Key,
+    from: i64,
+    until: Option<i64>,
+    revoked: bool,
+    /// Position (0-indexed) of the commit that opened the period.
+    from_at: u64,
+    /// Position of the commit that closed it.
+    until_at: Option<u64>,
+}
+
+impl KeyTimeline {
+    /// Record a commit dated `now` that leaves `active` in KT and `revoked`
+    /// revoked: close the open period of every key it removed, open one
+    /// for every key it added. Naked revokes are not applied here: see the
+    /// type's docs.
+    ///
+    /// Returns the keys it made known (a key's first period) beside it: a
+    /// verdict of [`Self::authorize_by_commits`] or [`Self::open_at`] can
+    /// differ from what it was only at `now` or later, except for the
+    /// actions of those keys, since a known key judges every earlier `now`
+    /// by its periods where an unknown one is left to the embedded
+    /// principals.
+    pub(crate) fn record_commit(
+        &mut self,
+        active: &IndexMap<String, Key>,
+        revoked: &IndexMap<String, Key>,
+        (frozen, deleted): (bool, bool),
+        now: i64,
+        position: u64,
+    ) -> Vec<String> {
+        let mut made_known = Vec::new();
+        match (frozen, self.frozen.last_mut()) {
+            (true, Some((_, None))) | (false, None | Some((_, Some(_)))) => {},
+            (true, _) => self.frozen.push((now, None)),
+            (false, Some((_, until @ None))) => *until = Some(now),
+        }
+        if deleted && self.deleted_at.is_none() {
+            self.deleted_at = Some(now);
+        }
+        for p in self.periods.iter_mut().filter(|p| p.until.is_none()) {
+            let tmb = p.key.tmb().to_b64();
+            if !active.contains_key(&tmb) {
+                p.until = Some(now);
+                p.until_at = Some(position);
+                p.revoked = revoked.contains_key(&tmb);
+            }
+        }
+        for key in active.values() {
+            if self.open(key.tmb()).is_none() {
+                if !self.knows(key.tmb()) {
+                    made_known.push(key.tmb().to_b64());
+                }
+                self.periods.push(Period {
+                    key: key.clone(),
+                    from: now,
+                    until: None,
+                    revoked: false,
+                    from_at: position,
+                    until_at: None,
+                });
+            }
+        }
+        made_known
+    }
+
+    /// A naked revoke of `tmb` cutting the key off at `cutoff` (SPEC 6.4;
+    /// the caller's choice, a witness's receipt time): every period of the
+    /// key ends at `cutoff` at the latest.
+    pub(crate) fn revoke(&mut self, tmb: &Thumbprint, cutoff: i64) {
+        let at = self
+            .revoked_from
+            .entry(tmb.to_b64())
+            .or_insert(Cutoff(cutoff));
+        *at = at.earliest(Cutoff(cutoff));
+    }
+
+    /// `p` as a naked revoke leaves it, if `cut` applies them: ended at the
+    /// revoke's cutoff, no earlier than it began, if it would run past it.
+    fn effective(&self, p: &Period, cut: bool) -> (Option<i64>, bool) {
+        match self.revoked_from.get(&p.key.tmb().to_b64()) {
+            Some(&cutoff) if cut && cutoff.runs_past(p.until) => {
+                (Some(cutoff.end_of_period_from(p.from)), true)
+            },
+            _ => (p.until, p.revoked),
+        }
+    }
+
+    /// Whether `tmb` authorized a signature dated `now`: `None` if it was
+    /// never a key of this principal; otherwise the key if a commit dated
+    /// at or before `now` left it in KT and nothing removed it by then.
+    /// A signature dated exactly at a removal is judged after it; one
+    /// dated before genesis finds no key.
+    ///
+    /// # Errors
+    ///
+    /// `KeyRevoked` if a revoke took the key out at or before `now`;
+    /// `UnknownKey` if it was not active at `now` otherwise.
+    pub(crate) fn authorize(&self, tmb: &Thumbprint, now: i64) -> Option<Result<&Key>> {
+        self.authorize_with(tmb, now, true)
+    }
+
+    /// [`Self::authorize`] by the commits alone, naked revokes left out.
+    pub(crate) fn authorize_by_commits(&self, tmb: &Thumbprint, now: i64) -> Option<Result<&Key>> {
+        self.authorize_with(tmb, now, false)
+    }
+
+    fn authorize_with(&self, tmb: &Thumbprint, now: i64, cut: bool) -> Option<Result<&Key>> {
+        let mut periods = self
+            .periods
+            .iter()
+            .filter(|p| p.key.tmb() == tmb)
+            .peekable();
+        periods.peek()?;
+        let mut refusal = Error::UnknownKey;
+        for p in periods {
+            let (until, revoked) = self.effective(p, cut);
+            if p.from <= now && until.is_none_or(|u| now < u) {
+                return Some(Ok(&p.key));
+            }
+            if revoked && until.is_some_and(|u| Cutoff(u).stops(Some(now))) {
+                refusal = Error::KeyRevoked;
+            }
+        }
+        Some(Err(refusal))
+    }
+
+    /// The key `tmb` named in any period of this principal, whether or not
+    /// the key was active at any particular time.
+    pub(crate) fn key_of(&self, tmb: &Thumbprint) -> Option<&Key> {
+        self.periods
+            .iter()
+            .find(|p| p.key.tmb() == tmb)
+            .map(|p| &p.key)
+    }
+
+    /// Whether `tmb` was in KT in the state after the commit at
+    /// `position`: some commit at or before it left the key in, and no
+    /// commit at or before it took it out. Positions are those of the
+    /// commit chain, so this reads the key history where a replay to
+    /// `position` would read the state.
+    pub(crate) fn active_at_position(&self, tmb: &Thumbprint, position: u64) -> bool {
+        self.periods.iter().any(|p| {
+            p.key.tmb() == tmb && p.from_at <= position && p.until_at.is_none_or(|u| position < u)
+        })
+    }
+
+    /// Every distinct key this principal ever held, in first-held order.
+    pub(crate) fn ever_held(&self) -> Vec<&Thumbprint> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.periods
+            .iter()
+            .map(|p| p.key.tmb())
+            .filter(|t| seen.insert(t.to_b64()))
+            .collect()
+    }
+
+    /// Whether `tmb` was ever a key of this principal.
+    pub(crate) fn knows(&self, tmb: &Thumbprint) -> bool {
+        self.periods.iter().any(|p| p.key.tmb() == tmb)
+    }
+
+    /// Whether the principal took data actions at `now`: not yet deleted,
+    /// and not frozen then.
+    ///
+    /// # Errors
+    ///
+    /// `AlreadyDeleted` at or after the deleting commit; `Frozen` inside a
+    /// frozen span.
+    pub(crate) fn open_at(&self, now: i64) -> Result<()> {
+        if self.deleted_at.is_some_and(|d| d <= now) {
+            return Err(Error::AlreadyDeleted);
+        }
+        if self
+            .frozen
+            .iter()
+            .any(|(from, until)| *from <= now && until.is_none_or(|u| now < u))
+        {
+            return Err(Error::Frozen);
+        }
+        Ok(())
+    }
+
+    fn open(&self, tmb: &Thumbprint) -> Option<&Period> {
+        self.periods
+            .iter()
+            .find(|p| p.until.is_none() && p.key.tmb() == tmb)
+    }
+}

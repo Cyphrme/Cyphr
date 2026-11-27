@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# One implementation per protocol rule: each rule below is a grep that must
+# print nothing once the rule has a single owner in rs/cyphr.
+#
+# usage: scripts/one-rule-gate [--crate NAME] [--list] [RULE...]
+#   --crate NAME  keep only hits under rs/NAME/ (judge one node's lane:
+#                 K1 is `--crate cyphr`, K2 `--crate cyphr-storage`, ...)
+#   --list        print each rule with the node(s) that turn it green
+#   RULE...       run only the named rules (default: all)
+# Exit 0 when every selected rule is empty, 1 when any prints a hit.
+#
+# Which node turns which rule green (the final gate is the whole script):
+#   rule             K1 (rs/cyphr)   later nodes
+#   signature        4 core sites    K2 storage, K3 client, K4 server+cli
+#   key-authority    API only        K2, K3, K4 (grep excludes core)
+#   revoke-cutoff    owner = revoke  K2 death.rs, K3 peer/sync
+#   lifecycle        API only        K2/K3/K4 (grep excludes core)
+#   parent-walk      API only        K2, K3, K4 (grep excludes core)
+#   wire-decoding    none (excluded) K2, K3, K4
+#   czd              API only        K2, K3, K4
+#   error-names      golden_fixtures K-test-fixtures lane (P or later)
+#   wall-clock       API only        K2, K3, K4
+#   id-spelling      none            ID
+#   principal-id-type none           ID
+#   pg-private       none            ID
+#   unsigned-claims  none            K3, K4
+#   crate-name       none            ID
+#   in-memory-state  none            K2
+#   labelled-digests    P            (cyphr only)
+#   core-cuts           P            (cyphr only)
+#   no-panic-sites      P            (cyphr only)
+#
+# Excluded everywhere: tests/, tests.rs, benches/, cyphr-scenarios,
+# test-fixtures, fuzz, and any hit after a line-start `#[cfg(test)]` in
+# the same file (an inline test module sits at the end of its file).
+# Pathspecs use `:(glob)` because plain `rs/*/src` matches only the
+# directory entry itself and so silently selects no file.
+set -u
+cd "$(git rev-parse --show-toplevel)" || exit 2
+
+SRC=':(glob)rs/*/src/**'
+TESTS=(':(exclude,glob)**/tests/**' ':(exclude,glob)**/tests.rs'
+  ':(exclude,glob)**/benches/**' ':(exclude)rs/cyphr-scenarios'
+  ':(exclude)rs/test-fixtures' ':(exclude)rs/fuzz')
+
+# drop_inline_tests: stdin is `git grep -n` output; drop hits that follow
+# their file's first `^#[cfg(test)]` that is directly followed by an inline
+# `mod NAME {` (a `#[cfg(test)]` on a lone `use`, fn, or `mod NAME;`
+# declaration hides nothing after it: lib.rs declares `mod restructure_props;`
+# at line 73 and its re-exports follow).
+drop_inline_tests() {
+  while IFS= read -r hit; do
+    f=${hit%%:*}; rest=${hit#*:}; n=${rest%%:*}
+    cut=$(awk '/^#\[cfg\(test\)\]/ {a=NR; next} a && NR==a+1 && /^(pub(\([a-z]+\))? )?mod [A-Za-z_0-9]+ *\{/ {print a; exit} {a=0}' "$f" 2>/dev/null)
+    if [ -z "$cut" ] || [ "$n" -lt "$cut" ]; then printf '%s\n' "$hit"; fi
+  done
+}
+
+# rule NAME GREP-FLAGS PATTERN PATHSPEC...  (each rule is one grep)
+rule_signature()     { git grep -n 'verify_json(' -- "$SRC" ':(exclude)rs/cyphr/src/parsed_coz.rs' "${TESTS[@]}"; }
+rule_key_authority() { git grep -nE 'key_ever_held|is_key_active|embedded_key_ever_held' -- rs/cyphr-storage/src rs/cyphr-server/src rs/cyphr-client/src rs/cyphr-net/src rs/cyphr-cli/src "${TESTS[@]}"; }
+# The frame's pattern `>= *(death\.)?(wrt|cutoff)` misses `n >= *cutoff`
+# (client/peer.rs) because of the deref; `\*?` closes that.
+rule_revoke_cutoff() { git grep -nE '>= *\*?(death\.)?(wrt|cutoff)' -- "$SRC" ':(exclude)rs/cyphr/src/revoke.rs' "${TESTS[@]}"; }
+rule_lifecycle()     { git grep -n 'LifecycleState::Active' -- rs/cyphr-server/src rs/cyphr-client/src rs/cyphr-net/src rs/cyphr-cli/src rs/cyphr-storage/src "${TESTS[@]}"; }
+rule_parent_walk()   { git grep -nE 'checked_sub\(1\)|\.pre\.as_deref\(\)' -- rs/cyphr-storage/src rs/cyphr-client/src rs/cyphr-net/src rs/cyphr-cli/src rs/cyphr-server/src "${TESTS[@]}"; }
+rule_wire_decoding() { git grep -nE '\["pay"\]|pay\["[a-z]+"\]|"/pay/' -- "$SRC" ':(exclude,glob)rs/cyphr/src/**' ':(exclude)rs/cyphr-client/src/report.rs' ':(exclude)rs/cyphr-client/src/login.rs' "${TESTS[@]}"; }
+rule_czd()           { git grep -nE 'czd_for_alg|canonical_hash_for_alg|fn canonicalize' -- "$SRC" ':(exclude,glob)rs/cyphr/src/**' "${TESTS[@]}"; }
+rule_error_names()   { git grep -n '"UnknownError"' -- rs; }
+rule_wall_clock()    { git grep -nE 'UNIX_EPOCH|SystemTime::now' -- "$SRC" ':(exclude)rs/cyphr/src/principal/mod.rs' "${TESTS[@]}"; }
+rule_id_spelling()   { git grep -nE "split_once\(':'\)|fn bare_digest|fn bare_id|fn bare_principal|ID_LABELS" -- "$SRC" ':(exclude)rs/cyphr/src/state.rs' "${TESTS[@]}"; }
+rule_unsigned_claims() { git grep -nE 'fn fetch_payload|BindingPolicy::NotRequired, None|PeerEntry::Url|pg: Option<' -- rs/cyphr-client/src rs/cyphr-net/src rs/cyphr-cli/src rs/cyphr-server/src "${TESTS[@]}"; }
+rule_crate_name()    { git grep -nE 'cyphr-client|cyphr_client' -- rs packaging .github; git ls-files -- rs/cyphr-client | sed 's|$|:1: crate directory not renamed|'; }
+# D5: no principal id travels as text inside the workspace. `&str` is never
+# a wire DTO, so every parameter spelled `principal_id: &str` (or the
+# short names `pg`, `principal`, `own_principal`, `id` for one) is a place
+# the type was not adopted. Plain `rs/*/src` would match nothing; the
+# `:(glob)` form is the one that selects files.
+# `cyphr-scenarios` is outside this line on purpose (see TESTS): it is a
+# black-box harness that drives the CLI and server binaries and holds a
+# principal as the text those programs print (its `Principal` handle),
+# parsing to the type at each call into a library (`Principal::pg`).
+rule_principal_id_type() { git grep -nE 'principal_id: &str|\b(pg|principal|own_principal): &str' -- "$SRC" "${TESTS[@]}"; }
+# The field of `PrincipalGenesis` is private and nothing outside
+# `rs/cyphr/src/state.rs` builds one as a tuple. Tests count here: the
+# frame's grep names tests, and a tuple construction in a test is the
+# same bypass of the empty-value refusal.
+rule_pg_private() {
+  git grep -nE 'struct PrincipalGenesis\(pub' -- rs/cyphr/src/state.rs
+  git grep -n 'PrincipalGenesis(' -- ':(glob)rs/*/src/**' ':(glob)rs/*/tests/**' ':(exclude)rs/cyphr/src/state.rs'
+}
+rule_in_memory_state() { git grep -nE 'Mutex<HashMap<String, Vec<Retained>>>|struct Revoked\(HashMap|struct Resyncs\(HashMap' -- rs/cyphr-storage/src; }
+
+# Node P. Each is one grep over rs/cyphr/src that must print nothing.
+# Every hash is labelled; a bare digest is refused, never matched to a
+# family by its width.
+rule_labelled_digests() { git grep -nE 'alg_of_width|width\(a\) == czd' -- rs/cyphr/src "${TESTS[@]}"; }
+# Decided cuts and the two `Cutoff` helpers only `timeline` calls.
+rule_core_cuts() { git grep -nE 'fn into_transactions|fn to_cad|pub fn runs_past|pub fn end_of_period_from' -- rs/cyphr/src; }
+# F13: `commit_tx` is a field, not `last().unwrap()`; and the genesis
+# guard `DuplicatePrincipal` made dead.
+rule_no_panic_sites() { git grep -nE '\.last\(\)\.unwrap\(\)' -- rs/cyphr/src/commit.rs; git grep -n 'already established' -- rs/cyphr/src/principal/genesis.rs; }
+
+RULES=(signature key_authority revoke_cutoff lifecycle parent_walk
+  wire_decoding czd error_names wall_clock id_spelling unsigned_claims
+  crate_name principal_id_type pg_private in_memory_state labelled_digests core_cuts
+  no_panic_sites)
+
+crate=''; list=0; sel=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --crate) crate=$2; shift 2 ;;
+    --list) list=1; shift ;;
+    *) sel+=("${1//-/_}"); shift ;;
+  esac
+done
+[ ${#sel[@]} -eq 0 ] && sel=("${RULES[@]}")
+if [ $list -eq 1 ]; then sed -n '/^# Which node/,/^#   no-panic-sites/p' "$0"; exit 0; fi
+
+fail=0
+for r in "${sel[@]}"; do
+  if ! declare -F "rule_$r" >/dev/null; then echo "unknown rule: $r" >&2; exit 2; fi
+  hits=$("rule_$r" | drop_inline_tests)
+  [ -n "$crate" ] && hits=$(printf '%s\n' "$hits" | grep "^rs/$crate/")
+  if [ -n "$hits" ]; then
+    printf '%s\n' "$hits" | sed "s|^|${r//_/-}: |"
+    fail=1
+  fi
+done
+exit $fail

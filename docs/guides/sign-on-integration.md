@@ -26,7 +26,7 @@ their phone in a lake and is signing in with a key your server has never seen.
 | Term      | What it is                                                                                                         |
 | :-------- | :----------------------------------------------------------------------------------------------------------------- |
 | Principal | A user's identity: a chain of commits that adds and revokes keys over time. Not a key — a key _history_.           |
-| `pr`      | The identifier a Cyphr server files a principal under. This is what you store on your account row.                 |
+| `pg`      | The principal's identifier, derived from its genesis keys. This is what you store on your account row.             |
 | `tmb`     | A key's thumbprint. A hash of the key's algorithm and public key.                                                  |
 | Coz       | The signed-message format: `{"pay": {...}, "sig": "..."}`. Login payloads and bearer tokens are both Coz messages. |
 | Audience  | The identity your Cyphr server answers to, named inside every login signature.                                     |
@@ -53,8 +53,9 @@ file holding a raw keypair:
 
 ```json
 {
+  "v": 1,
   "alg": "Ed25519",
-  "pub_key": "LNTO4mebHBg3YzWB2QwjXyETKcbvmmSnJ7hLMKGEElo",
+  "pub_key": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
   "prv_key": "-YSZ3MD_vmCxINuQHpTM3LkQ9zCdBVkYEVr1glDJp-Q"
 }
 ```
@@ -67,6 +68,7 @@ const crypto = require("crypto");
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 console.log(
   JSON.stringify({
+    v: 1,
     alg: "Ed25519",
     pub_key: publicKey
       .export({ format: "der", type: "spki" })
@@ -89,7 +91,7 @@ answer `501`:
   "v": 1,
   "payload": {
     "error": "this server runs without a signing identity; login is not offered -- see GET /server for the declared capability tier",
-    "now": 1785862749
+    "now": 1795229749
   },
   "statement": { "kind": "unsigned" }
 }
@@ -104,7 +106,7 @@ collect a session as that user. Pick the host your users' clients actually
 address — `login.example.com`, not `Example Inc`.
 
 Setting a signing key but forgetting `--audience` leaves the server in a state
-where `POST /auth/challenge` still hands out nonces but every login fails with
+where `POST /auth/challenge` still hands out signed challenges but every login fails with
 a `500`. Configure both together.
 
 Check what you got:
@@ -118,14 +120,14 @@ curl -s http://127.0.0.1:3999/server
   "v": 1,
   "payload": {
     "tier": "attestor",
-    "pg": "SHA-512:mRf9FF8DhlZs...",
+    "pg": "SHA-512:lsraVr9sNuOt...",
     "alg": "Ed25519",
-    "pub": "LNTO4mebHBg3YzWB2QwjXyETKcbvmmSnJ7hLMKGEElo",
-    "tmb": "mRf9FF8DhlZs...",
+    "pub": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
+    "tmb": "lsraVr9sNuOt...",
     "genesis": {
       "alg": "Ed25519",
-      "pub": "LNTO4mebHBg3YzWB2QwjXyETKcbvmmSnJ7hLMKGEElo",
-      "tmb": "mRf9FF8DhlZs...",
+      "pub": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
+      "tmb": "lsraVr9sNuOt...",
       "first_seen": 0
     }
   },
@@ -143,27 +145,34 @@ signed the response. Errors come back in the same envelope with
 ## Make a test principal
 
 You need a user to sign in as, and in production your client creates one. To
-get one now, use the `cyphr` CLI. It creates and mutates principals locally
-but has no command that talks to a server, so the push is a `curl` you build
-yourself.
+get one now, use the `cyphr` CLI. `cyphr push --identity="$PR"
+--peer=http://127.0.0.1:3999` sends a principal's commits to a server
+(`cyphr --help` lists `push`, `fetch`, `verify` and `watch`). This
+guide builds the push by hand with `curl` instead, so that you see the raw
+request and the signed response your app will meet.
 
 ```sh
-PR=$(cyphr --output json key generate --algo ES256 | jq -r .tmb)
-cyphr --output json key add --identity="$PR" --signer="$PR"
+PR=$(cyphr --format json key generate --algo ES256 | jq -r .tmb)
+cyphr upgrade --identity="$PR"
+cyphr --format json key add --identity="$PR" --signer="$PR"
 cyphr export --identity="$PR" --output ./export.jsonl
 ```
 
 That leaves keys in `./cyphr-keys.json`, a principal in `./cyphr-data`, and a
-JSONL file with one line per commit. Turn the newest commit into a push body
-and send it:
+JSONL file with one line per commit. A new principal exports two commits (the
+genesis commit, then the key add). Turn each line into a push body and send
+them in order, because the server refuses a first push that is not a genesis
+commit:
 
 ```sh
-jq -c --arg pid "$PR" -s '{principal_id: $pid, blobs: [.[-1].txs[]
-  | tojson | @base64 | gsub("\\+";"-") | gsub("/";"_") | gsub("=";"")]}' \
-  ./export.jsonl > ./push.json
-
-curl -s -X POST http://127.0.0.1:3999/push \
-  -H 'content-type: application/json' -d @push.json
+jq -c --arg pid "$PR" '{principal_id: $pid, keys: .keys,
+  txs: [.txs[] | map(tojson | @base64 | gsub("\\+";"-") | gsub("/";"_") | gsub("=";""))]}' \
+  ./export.jsonl |
+while IFS= read -r body; do
+  curl -s -X POST http://127.0.0.1:3999/push \
+    -H 'content-type: application/json' -d "$body"
+  echo
+done
 ```
 
 `201`, with this `payload` (the response also carries a `statement` of kind
@@ -172,47 +181,52 @@ curl -s -X POST http://127.0.0.1:3999/push \
 ```json
 {
   "blob_hashes": [
-    "49e91e044083d384b2fa84b0d41179ca2c05de83c9f883379202205ec20437bc",
-    "1aa0dc85394503326b22d940af233af03cd27bc6759361a3eacd279b3b972de2"
+    "1657ddf1261e04ea0cc7f5a01d8665e876a308d151c2ad56f7e8a2f581fe1f99",
+    "6467bf0d61835f53ed99dd0fabb3f5faf4aad005d4aa38422fbe116f4169b55c",
+    "0cf34047e77fc34063659a88cb86b4996977cf9e28a53d4ebcd5a51ee0685a2c"
   ],
-  "commit_id": "SHA-256:NK5GHZP2MEdzmH3b26xb5CDsEQZ7D1m5eyy_3I1di44",
+  "commit_id": "SHA-256:cfPK8sq0HFMdIDVYPH9OU-QdrKT_Ne06n1iJ4eZT5c0",
   "sequence": 0,
   "roots": {
-    "pr": "SHA-256:OVQOpDdSBKT4uyXvQMwqn15iOy3oK3zASO9tuLtU46g",
-    "sr": "SHA-256:VtpqdWOesrfKmfpZF55VPCDg_mSP2pl-Re-NjULgyGg",
-    "ar": "SHA-256:VtpqdWOesrfKmfpZF55VPCDg_mSP2pl-Re-NjULgyGg",
-    "cr": "SHA-256:NK5GHZP2MEdzmH3b26xb5CDsEQZ7D1m5eyy_3I1di44"
+    "pr": "SHA-256:zOoLoSaNpNs9z3gkHfp4IyTcdgKxN0PFmqo7hdcJ594",
+    "sr": "SHA-256:VKO_PMPN-uxX4KQ_QBo4HCSz8LJcSH4oL-SjENm8tqY",
+    "ar": "SHA-256:VKO_PMPN-uxX4KQ_QBo4HCSz8LJcSH4oL-SjENm8tqY",
+    "cr": "SHA-256:cfPK8sq0HFMdIDVYPH9OU-QdrKT_Ne06n1iJ4eZT5c0"
   }
 }
 ```
 
-The `jq` rewrites each transaction as a base64url blob, which is the shape
-`/push` wants; standard base64 will not do, which is what the `gsub` chain is
-for. Use `.[-1]` to send only the newest commit — re-sending one the server
-already holds is an error.
+The exported line already holds the commit's `txs` (an array of
+transactions, each an array of coz objects, the commit transaction last) and
+the `keys` it introduces. The `jq` rewrites each coz as base64url of its JSON,
+which is the form `/push` wants; standard base64 will not do, which is what
+the `gsub` chain is for. The loop sends every exported commit in order and
+prints one response per commit (`201` each for a new principal). To add
+a commit to a principal the server already holds, send only the lines it
+lacks: re-sending one it already holds is an error.
 
-Use the genesis thumbprint as the principal id, as above. The write path
-accepts an arbitrary string, but on a server that signs its responses a
-non-thumbprint id makes the push return `500` with `commit receipt signing
-unavailable` even though the commit was stored — a confusing state to debug
-and one that gets worse on retry.
+Use the genesis thumbprint as the principal id, as above. Any other id is
+refused with a `400` before anything is stored; see
+[Map `pg` to an account](#5-map-pg-to-an-account).
 
-Two CLI limits to know before you lean on it: `key add` and `key revoke` fail
-outright on Ed25519 principals (`digest length mismatch for SHA-256: expected
-32 bytes, got 64`), so use ES256 for principals you create this way, and `key
-revoke` refuses unless `--key` equals `--signer`, so it can only ever
-self-revoke.
+`cyphr init --algo ES256 --genesis-commit` does the first two steps in one
+command. A plain `cyphr init` makes a Level 1 principal with no commit, and
+`cyphr push` has nothing to send for it until `cyphr upgrade` (or
+`--genesis-commit` at `init`) creates the genesis commit.
+
+One CLI limit to know before you lean on it: `key revoke` refuses unless
+`--key` equals `--signer`, so it can only ever self-revoke.
 
 ## The exchange
 
 Five steps. Steps 2 and 3 are the only new code in your app.
 
 1. Your app asks the Cyphr server for a challenge.
-2. Your client signs a login payload naming the challenge, the audience, and
-   which principal it is logging in as.
+2. Your client signs a login request naming the challenge, the audience, and
+   which principal it is logging in as (`cyphr login` does this).
 3. Your app posts that to the Cyphr server and gets a bearer token.
 4. Your app verifies the token's signature against the server's public key.
-5. Your app looks up the token's `pr` in your account table and starts its own
+5. Your app looks up the token's `pg` in your account table and starts its own
    session.
 
 ### 1. Get a challenge
@@ -224,12 +238,27 @@ curl -s -X POST http://127.0.0.1:3999/auth/challenge
 ```json
 {
   "v": 1,
-  "payload": { "challenge": "Ala4GzN1T25zOEmPYlXfQpm2jUmdhm9Qe5PemmLsbnM" },
-  "statement": { "kind": "unsigned" }
+  "payload": {
+    "challenge": {
+      "pay": {
+        "alg": "Ed25519",
+        "nonce": "WQDI4u1f1dTCoF9H2jelvnIgH_iAoCcDUWisshduUf4",
+        "now": 1795557793,
+        "tmb": "_2aqSvjoCfZPVzhUUrTlVi3vg2PQVVCrSlC6ypYyppmPzhaZsEqfXl_kMCOWRBiv1v-T6nhzihGO1Sbh7y9JSw",
+        "typ": "localhost:3999/user/login/challenge/create"
+      },
+      "sig": "ejp4fhDwKEmaagZkUohI0MI_3rv6_35U-o546DoeB-fBuRrcpG1p9oV2BlUFQcNSYtg8EXWG400fcJ_iVO6nDg"
+    }
+  },
+  "statement": {
+    "kind": "unsigned"
+  }
 }
 ```
 
-A 256-bit nonce, good for one login and 120 seconds.
+A Coz the server signed over a 256-bit nonce, good for one login and 120
+seconds. The challenge is optional: the signer returns it whole beside its
+login, and the server only has to recognise its own signature on it.
 
 There is a second flow that skips this round-trip: sign a payload with a
 current `now` timestamp and no challenge, and the server accepts it if `now`
@@ -243,26 +272,43 @@ background traffic over a channel you already trust.
 
 The payload carries six fields: the algorithm, the timestamp, the signing
 key's thumbprint, a `typ` that carries your audience, the principal the signer
-claims to be, and the challenge.
+claims to be, and the challenge's nonce. The signed challenge itself travels
+beside the payload, outside the signature.
 
 ```json
 {
   "pay": {
     "alg": "ES256",
-    "now": 1785862430,
-    "tmb": "M9wE8OFsu_LZweYWTnJn_ezJzb_VWyxfibuk03_dwbk",
-    "typ": "localhost:3999/cyphr/auth/login",
-    "pr": "M9wE8OFsu_LZweYWTnJn_ezJzb_VWyxfibuk03_dwbk",
-    "challenge": "Ala4GzN1T25zOEmPYlXfQpm2jUmdhm9Qe5PemmLsbnM"
+    "challenge": "WQDI4u1f1dTCoF9H2jelvnIgH_iAoCcDUWisshduUf4",
+    "now": 1795557793,
+    "pg": "VKO_PMPN-uxX4KQ_QBo4HCSz8LJcSH4oL-SjENm8tqY",
+    "tmb": "VKO_PMPN-uxX4KQ_QBo4HCSz8LJcSH4oL-SjENm8tqY",
+    "typ": "localhost:3999/user/login/request/create"
   },
-  "sig": "57TBiuouH0xrMY7B_YsobElQ5BHljz61tqVYK98rkB50zL5OYrik9L15pkTBRUMcK1yi4AJiaD29OT0x6n5a9w"
+  "sig": "AlqYhVCWitTBIyv0-MvfYsFHhe8cSueuKX1V69IcbHUdGGhdHcPFgkVg7aDQHkUvncUIWMRvo2ywX2Z7m_40Ew",
+  "challenge": {
+    "pay": {
+      "alg": "Ed25519",
+      "nonce": "WQDI4u1f1dTCoF9H2jelvnIgH_iAoCcDUWisshduUf4",
+      "now": 1795557793,
+      "tmb": "_2aqSvjoCfZPVzhUUrTlVi3vg2PQVVCrSlC6ypYyppmPzhaZsEqfXl_kMCOWRBiv1v-T6nhzihGO1Sbh7y9JSw",
+      "typ": "localhost:3999/user/login/challenge/create"
+    },
+    "sig": "ejp4fhDwKEmaagZkUohI0MI_3rv6_35U-o546DoeB-fBuRrcpG1p9oV2BlUFQcNSYtg8EXWG400fcJ_iVO6nDg"
+  }
 }
 ```
 
-`typ` is your audience followed by `/cyphr/auth/login`. The server splits on
-that suffix and compares the front half to its own configured audience.
+`typ` is your audience followed by `/user/login/request/create`. The server
+splits on that suffix and compares the front half to its own configured
+audience.
 
-The `pr` field is the reason this looks different from OIDC. One key can be
+`cyphr login --sign-only --identity "$PG" --signer "$TMB" --audience
+localhost:3999 --challenge ./challenge.json` prints exactly this request, and
+`--peer` posts it and prints the token. The JavaScript below is what a client
+without the CLI writes.
+
+The `pg` field is the reason this looks different from OIDC. One key can be
 active in several principals at once, so the server cannot look up "who is
 this?" from the thumbprint — the answer might be three people. The signer
 names the principal, and the server checks that this key is active in _that_
@@ -270,7 +316,7 @@ principal specifically. Your client therefore has to remember which principal
 it is signing in as. Store it next to the key.
 
 `cyphr key generate` left your test key in `./cyphr-keys.json`, keyed by
-thumbprint: `{"<tmb>": {"alg", "pub_key", "prv_key"}}`, both key fields
+thumbprint, beside a top-level `"v": 1`: `{"v": 1, "<tmb>": {"alg", "pub_key", "prv_key"}}`, both key fields
 base64url without padding over raw bytes. Base64url-decode them into the
 `prv`/`pub` the signing code below expects.
 
@@ -323,22 +369,26 @@ function thumbprint(pubRaw) {
   );
 }
 
-function signLogin({ prv, pub, audience, pr, challenge }) {
+// `challenge` is the Coz `POST /auth/challenge` served, or omitted for the
+// timestamp flow.
+function signLogin({ prv, pub, audience, pg, challenge }) {
   const pay = {
     alg: "ES256",
     now: Math.floor(Date.now() / 1000),
     tmb: thumbprint(pub),
-    typ: `${audience}/cyphr/auth/login`,
-    pr,
+    typ: `${audience}/user/login/request/create`,
+    pg,
   };
-  if (challenge) pay.challenge = challenge;
+  if (challenge) pay.challenge = challenge.pay.nonce;
 
   const compact = Buffer.from(JSON.stringify(pay), "utf8");
   const sig = crypto.sign("sha256", compact, {
     key: privateKey(prv, pub),
     dsaEncoding: "ieee-p1363",
   });
-  return JSON.stringify({ pay, sig: b64(lowS(sig)) });
+  const login = { pay, sig: b64(lowS(sig)) };
+  if (challenge) login.challenge = challenge;
+  return JSON.stringify(login);
 }
 ```
 
@@ -377,23 +427,26 @@ rather than over the payload itself. There is no low-S concern.
 ```sh
 curl -s -X POST http://127.0.0.1:3999/auth/login \
   -H 'content-type: application/json' \
-  -d '{"pay":{"alg":"ES256","now":1785862430,"tmb":"M9wE8OFsu_LZweYWTnJn_ezJzb_VWyxfibuk03_dwbk","typ":"localhost:3999/cyphr/auth/login","pr":"M9wE8OFsu_LZweYWTnJn_ezJzb_VWyxfibuk03_dwbk"},"sig":"57TBiuouH0xrMY7B_YsobElQ5BHljz61tqVYK98rkB50zL5OYrik9L15pkTBRUMcK1yi4AJiaD29OT0x6n5a9w"}'
+  -d '{"pay":{"alg":"ES256","challenge":"WQDI4u1f1dTCoF9H2jelvnIgH_iAoCcDUWisshduUf4","now":1795557793,"pg":"VKO_PMPN-uxX4KQ_QBo4HCSz8LJcSH4oL-SjENm8tqY","tmb":"VKO_PMPN-uxX4KQ_QBo4HCSz8LJcSH4oL-SjENm8tqY","typ":"localhost:3999/user/login/request/create"},"sig":"AlqYhVCWitTBIyv0-MvfYsFHhe8cSueuKX1V69IcbHUdGGhdHcPFgkVg7aDQHkUvncUIWMRvo2ywX2Z7m_40Ew","challenge":{"pay":{"alg":"Ed25519","nonce":"WQDI4u1f1dTCoF9H2jelvnIgH_iAoCcDUWisshduUf4","now":1795557793,"tmb":"_2aqSvjoCfZPVzhUUrTlVi3vg2PQVVCrSlC6ypYyppmPzhaZsEqfXl_kMCOWRBiv1v-T6nhzihGO1Sbh7y9JSw","typ":"localhost:3999/user/login/challenge/create"},"sig":"ejp4fhDwKEmaagZkUohI0MI_3rv6_35U-o546DoeB-fBuRrcpG1p9oV2BlUFQcNSYtg8EXWG400fcJ_iVO6nDg"}}'
 ```
 
 ```json
 {
   "v": 1,
   "payload": {
-    "token": "{\"pay\":{\"alg\":\"Ed25519\",\"now\":1785862536,\"tmb\":\"mRf9FF8DhlZs...\",\"typ\":\"cyphr-server/auth/token\",\"pr\":\"M9wE8OFsu_LZweYWTnJn_ezJzb_VWyxfibuk03_dwbk\",\"exp\":1785863436,\"perms\":[\"read\",\"write\"]},\"sig\":\"efaRhdSMKMRCcmpbzZfBYbhqNImnZ-oRjvJ9wFKyeAoMuHD8y1EoDZOiWqaxAoVoGAEhvFpd04riNBZY_QWxDQ\"}"
+    "token": "{\"pay\":{\"alg\":\"Ed25519\",\"now\":1795557793,\"tmb\":\"_2aqSvjoCfZPVzhUUrTlVi3vg2PQVVCrSlC6ypYyppmPzhaZsEqfXl_kMCOWRBiv1v-T6nhzihGO1Sbh7y9JSw\",\"typ\":\"cyphr.me/user/login/bearer/create\",\"pg\":\"VKO_PMPN-uxX4KQ_QBo4HCSz8LJcSH4oL-SjENm8tqY\",\"exp\":1795558693,\"perms\":[],\"ltmb\":\"VKO_PMPN-uxX4KQ_QBo4HCSz8LJcSH4oL-SjENm8tqY\"},\"sig\":\"F_nDBRg7HIbFcyAv8kh4VHGaS6sHQje5D_lkbHayrp6MUy5CEX0jCRmI_G-IGpFN_dEBrQ7D6TLHVhv-6WqDBg\"}"
   },
-  "statement": { "kind": "unsigned" }
+  "statement": {
+    "kind": "unsigned"
+  }
 }
 ```
 
 `payload.token` is a JSON string containing a Coz message the server signed.
-It lives 15 minutes. Ignore `perms`: the server has no permissions model yet,
-so every token it issues carries this same pair. Your own authorization stays
-yours.
+It lives 15 minutes. `perms` is whatever the service's login policy granted;
+a Cyphr server with no policy grants none, as here. Your own authorization
+stays yours. `ltmb` is the thumbprint of the key that opened the session; the
+server's own routes use it, as the next section says.
 
 ### 4. Verify the token
 
@@ -418,12 +471,12 @@ function verifyToken(token, serverPubB64, now) {
   if (!crypto.verify(null, cad, key, Buffer.from(sig, "base64url"))) {
     throw new Error("token signature is invalid");
   }
-  if (pay.typ !== "cyphr-server/auth/token") {
+  if (pay.typ !== "cyphr.me/user/login/bearer/create") {
     throw new Error(`not a bearer token: typ=${pay.typ}`);
   }
   if (pay.exp <= now) throw new Error("token has expired");
 
-  return { pr: pay.pr, perms: pay.perms, exp: pay.exp };
+  return { pg: pay.pg, perms: pay.perms, exp: pay.exp };
 }
 ```
 
@@ -432,29 +485,99 @@ commit receipts, tip reports — and every one of those is a genuine signature
 by the same key. `typ` is what separates "the server said something" from "the
 server issued a session".
 
-There is no revocation list. A token is valid until it expires, full stop. If
-you need to cut a session short, cut yours — do not expect the Cyphr server to
-help.
+There is no revocation list your app can consult: a valid signature says
+nothing about whether the key that opened the session is still active. The
+Cyphr server's own routes that take a token (`POST /push`) do check, on each
+request, that the key named by `ltmb` is still active, and refuse the token
+once it is not:
 
-### 5. Map `pr` to an account
+```
+-> 401 {"error":"bearer token rejected: the key that opened this session was revoked"}
+```
+
+That protects the server's routes, not your app. If you need to cut a
+session short, cut yours.
+
+### 5. Map `pg` to an account
 
 ```js
 const claims = verifyToken(token, serverPub, Math.floor(Date.now() / 1000));
-let account = await db.accountByPrincipal(claims.pr);
-if (!account) account = await db.createAccount({ principal: claims.pr });
+let account = await db.accountByPrincipal(claims.pg);
+if (!account) account = await db.createAccount({ principal: claims.pg });
 await session.start(account);
 ```
 
 This is the same shape as your `sub` handling, with one difference worth
-sitting with: `pr` is the identifier the Cyphr server files the principal
-under, and the server accepts whatever identifier the client used when it
-first pushed. It is first-come-first-served within that server's namespace,
-not a value derived from the key material. On a server with open admission,
-that namespace is open to anyone. If your deployment cares — and if you are
-using someone else's Cyphr server, it should — run the server yourself with
-`[admission] policy = "invite"` or `"pow"`, or scope your account table to the
-specific server that vouched for the principal. `invite` also needs a
-`tokens_path` set alongside it; the policy alone will not parse.
+sitting with: `pg` is derived, not chosen. A principal's identifier is the
+one its genesis keys derive — for a single-key genesis, the genesis key's
+thumbprint — and the server refuses a first push filed under any other id
+with a `400`,
+`invalid input: principal_id is not the genesis-derived id: <id>`. The server
+stores the algorithm-labelled spelling (`SHA-256:M9wE…`), which is the only
+spelling it accepts as input: a bare digest is refused. No one can
+claim another principal's identifier by pushing first.
+
+Two consequences for your account table:
+
+- **Key the row on the token's `pg`, verbatim.** It is the principal's
+  labelled id, one spelling whichever way the client named the principal at
+  login (a login claiming a bare digest is refused), so one person is one
+  row.
+- **Addressing a principal by its Principal Genesis (PG) is not
+  supported yet.** A principal that adds keys before
+  `principal/create` has a PG that differs from its genesis-derived id,
+  and the server refuses a push filed under that PG with a `400`. Use the
+  genesis-derived id.
+
+Who may create a principal on a server at all is the server's admission
+policy. On a server with open admission, anyone can. If your deployment
+cares, run the server yourself with `[admission] policy = "invite"`, or
+scope your account table to the specific server that vouched for the
+principal. `invite` also needs a `tokens_path` set alongside it; the
+policy alone will not parse.
+
+The identifier you store is the principal's PG, and it is the same at every
+service the principal signs in to, as is each key's `tmb`. Another service
+that holds the same identifier can match its account to yours, so accounts
+can be correlated across sites. Cyphr sign-on does not hide this; if your
+users need accounts that cannot be linked, this scheme does not provide it.
+
+## Skipping the server's token
+
+The exchange above makes your app trust the Cyphr server's word: the token says
+the server found the key active. If your app is written in Rust, you can drop
+that trust. `cyphr_net::RelyingParty` (in `rs/cyphr-net`) holds its own
+copy of one principal's record and decides a sign-in from the key set it
+replayed itself; the server is only a peer it pulls from.
+
+- **Pin the principal.** You construct a `RelyingParty` with an `Anchor`, the
+  principal's genesis key or genesis commit id, never the `pg` alone: one key
+  set under different openers derives one `pg`, so a `pg` cannot tell which
+  principal you meant.
+- **Pull from peers you choose.** `refresh` runs the same pull step a
+  verifying client runs, over any `Connector` (`HttpConnector`, or the Noise
+  transport) and the peers you give it. No peer's statement about the current
+  key is believed; only what replays and verifies is kept.
+- **Sign in against the replayed record.** `challenge()` issues a challenge
+  your service signs, `sign_in` verifies the user's login against the replayed
+  key set and returns a `Session`, and `check_session` re-decides a session
+  token on every use.
+- **Currency is yours to bound.** `RpConfig::pull_age_bound` is the longest the
+  view may go without a successful pull. Past it the relying party refuses to
+  sign anyone in and ends its sessions, and says why (`Refusal::Stale`). A
+  removed key stops holding a session within the bound plus one refresh
+  interval of the removal reaching a peer you pull from. A fork it cannot
+  record, or one that abandoned its own branch, also refuses.
+
+`cargo run -p cyphr-net --example relying_party -- --server
+http://127.0.0.1:3999` signs a fresh principal in this way against a running
+server. The login itself is the same signed request as above (`cyphr login`
+makes it), so a user's client does not change. The library does not run the
+refresh timer, generate or store your service's signing key, or map `pg` to
+an account: those stay yours.
+
+The `pg` and the keys' `tmb` are the same at every service, with either path, so
+accounts can be correlated across sites; see step 5.
 
 ## The rejections you have to handle
 
@@ -466,12 +589,12 @@ freezes a principal.
 | Status | `payload.error`                                             | What happened                                         | What to do                                                                                                 |
 | :----- | :---------------------------------------------------------- | :---------------------------------------------------- | :--------------------------------------------------------------------------------------------------------- |
 | 400    | `failed to parse login body as JSON: ...`                   | The body is not JSON.                                 | Bug in your client.                                                                                        |
-| 401    | ``login payload is missing required field `pr` ``           | No principal claimed.                                 | Bug in your client.                                                                                        |
-| 401    | ``login payload `typ` is not a login request``              | `typ` does not end in `/cyphr/auth/login`.            | Bug in your client.                                                                                        |
+| 401    | ``login payload is missing required field `pg` ``           | No principal claimed.                                 | Bug in your client.                                                                                        |
+| 401    | ``login payload `typ` is not a login request``              | `typ` does not end in `/user/login/request/create`.   | Bug in your client.                                                                                        |
 | 401    | `login payload names no audience`                           | `typ` is the bare suffix.                             | Bug in your client.                                                                                        |
 | 401    | `login audience does not name this server`                  | The signature names a different service.              | Either a config mismatch or a relayed login. Do not retry; log it.                                         |
 | 401    | `login signature is invalid`                                | Signature does not verify.                            | Usually high-S, or reordered fields.                                                                       |
-| 401    | `login: unknown principal`                                  | The server has never seen this `pr`.                  | See below — likely an unsynced client.                                                                     |
+| 401    | `login: unknown principal`                                  | The server has never seen this `pg`.                  | See below — likely an unsynced client.                                                                     |
 | 401    | `signing key is not an active key of the claimed principal` | The key is not active in that principal.              | See below — likely an unsynced client.                                                                     |
 | 401    | `claimed principal is not in an active lifecycle state`     | Frozen or deleted.                                    | Tell the user their identity is frozen. A frozen principal is a deliberate act, often a response to theft. |
 | 401    | `login challenge is unknown, already used, or expired`      | Nonce spent or older than 120 seconds.                | Fetch a fresh challenge and retry once.                                                                    |
@@ -494,27 +617,26 @@ _any_ key of their principal.
 This is the ordinary case and the one to design for. The user had a backup key
 — a hardware token, a second device, a paper key — so their principal is
 intact. Their client signs a `key/create` transaction with the surviving key,
-adding the new one. The principal is the same principal. `pr` does not change.
+adding the new one. The principal is the same principal. `pg` does not change.
 Your account row does not change.
 
-The same surviving key can also push a `key/delete` naming the lost device's
-key, removing it from the principal outright; afterward it fails login
-exactly like a key the server has never seen. This exists at the protocol
-level — the CLI does not expose it yet (`cyphr key` has generate, add,
-revoke, and list, no delete), so pushing one means building the Coz payload
-by hand, the same way the naked-revoke request below does — with one
-difference. It goes through `POST /push`, which canonicalizes `pay` before
-verifying: keys sorted recursively, including objects nested inside arrays.
-Sort your keys before you serialize and sign, or you will have signed
-different bytes than the server checks and the push will come back with an
-invalid signature.
+The same surviving key can also remove the lost device's key from the
+principal outright with `cyphr key delete --identity "$PG" --key "$LOST"
+--signer "$SURVIVOR"`, which signs a `key/delete` commit (SPEC 6.2);
+`cyphr push` then sends it. Afterward the lost key fails login exactly like
+a key the server has never seen. A client that builds the commit itself
+sends it through `POST /push`, which canonicalizes `pay` before verifying:
+keys sorted recursively, including objects nested inside arrays. Sort your
+keys before you serialize and sign, or you will have signed different bytes
+than the server checks and the push will come back with an invalid
+signature.
 
 But your Cyphr server does not know yet. It reconstructs each principal from
 the commits it has been given, so until the client pushes that new commit, the
 new key is a stranger:
 
 ```
-POST /auth/login   (signed by the new key, claiming the same pr)
+POST /auth/login   (signed by the new key, claiming the same pg)
 -> 401 {"error":"signing key is not an active key of the claimed principal"}
 ```
 
@@ -523,7 +645,7 @@ sequence used to enroll the principal in the first place — and the server
 answers `201`. The identical login then succeeds:
 
 ```
-POST /auth/login   (same new key, same pr, fresh challenge)
+POST /auth/login   (same new key, same pg, fresh challenge)
 -> 200  {"token": "..."}
 ```
 
@@ -597,7 +719,7 @@ curl -s -X POST http://127.0.0.1:3999/revoke \
 {
   "v": 1,
   "payload": {
-    "revoked_tmb": "R5PV3JqMiUNSFdyjClRrNGNF7APWUUPB638wQoOQz4c",
+    "revoked_tmb": "9veK3L_l8SMZifoGpabEiuKJ1DyZT5m3Oo7oCXdtvOk",
     "recorded": true
   },
   "statement": { "kind": "unsigned" }
@@ -616,25 +738,20 @@ exact key — the stolen device's own key, saved somewhere before it was
 stolen — not a different backup key. This is for "I still have that exact
 key," not for a key that is simply gone.
 
-**One sharp limitation.** The server only accepts this for a key it has
-indexed, which in practice means a key introduced by a `key/create`
-transaction. A principal's _genesis_ key is not indexed, so the same request
-naming a genesis key is refused:
-
-```
--> 400 {"error":"revoke names a key this server has not indexed"}
-```
-
-That is precisely the key a user is most likely to have on the device they
-lost. If your enrollment flow generates one key and stops, your users have no
-emergency kill switch. Have the client add a second key at enrollment and use
-_that_ one day to day, keeping genesis offline.
+**It works for a genesis key too.** The server checks the revoke against the
+key it discloses and nothing else, so a principal's original key, the one a
+user is most likely to have on the device they lost, is revoked the same way
+as a later one, and the same `200` answers a key the server has never seen.
+Revoking a principal's only key leaves it nothing to sign with, so the
+recovery paths below start from a new principal. The server bounds how many
+keys it records (`max_dead_keys`, see the operator guide); past that it
+records only keys a stored principal holds and answers `507` to the rest.
 
 ### They hold nothing: a new principal, and you have a stranger
 
 If every key is gone, the principal cannot be extended — there is no key left
 to sign the transaction that would add one. What the user creates on their new
-phone is a genuinely different principal, with a different `pr`. There is no
+phone is a genuinely different principal, with a different `pg`. There is no
 cryptographic link between it and the old one. From your server's point of
 view a new person just walked up.
 
@@ -672,9 +789,9 @@ and it costs you a decision about what to do for the ones who skipped it.
 anyway as the floor under the other three.
 
 Whatever you pick, one design point holds across all of them: keep your
-account row's link to `pr` one-to-many and mutable from the start. An account
+account row's link to `pg` one-to-many and mutable from the start. An account
 that can hold two principal identifiers — the retired one and the current one
-— makes every one of these paths a row update. An account with `pr` as its
+— makes every one of these paths a row update. An account with `pg` as its
 primary key makes every one of them a migration.
 
 ## What is not there yet
@@ -682,23 +799,22 @@ primary key makes every one of them a migration.
 Named plainly, because finding these out mid-integration is worse than reading
 them here:
 
-- **No client library.** There is no SDK for signing a login. The code in this
-  guide is the reference; port it to your stack.
-- **No CLI for the network.** `cyphr` creates and mutates principals locally
-  and exports them; it has no command that talks to a server. The `jq` bridge
-  above is what stands in for a push command, and you will want to replace it
-  with something in your client.
-- **`cyphr key add` and `cyphr key revoke` fail on Ed25519 principals.** Use
-  ES256 for principals you create with the CLI. The server itself handles
-  Ed25519 keys fine, and its own signing key in the examples above is Ed25519.
+- **Signing a login is not an SDK for your language.** `cyphr login` signs one
+  from the command line, and the Rust crate `cyphr-net` carries the login
+  contract (`cyphr_net::login`) and a relying party that checks sign-ins
+  without trusting this server's token (see [Skipping the server's
+  token](#skipping-the-servers-token)). For any other stack, the code in this
+  guide is the reference; port it.
 - **`cyphr key revoke` only self-revokes.** It requires `--key` to equal
   `--signer`, and that is not a CLI shortcoming — non-self revoke is refused
   at the protocol level, full stop. Removing a key you no longer hold is
-  `key/delete`'s job, not revoke's, and the CLI has no `delete` subcommand
-  (`cyphr key` has generate, add, revoke, and list).
-- **`POST /revoke` cannot kill a genesis key**, as above.
-- **No permissions.** Every token carries `["read","write"]`.
-- **No token revocation.** Expiry only, 15 minutes.
+  `key/delete`'s job, and `cyphr key delete` does it. `cyphr key` has
+  generate, add, delete, replace, revoke, naked-revoke, request, accept, and
+  list.
+- **No permissions by default.** A server grants a login the permissions its
+  service's policy returns, and none if the service supplies none.
+- **No token revocation.** Expiry only: 15 minutes by default, set with the
+  server's `session_ttl_secs` (at most an hour).
 - **No recovery transactions on the server.** Recovery agents, freeze, and
   thaw are specified; the server does not implement them.
 - **Bearer tokens gate almost nothing.** `POST /push` accepts a token and

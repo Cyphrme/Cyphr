@@ -28,7 +28,7 @@ Every command accepts these flags:
 | `--store`     | `file:./cyphr-data` | Storage backend URI                         |
 | `--keystore`  | `./cyphr-keys.json` | Path to private key file                    |
 | `--authority` | `cyphr.me`          | Authority domain for transaction `typ` URIs |
-| `--output`    | `table`             | Output format: `table` or `json`            |
+| `--format`    | `table`             | Output format: `table` or `json`            |
 
 ## Commands
 
@@ -49,13 +49,37 @@ cyphr init --key <thumbprint>
 
 # Explicit genesis — multiple keys (Level 3)
 cyphr init --keys <tmb1>,<tmb2>
+
+# Implicit genesis, and publish the genesis commit now
+cyphr init --genesis-commit
 ```
 
-| Flag     | Default | Description                                                  |
-| -------- | ------- | ------------------------------------------------------------ |
-| `--algo` | `ES256` | Algorithm for genesis key (ES256, ES384, ES512, Ed25519)     |
-| `--key`  | —       | Use existing key from keystore (by thumbprint)               |
-| `--keys` | —       | Comma-separated thumbprints for explicit (multi-key) genesis |
+| Flag               | Default | Description                                                                                                                                            |
+| ------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--algo`           | `ES256` | Algorithm for genesis key (ES256, ES384, ES512, Ed25519)                                                                                               |
+| `--key`            | —       | Use existing key from keystore (by thumbprint)                                                                                                         |
+| `--keys`           | —       | Comma-separated thumbprints for explicit (multi-key) genesis                                                                                           |
+| `--genesis-commit` | off     | Also sign and store the genesis commit (single-key `init` otherwise leaves a principal with no commit; `--keys` with more than one key always commits) |
+
+A principal with no commit has nothing for `cyphr push` to send, and `key add`,
+`data action` and `data commit` refuse it. `cyphr upgrade` commits it later.
+
+### `cyphr upgrade`
+
+Create the genesis commit of a Level 1 identity that `init` left without one
+(SPEC 5.1). The principal and its identifier stay the same. Refused on an
+identity that already has a commit.
+
+```bash
+cyphr upgrade --identity <pg>
+```
+
+| Flag         | Required | Description                   |
+| ------------ | -------- | ----------------------------- |
+| `--identity` | yes      | Principal Genesis (base64url) |
+
+`key add --upgrade`, `data action --upgrade` and `data commit --upgrade` make
+the genesis commit as part of the command instead of refusing.
 
 ### `cyphr key generate`
 
@@ -194,6 +218,27 @@ Import an identity from a JSONL file.
 cyphr import --input principal.jsonl
 ```
 
+### `cyphr login`
+
+Sign in to a service (SPEC 17.2). Signs `{alg, now, pg, tmb, typ}` with a key
+of the identity, for the service named by `--audience`:
+
+```bash
+cyphr login --identity <PG> --signer <TMB> --audience example.com --peer http://127.0.0.1:8080
+# Signed in to http://127.0.0.1:8080 as audience example.com
+#   token: {"pay":{...},"sig":"..."}
+```
+
+`--peer` posts the login to a Cyphr server's `/auth/login` and prints the
+bearer token it issues. `--sign-only` prints the signed login instead, for any
+other service to take. A login carries a timestamp unless `--challenge FILE`
+answers a challenge the service signed. `--channel-hash` signs the handshake
+hash of an authenticated channel into the login. To sign out, delete the
+token.
+
+The principal's PG and the key's thumbprint are the same at every service, so
+two services can correlate one person's accounts.
+
 ## Walkthrough
 
 A complete session creating an identity, adding a key, and verifying:
@@ -202,7 +247,7 @@ A complete session creating an identity, adding a key, and verifying:
 # Create an identity
 cyphr init
 # Created identity
-#   pr: U5XUZots-WmQ...
+#   pg: U5XUZots-WmQ...
 #   keys:
 #     U5XUZots-WmQ... (ES256) [-]
 
@@ -224,10 +269,10 @@ cyphr tx verify --identity U5XUZots-WmQ...
 
 ## Output Formats
 
-All commands support `--output json` for machine consumption:
+All commands support `--format json` for machine consumption:
 
 ```bash
-cyphr inspect --identity <pr> --output json
+cyphr --format json inspect --identity <pr>
 ```
 
 ```json

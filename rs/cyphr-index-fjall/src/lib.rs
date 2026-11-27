@@ -2,24 +2,27 @@
 //!
 //! Per the settled KV-not-SQL design (forge #18/#23; root `AGENTS.md` I3):
 //! the production index is arbitrary KV tables plus a meta-table tracking
-//! them, over the durable fjall store — never a relational database.
-//! `cyphr-index-sqlite` was always transitional.
+//! them, over the durable fjall store — never a relational database. The
+//! earlier relational-backed indexer this replaced was always
+//! transitional.
 //!
 //! ## Layout
 //!
 //! One dedicated fjall keyspace ("partition") per logical index, plus a
-//! `meta` partition recording which partitions exist and their schema
-//! version:
+//! `meta` partition recording the deriver's own claim of which partitions
+//! it has produced (S3a, c-registry-generated — see [`FjallIndexer::registry`]):
 //!
 //! - `tips` — `principal_id` bytes → [`TipState`] (point lookup only)
 //! - `principals` — `principal_id` bytes → [`PrincipalSummary`] (point lookup only,
 //!   `list_principals` does a full scan)
 //! - `commits` — [`commit_key`] (length-prefixed `principal_id` + big-endian sequence) →
-//!   [`CommitRef`] (ordered range scan by sequence)
-//! - `digests` — tagged-digest or blob-hash string → [`EntityRef`] (point lookup; also backs
-//!   `is_blob_indexed`, mirroring [`MemoryIndexer`]'s single `digest_index` map rather than
-//!   `SqliteIndexer`'s separate `cozies` table, since no `Indexer` method exposes per-coz metadata
-//!   directly)
+//!   [`CommitRow`]: the [`CommitRef`] plus what the commit wrote elsewhere, so a chain replacement
+//!   can withdraw it (ordered range scan by sequence)
+//! - `digests` — tagged-digest or blob-hash string → every holder of the digest, a list of
+//!   [`EntityRef`] (point lookup; also backs `is_blob_indexed` — one shared partition covers both
+//!   blob hashes and czds, mirroring [`MemoryIndexer`]'s single `digest_index` map, since no
+//!   `Indexer` method exposes per-coz metadata directly and a separate per-coz table would serve
+//!   nothing)
 //! - `public_keys` — thumbprint bytes → [`PublicKeyInfo`] (point lookup)
 //!
 //! `tips` and `principals` key on the raw `principal_id` bytes directly:
@@ -27,34 +30,87 @@
 //! byte strings can never collide under equality. `commits` additionally
 //! needs range scans (a whole principal's chain, or a sub-range of it),
 //! which raw-byte-prefix scoping would NOT make safe — see [`commit_key`]'s
-//! docs for why a naive prefix scan reintroduces exactly the kind of
-//! injectivity gap `sanitize_fjall_prefix` (F11) left unenforced, and how
-//! the length-prefixed encoding here closes it.
+//! docs for why a naive prefix scan reintroduces an injectivity
+//! gap, and how the length-prefixed encoding here closes it.
+//!
+//! - `aliases` — Principal Root variant (tagged digest) → the `principal_id` it names (point
+//!   lookup). Derived from the `pg` variants of the PG-establishing commit, so a principal is
+//!   addressable by its PG in every hash variant (SPEC §3.7.1/§12.1), never by a historical PR; an
+//!   alias another principal holds is never re-pointed (the commit is refused), and a stored
+//!   principal id always outranks an alias on read.
 //!
 //! [`MemoryIndexer`]: cyphr_storage::index::MemoryIndexer
 
+use std::collections::BTreeSet;
+
+use cyphr::PrincipalGenesis;
 use cyphr::state::TaggedDigest;
 use cyphr_storage::blob::Blake3Hash;
 use cyphr_storage::index::{
-    CommitRef, EntityRef, EntityType, IndexableCommit, Indexer, IndexerError, PrincipalSummary,
-    PublicKeyInfo, TipState,
+    CommitRef, DeriveToken, EntityRef, IndexableCommit, Indexer, IndexerError, IndexerWrite,
+    PrincipalSummary, PublicKeyInfo, TipState, check_replacement, digest_entries, merge_holder,
 };
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
-/// Current schema version recorded in the `meta` partition.
-const SCHEMA_VERSION: u32 = 1;
+/// Current schema version recorded in the `meta` partition. Version 2
+/// added the `index_aliases` partition; version 3 keys digest holders as a
+/// set of one row per holder; version 4 records SR and AR as optional
+/// (`null` for a Dead principal) where older rows held a string; version 5
+/// keys a principal by its genesis PR (no nonce) or the PR after its first
+/// commit (a nonce), never by the first PG-to-be a push named. The index is
+/// a derived cache (I1): a store recorded at an older version, or at none,
+/// is discarded on open and
+/// rebuilt from blobs; a newer one is refused (downgrade guard). Version 6
+/// records what each commit wrote beside its chain entry ([`CommitRow`])
+/// and version 7 drops the `index_errored` partition (Error is computed
+/// from the held commits). Version 8 records the manifest each commit's
+/// entry names ([`CommitRef::manifest`]), so an older index is discarded
+/// and rebuilt, which fills it.
+const SCHEMA_VERSION: u32 = 8;
 
 /// Fixed key under which the `meta` partition stores its single tracking
 /// record.
 const META_KEY: &[u8] = b"index-meta";
 
-/// The set of logical index partitions this crate maintains, recorded in
-/// the `meta` partition on initialization — the "meta-table tracking
-/// [the] arbitrary KV index tables" the settled design calls for (c5).
+/// Key under which the `meta` partition stores the quarantine set
+/// ([`IndexerWrite::set_quarantined`]). Not derivation output, so
+/// [`IndexerWrite::clear`] keeps it.
+const QUARANTINE_KEY: &[u8] = b"quarantine";
+
+/// The set of index partitions this schema version's derivation produces.
+/// Not a claim about what physically exists on disk (a raw, out-of-band
+/// writer could create an extra keyspace, or a corrupted store could be
+/// missing one) — see [`FjallIndexer::registry`] for the durable claim
+/// the deriver itself records.
+const PARTITION_NAMES: &[&str] = &[
+    "index_tips",
+    "index_principals",
+    "index_commits",
+    "index_digests",
+    "index_public_keys",
+    "index_aliases",
+];
+
+/// The `meta` partition's single tracking record — the "meta-table
+/// tracking [the] arbitrary KV index tables" the settled design calls for
+/// (c5). Written atomically, as part of the SAME batch, by every
+/// derivation write (S3a, c-registry-generated) — never a one-time
+/// bootstrap literal independent of whether any derivation has actually
+/// run. See [`FjallIndexer::registry`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct IndexMeta {
     version: u32,
     partitions: Vec<String>,
+}
+
+/// A `commits` row: the chain entry, and the digest holders and PG aliases
+/// the commit contributed, so [`IndexerWrite::replace_chain_from`] can
+/// withdraw them without a scan.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CommitRow {
+    commit: CommitRef,
+    entries: Vec<(String, EntityRef)>,
+    pg: Vec<PrincipalGenesis>,
 }
 
 /// Encode a `commits` partition key: `principal_id`'s length (big-endian
@@ -71,9 +127,8 @@ struct IndexMeta {
 /// belonging to principal `"alice2"` (or any principal for which
 /// `"alice"` is a literal byte-prefix), because `"alice2"`'s extra byte
 /// ('2' = 0x32) falls lexicographically between 0x00 and 0xFF at the very
-/// position the range brackets. That is exactly the class of bug F11
-/// left latent in `sanitize_fjall_prefix`: two distinct principals
-/// silently sharing an accessible keyspace.
+/// position the range brackets. That is an injectivity gap: two
+/// distinct principals silently sharing an accessible keyspace.
 ///
 /// Prefixing with `principal_id`'s length first guarantees any two
 /// distinct principal IDs of *different* lengths get non-overlapping
@@ -82,8 +137,9 @@ struct IndexMeta {
 /// differing content byte, which likewise can never be masked by any
 /// suffix. See `injectivity` tests below for the adversarial cases this
 /// rules out.
-fn commit_key(principal_id: &str, sequence: u64) -> Vec<u8> {
-    let pid = principal_id.as_bytes();
+fn commit_key(principal_id: &PrincipalGenesis, sequence: u64) -> Vec<u8> {
+    let id = principal_id.to_string();
+    let pid = id.as_bytes();
     let mut key = Vec::with_capacity(4 + pid.len() + 8);
     key.extend_from_slice(&(pid.len() as u32).to_be_bytes());
     key.extend_from_slice(pid);
@@ -92,8 +148,38 @@ fn commit_key(principal_id: &str, sequence: u64) -> Vec<u8> {
 }
 
 /// Inclusive `[from, to]` range of [`commit_key`]s for one `principal_id`.
-fn commit_key_range(principal_id: &str, from: u64, to: u64) -> (Vec<u8>, Vec<u8>) {
+fn commit_key_range(principal_id: &PrincipalGenesis, from: u64, to: u64) -> (Vec<u8>, Vec<u8>) {
     (commit_key(principal_id, from), commit_key(principal_id, to))
+}
+
+/// The stored principal id `id` names: itself if a principal is stored
+/// under it, else the principal its alias names, else `id` unchanged.
+fn canonical_id(
+    tips: &Keyspace,
+    aliases: &Keyspace,
+    id: &PrincipalGenesis,
+) -> Result<PrincipalGenesis, IndexerError> {
+    let key = id.to_string();
+    if tips.contains_key(key.as_bytes()).map_err(to_backend_err)? {
+        return Ok(id.clone());
+    }
+    match aliases.get(key.as_bytes()).map_err(to_backend_err)? {
+        Some(bytes) => std::str::from_utf8(&bytes)
+            .map_err(|e| IndexerError::Backend(format!("alias value is not utf-8: {e}")))?
+            .parse()
+            .map_err(|e| IndexerError::Backend(format!("alias value is not a principal id: {e}"))),
+        None => Ok(id.clone()),
+    }
+}
+
+/// Key of the "this principal's PG is established" marker, stored in the
+/// alias table so the index still registers exactly one alias table.
+fn pg_marker_key(principal_id: &PrincipalGenesis) -> Vec<u8> {
+    let id = principal_id.to_string();
+    let mut key = Vec::with_capacity(1 + id.len());
+    key.push(0);
+    key.extend_from_slice(id.as_bytes());
+    key
 }
 
 fn to_backend_err(e: fjall::Error) -> IndexerError {
@@ -106,6 +192,44 @@ fn join_err(e: tokio::task::JoinError) -> IndexerError {
 
 fn ser<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IndexerError> {
     serde_json::to_vec(value).map_err(|e| IndexerError::Backend(format!("serialize: {e}")))
+}
+
+/// The key of one holder of a digest: the digest, then the holder's
+/// principal id and entity type, NUL-separated (neither a digest nor a
+/// principal id contains NUL). Keys of one digest share the prefix
+/// `digest NUL`, sort in canonical holder order (principal id, then entity
+/// type), and a write touches only its own key.
+fn holder_key(digest: &str, holder: &EntityRef) -> Vec<u8> {
+    let mut key = digest_prefix(digest);
+    if let Some(id) = &holder.principal_id {
+        key.extend_from_slice(id.to_string().as_bytes());
+    }
+    key.push(0);
+    key.push(holder.entity_type as u8);
+    key
+}
+
+fn digest_prefix(digest: &str) -> Vec<u8> {
+    let mut prefix = digest.as_bytes().to_vec();
+    prefix.push(0);
+    prefix
+}
+
+/// The first holder of `digest` in canonical order, in O(1) reads: holder
+/// keys sort in canonical order, so it is the first key under the prefix.
+fn first_holder(digests: &Keyspace, digest: &str) -> Result<Option<EntityRef>, IndexerError> {
+    match digests.prefix(digest_prefix(digest)).next() {
+        Some(guard) => Ok(Some(de(&guard.value().map_err(to_backend_err)?)?)),
+        None => Ok(None),
+    }
+}
+
+/// Every holder of `digest` in canonical order.
+fn all_holders(digests: &Keyspace, digest: &str) -> Result<Vec<EntityRef>, IndexerError> {
+    digests
+        .prefix(digest_prefix(digest))
+        .map(|guard| de(&guard.value().map_err(to_backend_err)?))
+        .collect()
 }
 
 fn de<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, IndexerError> {
@@ -121,17 +245,19 @@ fn de<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, IndexerError> {
 /// section: fjall itself doesn't need serialization for individual ops,
 /// but computing a principal's next `commit_count`/`created` timestamp is
 /// a read-then-write sequence that must not interleave with a concurrent
-/// writer for the *same* principal — the same guarantee `MemoryIndexer`
-/// gets from one global `RwLock` and `SqliteIndexer` gets from its
-/// single-threaded actor, kept here without reintroducing an actor thread
-/// fjall doesn't need for anything else.
+/// writer for the *same* principal — the same per-principal serialization
+/// guarantee `MemoryIndexer` gets from one global `RwLock`, kept here
+/// without an actor thread fjall doesn't need for anything else.
 pub struct FjallIndexer {
     db: Database,
+    /// The registry claim (S3a, c-registry-generated) — see [`Self::registry`].
+    meta: Keyspace,
     tips: Keyspace,
     principals: Keyspace,
     commits: Keyspace,
     digests: Keyspace,
     public_keys: Keyspace,
+    aliases: Keyspace,
     write_lock: tokio::sync::Mutex<()>,
 }
 
@@ -170,73 +296,105 @@ impl FjallIndexer {
         let commits = open("index_commits")?;
         let digests = open("index_digests")?;
         let public_keys = open("index_public_keys")?;
+        let aliases = open("index_aliases")?;
 
-        if !meta.contains_key(META_KEY).map_err(to_backend_err)? {
-            let record = IndexMeta {
-                version: SCHEMA_VERSION,
-                partitions: vec![
-                    "index_tips".to_string(),
-                    "index_principals".to_string(),
-                    "index_commits".to_string(),
-                    "index_digests".to_string(),
-                    "index_public_keys".to_string(),
-                ],
-            };
-            meta.insert(META_KEY, ser(&record)?)
-                .map_err(to_backend_err)?;
-        }
-
-        Ok(Self {
-            db,
-            tips,
-            principals,
-            commits,
-            digests,
-            public_keys,
-            write_lock: tokio::sync::Mutex::new(()),
-        })
-    }
-}
-
-impl Indexer for FjallIndexer {
-    fn index_commit(
-        &self,
-        commit: &IndexableCommit,
-    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
-        let commit = commit.clone();
-        let db = self.db.clone();
-        let tips = self.tips.clone();
-        let principals = self.principals.clone();
-        let commits = self.commits.clone();
-        let digests = self.digests.clone();
-        let public_keys = self.public_keys.clone();
-        async move {
-            let _guard = self.write_lock.lock().await;
-            tokio::task::spawn_blocking(move || {
-                db_index_commit(
-                    &db,
+        let stored = match meta.get(META_KEY).map_err(to_backend_err)? {
+            Some(bytes) => Some(de::<IndexMeta>(&bytes)?.version),
+            None => None,
+        };
+        match stored {
+            Some(v) if v > SCHEMA_VERSION => {
+                return Err(IndexerError::UnsupportedVersion {
+                    found: u64::from(v),
+                    supported: u64::from(SCHEMA_VERSION),
+                });
+            },
+            Some(SCHEMA_VERSION) => {},
+            // Older or unstamped: whatever rows exist were derived by a
+            // schema this build does not read.
+            _ => {
+                for ks in [
                     &tips,
                     &principals,
                     &commits,
                     &digests,
                     &public_keys,
-                    &commit,
-                )
-            })
-            .await
-            .map_err(join_err)?
+                    &aliases,
+                ] {
+                    // A fresh store has nothing to discard; skipping the
+                    // clear keeps every first open off the slow path.
+                    if !ks.is_empty().map_err(to_backend_err)? {
+                        ks.clear().map_err(to_backend_err)?;
+                    }
+                }
+                if stored.is_some() {
+                    meta.remove(META_KEY).map_err(to_backend_err)?;
+                }
+            },
         }
+
+        // No bootstrap write here: the registry claim (`index_meta`'s
+        // record) is written only as derivation OUTPUT, atomically
+        // alongside the rows each `index_commit` batch produces (see
+        // `db_index_commit`) -- never as a literal issued unconditionally
+        // at open time, regardless of whether any derivation has run.
+        // `registry()` reports an empty set until the first commit is
+        // indexed, which is the honest answer: nothing has been derived
+        // yet.
+
+        Ok(Self {
+            db,
+            meta,
+            tips,
+            principals,
+            commits,
+            digests,
+            public_keys,
+            aliases,
+            write_lock: tokio::sync::Mutex::new(()),
+        })
     }
 
+    /// Report the set of index partitions this store's OWN derivation has
+    /// durably produced.
+    ///
+    /// Reads back the `index_meta` claim written atomically -- as part of
+    /// the SAME fjall batch as the actual rows -- inside every
+    /// [`IndexerWrite::index_commit`] call (see `db_index_commit`).
+    /// Deliberately NOT a live rescan of which fjall keyspaces physically
+    /// exist: a rescan-based implementation would make a registry entry
+    /// present-but-never-produced-by-any-derivation physically
+    /// indistinguishable from an extra keyspace planted directly on disk
+    /// out-of-band, collapsing two of
+    /// `rs/cyphr-storage/tests/rebuild_compare.rs`'s three named
+    /// mutations into one undetectable case. An index with no commits
+    /// derived into it yet reports an empty set, not an error.
+    pub fn registry(&self) -> Result<BTreeSet<String>, IndexerError> {
+        match self.meta.get(META_KEY).map_err(to_backend_err)? {
+            Some(bytes) => {
+                let record: IndexMeta = de(&bytes)?;
+                Ok(record.partitions.into_iter().collect())
+            },
+            None => Ok(BTreeSet::new()),
+        }
+    }
+}
+
+impl Indexer for FjallIndexer {
     fn get_tip(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> impl std::future::Future<Output = Result<Option<TipState>, IndexerError>> + Send {
-        let principal_id = principal_id.to_string();
+        let principal_id = principal_id.clone();
         let tips = self.tips.clone();
+        let aliases = self.aliases.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                match tips.get(principal_id.as_bytes()).map_err(to_backend_err)? {
+                let id = canonical_id(&tips, &aliases, &principal_id)?;
+                match tips
+                    .get(id.to_string().as_bytes())
+                    .map_err(to_backend_err)?
+                {
                     Some(bytes) => Ok(Some(de(&bytes)?)),
                     None => Ok(None),
                 }
@@ -246,22 +404,38 @@ impl Indexer for FjallIndexer {
         }
     }
 
+    fn is_pg_established(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send {
+        let key = pg_marker_key(principal_id);
+        let aliases = self.aliases.clone();
+        async move {
+            tokio::task::spawn_blocking(move || aliases.contains_key(&key).map_err(to_backend_err))
+                .await
+                .map_err(join_err)?
+        }
+    }
+
     fn get_commit_chain(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: Option<u64>,
         to: Option<u64>,
     ) -> impl std::future::Future<Output = Result<Vec<CommitRef>, IndexerError>> + Send {
-        let principal_id = principal_id.to_string();
+        let principal_id = principal_id.clone();
         let commits = self.commits.clone();
+        let tips = self.tips.clone();
+        let aliases = self.aliases.clone();
         async move {
             tokio::task::spawn_blocking(move || {
+                let principal_id = canonical_id(&tips, &aliases, &principal_id)?;
                 let (lower, upper) =
                     commit_key_range(&principal_id, from.unwrap_or(0), to.unwrap_or(u64::MAX));
                 let mut chain = Vec::new();
                 for guard in commits.range(lower..=upper) {
                     let value = guard.value().map_err(to_backend_err)?;
-                    chain.push(de(&value)?);
+                    chain.push(de::<CommitRow>(&value)?.commit);
                 }
                 Ok(chain)
             })
@@ -277,14 +451,22 @@ impl Indexer for FjallIndexer {
         let key = digest.to_string();
         let digests = self.digests.clone();
         async move {
-            tokio::task::spawn_blocking(move || {
-                match digests.get(key.as_bytes()).map_err(to_backend_err)? {
-                    Some(bytes) => Ok(Some(de(&bytes)?)),
-                    None => Ok(None),
-                }
-            })
-            .await
-            .map_err(join_err)?
+            tokio::task::spawn_blocking(move || first_holder(&digests, &key))
+                .await
+                .map_err(join_err)?
+        }
+    }
+
+    fn resolve_digest_holders(
+        &self,
+        digest: &TaggedDigest,
+    ) -> impl std::future::Future<Output = Result<Vec<EntityRef>, IndexerError>> + Send {
+        let key = digest.to_string();
+        let digests = self.digests.clone();
+        async move {
+            tokio::task::spawn_blocking(move || all_holders(&digests, &key))
+                .await
+                .map_err(join_err)?
         }
     }
 
@@ -306,27 +488,6 @@ impl Indexer for FjallIndexer {
         }
     }
 
-    fn clear(&self) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
-        let tips = self.tips.clone();
-        let principals = self.principals.clone();
-        let commits = self.commits.clone();
-        let digests = self.digests.clone();
-        let public_keys = self.public_keys.clone();
-        async move {
-            let _guard = self.write_lock.lock().await;
-            tokio::task::spawn_blocking(move || {
-                tips.clear().map_err(to_backend_err)?;
-                principals.clear().map_err(to_backend_err)?;
-                commits.clear().map_err(to_backend_err)?;
-                digests.clear().map_err(to_backend_err)?;
-                public_keys.clear().map_err(to_backend_err)?;
-                Ok(())
-            })
-            .await
-            .map_err(join_err)?
-        }
-    }
-
     fn is_blob_indexed(
         &self,
         hash: &Blake3Hash,
@@ -335,7 +496,7 @@ impl Indexer for FjallIndexer {
         let digests = self.digests.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                digests.contains_key(key.as_bytes()).map_err(to_backend_err)
+                Ok(digests.prefix(digest_prefix(&key)).next().is_some())
             })
             .await
             .map_err(join_err)?
@@ -361,149 +522,487 @@ impl Indexer for FjallIndexer {
     }
 }
 
+/// The fjall keyspace handles a write needs, bundled so a write function
+/// takes one argument per logical concern (db, keyspaces, commit) instead
+/// of one per partition.
+#[derive(Clone)]
+struct Keyspaces {
+    meta: Keyspace,
+    tips: Keyspace,
+    principals: Keyspace,
+    commits: Keyspace,
+    digests: Keyspace,
+    public_keys: Keyspace,
+    aliases: Keyspace,
+}
+
+impl FjallIndexer {
+    fn keyspaces(&self) -> Keyspaces {
+        Keyspaces {
+            meta: self.meta.clone(),
+            tips: self.tips.clone(),
+            principals: self.principals.clone(),
+            commits: self.commits.clone(),
+            digests: self.digests.clone(),
+            public_keys: self.public_keys.clone(),
+            aliases: self.aliases.clone(),
+        }
+    }
+}
+
+impl IndexerWrite for FjallIndexer {
+    fn check_commit(
+        &self,
+        commit: &IndexableCommit,
+        _token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
+        let commit = commit.clone();
+        let ks = self.keyspaces();
+        async move {
+            tokio::task::spawn_blocking(move || db_check_commit(&ks, &commit))
+                .await
+                .map_err(join_err)?
+        }
+    }
+
+    fn index_commit(
+        &self,
+        commit: &IndexableCommit,
+        _token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
+        let commit = commit.clone();
+        let db = self.db.clone();
+        let ks = self.keyspaces();
+        async move {
+            let _guard = self.write_lock.lock().await;
+            tokio::task::spawn_blocking(move || db_index_commit(&db, &ks, &commit))
+                .await
+                .map_err(join_err)?
+        }
+    }
+
+    fn replace_chain_from(
+        &self,
+        principal_id: &PrincipalGenesis,
+        sequence: u64,
+        commits: &[IndexableCommit],
+        _token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
+        let principal_id = principal_id.clone();
+        let commits = commits.to_vec();
+        let db = self.db.clone();
+        let ks = self.keyspaces();
+        async move {
+            let _guard = self.write_lock.lock().await;
+            tokio::task::spawn_blocking(move || {
+                db_replace_chain_from(&db, &ks, &principal_id, sequence, &commits)
+            })
+            .await
+            .map_err(join_err)?
+        }
+    }
+
+    fn clear(
+        &self,
+        _token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
+        let ks = self.keyspaces();
+        async move {
+            let _guard = self.write_lock.lock().await;
+            tokio::task::spawn_blocking(move || {
+                ks.tips.clear().map_err(to_backend_err)?;
+                ks.principals.clear().map_err(to_backend_err)?;
+                ks.commits.clear().map_err(to_backend_err)?;
+                ks.digests.clear().map_err(to_backend_err)?;
+                ks.public_keys.clear().map_err(to_backend_err)?;
+                ks.aliases.clear().map_err(to_backend_err)?;
+                // The registry claim is derivation output too: clearing
+                // the derived rows without also retracting what the
+                // deriver claims to have produced would leave a stale
+                // registry asserting partitions no commit has populated
+                // since the clear.
+                ks.meta.remove(META_KEY).map_err(to_backend_err)?;
+                Ok(())
+            })
+            .await
+            .map_err(join_err)?
+        }
+    }
+
+    fn set_quarantined(
+        &self,
+        manifests: &[(Blake3Hash, String)],
+        _token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
+        let meta = self.meta.clone();
+        let encoded = serde_json::to_vec(manifests);
+        async move {
+            let encoded =
+                encoded.map_err(|e| IndexerError::Backend(format!("quarantine set: {e}")))?;
+            let _guard = self.write_lock.lock().await;
+            tokio::task::spawn_blocking(move || {
+                meta.insert(QUARANTINE_KEY, encoded).map_err(to_backend_err)
+            })
+            .await
+            .map_err(join_err)?
+        }
+    }
+
+    fn quarantined(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<(Blake3Hash, String)>, IndexerError>> + Send
+    {
+        let meta = self.meta.clone();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                match meta.get(QUARANTINE_KEY).map_err(to_backend_err)? {
+                    None => Ok(Vec::new()),
+                    Some(raw) => serde_json::from_slice(&raw).map_err(|e| {
+                        IndexerError::Backend(format!("quarantine set is unreadable: {e}"))
+                    }),
+                }
+            })
+            .await
+            .map_err(join_err)?
+        }
+    }
+}
+
+/// Refuse a commit whose PG alias claim would re-point an existing alias:
+/// such a write names no new truth, it rewrites an old one. The only
+/// exclusive claim; digests name sets of holders.
+fn claims_conflict(ks: &Keyspaces, commit: &IndexableCommit) -> Result<(), IndexerError> {
+    let id = commit.principal_id.to_string();
+    let pid_key = id.as_bytes();
+    for pr in commit.pg.iter().filter(|pr| **pr != commit.principal_id) {
+        let alias = pr.to_string();
+        let alias_owner = ks.aliases.get(alias.as_bytes()).map_err(to_backend_err)?;
+        let names_principal = ks
+            .principals
+            .contains_key(alias.as_bytes())
+            .map_err(to_backend_err)?;
+        let other = match alias_owner {
+            Some(owner) => owner.as_ref() != pid_key,
+            None => names_principal,
+        };
+        if other {
+            return Err(IndexerError::Conflict(format!(
+                "PG alias {pr} already names another principal; refusing to re-point it to {}",
+                commit.principal_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `commit` is already indexed at its chain position. A different
+/// commit at an indexed position is fork evidence (I2: one writer, one
+/// linear chain), never a no-op.
+fn position_holds_commit(
+    ks: &Keyspaces,
+    key: &[u8],
+    commit: &IndexableCommit,
+) -> Result<bool, IndexerError> {
+    let Some(bytes) = ks.commits.get(key).map_err(to_backend_err)? else {
+        return Ok(false);
+    };
+    let held = de::<CommitRow>(&bytes)?.commit;
+    if commit.commit_ids.first().map_or("", String::as_str) == held.commit_id {
+        return Ok(true);
+    }
+    Err(IndexerError::Consistency(format!(
+        "principal {} already has commit {} at sequence {}; refusing a rival commit there",
+        commit.principal_id, held.commit_id, commit.sequence
+    )))
+}
+
+/// Dry run of [`db_index_commit`]'s refusal; writes nothing.
+fn db_check_commit(ks: &Keyspaces, commit: &IndexableCommit) -> Result<(), IndexerError> {
+    let key = commit_key(&commit.principal_id, commit.sequence);
+    if position_holds_commit(ks, &key, commit)? {
+        return Ok(());
+    }
+    claims_conflict(ks, commit)
+}
+
 /// Synchronous body of `index_commit`, run inside `spawn_blocking`.
 ///
 /// Mirrors `MemoryIndexer`'s reference semantics (the behavioral baseline
 /// the KV-index migration established): idempotent on an already-indexed
-/// `(principal_id, sequence)` (matching `SqliteIndexer`'s `INSERT OR
-/// IGNORE`-on-primary-key behavior, which the shared conformance suite's
-/// `index_commit_idempotent` test already holds every backend to); tracks
-/// each principal's genesis timestamp as `created`, and folds every
-/// digest variant (commit IDs, PR/SR/AR/CR, per-coz blob hashes and czds)
-/// into one `digests` partition exactly as `MemoryIndexer`'s single
-/// `digest_index` map does — not `SqliteIndexer`'s separate `cozies`
-/// table, since no `Indexer` method reads per-coz metadata directly.
+/// `(principal_id, sequence)` (an idempotent re-index by primary key,
+/// which the shared conformance suite's `index_commit_idempotent` test
+/// holds every backend to); tracks each principal's genesis timestamp as
+/// `created`, and folds every digest variant (commit IDs, PR/SR/AR/CR,
+/// per-coz blob hashes and czds) into one `digests` partition exactly as
+/// `MemoryIndexer`'s single `digest_index` map does, rather than a
+/// separate per-coz table, since no `Indexer` method reads per-coz
+/// metadata directly. Written by [`Staged::write`].
 fn db_index_commit(
     db: &Database,
-    tips: &Keyspace,
-    principals: &Keyspace,
-    commits: &Keyspace,
-    digests: &Keyspace,
-    public_keys: &Keyspace,
+    ks: &Keyspaces,
     commit: &IndexableCommit,
 ) -> Result<(), IndexerError> {
     let key = commit_key(&commit.principal_id, commit.sequence);
-    if commits.contains_key(&key).map_err(to_backend_err)? {
+    if position_holds_commit(ks, &key, commit)? {
         return Ok(());
     }
+    claims_conflict(ks, commit)?;
+    let summary = summary_of(ks, &commit.principal_id)?;
+    let held = summary.as_ref().map_or(0, |p| p.commit_count);
+    let created = summary.map_or(commit.timestamp, |p| p.created);
 
-    let primary_cid = commit.commit_ids.first().cloned().unwrap_or_default();
-    let primary_pr = commit.prs.first().cloned().unwrap_or_default();
-    let primary_sr = commit.srs.first().cloned().unwrap_or_default();
-    let primary_ar = commit.ars.first().cloned().unwrap_or_default();
-    let primary_cr = commit.crs.first().cloned().unwrap_or_default();
+    // All writes land in one atomic batch: a crash mid-`index_commit` must
+    // never leave `commits` updated without `tips`/`principals` following
+    // (or vice versa) -- the same guarantee `MemoryIndexer`'s single
+    // lock-guarded mutation gives. The registry claim rides in the same
+    // batch for the identical reason.
+    let mut staged = Staged::default();
+    staged.commit(ks, commit)?;
+    staged.write(db, ks, commit, held + 1, created)
+}
 
-    let commit_ref = CommitRef {
-        commit_id: primary_cid.clone(),
-        sequence: commit.sequence,
-        pre: commit.pre.clone(),
-        pr: primary_pr.clone(),
-        sr: primary_sr.clone(),
-        ar: primary_ar.clone(),
-        cr: primary_cr.clone(),
-        blob_hashes: commit.blob_hashes.clone(),
+/// Synchronous body of `replace_chain_from`: withdraw what the commits at
+/// `sequence` and above wrote, then stage `commits` in their place, in one
+/// atomic batch.
+fn db_replace_chain_from(
+    db: &Database,
+    ks: &Keyspaces,
+    principal_id: &PrincipalGenesis,
+    sequence: u64,
+    commits: &[IndexableCommit],
+) -> Result<(), IndexerError> {
+    let summary = summary_of(ks, principal_id)?;
+    let held = summary.as_ref().map_or(0, |p| p.commit_count);
+    check_replacement(principal_id, sequence, held, commits)?;
+    for commit in commits {
+        claims_conflict(ks, commit)?;
+    }
+    let (Some(first), Some(last)) = (commits.first(), commits.last()) else {
+        return Err(IndexerError::Consistency("no commits to index".into()));
+    };
+    let created = match summary {
+        Some(p) if sequence > 0 => p.created,
+        _ => first.timestamp,
     };
 
-    let pid_key = commit.principal_id.as_bytes();
-    let existing_summary: Option<PrincipalSummary> = principals
-        .get(pid_key)
+    let mut staged = Staged::default();
+    let (lower, upper) = commit_key_range(principal_id, sequence, u64::MAX);
+    for guard in ks.commits.range(lower..=upper) {
+        let (key, value) = guard.into_inner().map_err(to_backend_err)?;
+        let row: CommitRow = de(&value)?;
+        for (digest, holder) in &row.entries {
+            let key = holder_key(digest, holder);
+            let kept = staged
+                .holder(ks, &key)?
+                .filter(|h| h.sequence < Some(sequence));
+            staged.holders.insert(key, kept);
+        }
+        for pr in &row.pg {
+            staged.aliases.insert(pr.to_string().into_bytes(), None);
+        }
+        if !row.pg.is_empty() {
+            staged.aliases.insert(pg_marker_key(principal_id), None);
+        }
+        staged.commits.insert(key.to_vec(), None);
+    }
+    // A kept commit may hold a withdrawn digest too (a repeated root): the
+    // holder falls back to it.
+    if sequence > 0 {
+        let (lower, upper) = commit_key_range(principal_id, 0, sequence - 1);
+        for guard in ks.commits.range(lower..=upper) {
+            let row: CommitRow = de(&guard.value().map_err(to_backend_err)?)?;
+            for (digest, holder) in row.entries {
+                let key = holder_key(&digest, &holder);
+                if let Some(slot) = staged.holders.get_mut(&key) {
+                    let mut merged: Vec<EntityRef> = slot.take().into_iter().collect();
+                    merge_holder(&mut merged, holder);
+                    *slot = merged.pop();
+                }
+            }
+        }
+    }
+    for commit in commits {
+        staged.commit(ks, commit)?;
+    }
+    staged.write(db, ks, last, sequence + commits.len() as u64, created)
+}
+
+/// The principal summary stored under exactly `principal_id`.
+fn summary_of(
+    ks: &Keyspaces,
+    principal_id: &PrincipalGenesis,
+) -> Result<Option<PrincipalSummary>, IndexerError> {
+    ks.principals
+        .get(principal_id.to_string().as_bytes())
         .map_err(to_backend_err)?
         .map(|b| de(&b))
-        .transpose()?;
+        .transpose()
+}
 
-    let commit_count = existing_summary.as_ref().map_or(0, |p| p.commit_count) + 1;
-    let created = existing_summary
-        .as_ref()
-        .map_or(commit.timestamp, |p| p.created);
+/// Rows a write will put (`Some`) or remove (`None`), keyed so that no
+/// batch carries one key twice: a replacement withdraws and re-writes the
+/// same positions, aliases and holders.
+#[derive(Default)]
+struct Staged {
+    commits: std::collections::BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    aliases: std::collections::BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    holders: std::collections::BTreeMap<Vec<u8>, Option<EntityRef>>,
+    keys: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+}
 
-    let first_blob_hash = commit
-        .blob_hashes
-        .first()
-        .cloned()
-        .ok_or_else(|| IndexerError::Consistency("commit has no blob hashes".into()))?;
-
-    // All writes below land in one atomic batch: a crash mid-`index_commit`
-    // must never leave `commits` updated without `tips`/`principals`
-    // following (or vice versa) -- matching `SqliteIndexer`'s single
-    // transaction and `MemoryIndexer`'s single lock-guarded mutation, not
-    // a weaker per-keyspace-independent write.
-    let mut batch = db.batch();
-
-    batch.insert(commits, key, ser(&commit_ref)?);
-
-    batch.insert(
-        tips,
-        pid_key,
-        ser(&TipState {
-            principal_id: commit.principal_id.clone(),
-            pr: primary_pr.clone(),
-            sr: primary_sr.clone(),
-            ar: primary_ar.clone(),
-            cr: primary_cr.clone(),
-            commit_id: primary_cid.clone(),
-            commit_count,
-            last_updated: commit.timestamp,
-        })?,
-    );
-
-    batch.insert(
-        principals,
-        pid_key,
-        ser(&PrincipalSummary {
-            principal_id: commit.principal_id.clone(),
-            pr: primary_pr,
-            commit_count,
-            created,
-            last_updated: commit.timestamp,
-        })?,
-    );
-
-    for coz in &commit.cozies {
-        let entity_type = if coz.typ.starts_with("cyphr/action") || coz.typ.contains("/action") {
-            EntityType::Action
-        } else {
-            EntityType::Transaction
-        };
-
-        for digest_key in [coz.blob_hash.to_string(), coz.czd.clone()] {
-            batch.insert(
-                digests,
-                digest_key.as_bytes(),
-                ser(&EntityRef {
-                    digest: digest_key.clone(),
-                    blob_hash: coz.blob_hash,
-                    entity_type,
-                    sequence: Some(commit.sequence),
-                })?,
-            );
+impl Staged {
+    /// The holder row `key` will hold: as staged, else as stored.
+    fn holder(&self, ks: &Keyspaces, key: &[u8]) -> Result<Option<EntityRef>, IndexerError> {
+        match self.holders.get(key) {
+            Some(staged) => Ok(staged.clone()),
+            None => ks
+                .digests
+                .get(key)
+                .map_err(to_backend_err)?
+                .map(|bytes| de::<EntityRef>(&bytes))
+                .transpose(),
         }
     }
 
-    for variant in commit
-        .commit_ids
-        .iter()
-        .chain(commit.prs.iter())
-        .chain(commit.srs.iter())
-        .chain(commit.ars.iter())
-        .chain(commit.crs.iter())
-    {
+    /// Stage `commit`'s chain entry, PG aliases, digest holders and keys.
+    ///
+    /// Every digest names its set of holders, one key per holder, so this
+    /// is O(1) in the holder count: read the holder's own entry, merge this
+    /// commit's claim in (order-independently, see `merge_holder`), and
+    /// stage that one entry. A digest repeated within the commit merges
+    /// first.
+    fn commit(&mut self, ks: &Keyspaces, commit: &IndexableCommit) -> Result<(), IndexerError> {
+        let entries = digest_entries(commit)?;
+        for (digest, holder) in &entries {
+            let key = holder_key(digest, holder);
+            let mut merged: Vec<EntityRef> = self.holder(ks, &key)?.into_iter().collect();
+            merge_holder(&mut merged, holder.clone());
+            self.holders.insert(key, merged.pop());
+        }
+
+        let id = commit.principal_id.to_string();
+        let pid_key = id.as_bytes();
+        // The principal's own id needs no alias.
+        let pg: Vec<PrincipalGenesis> = commit
+            .pg
+            .iter()
+            .filter(|pr| **pr != commit.principal_id)
+            .cloned()
+            .collect();
+        for pr in &pg {
+            self.aliases
+                .insert(pr.to_string().into_bytes(), Some(pid_key.to_vec()));
+        }
+        if !commit.pg.is_empty() {
+            self.aliases
+                .insert(pg_marker_key(&commit.principal_id), Some(Vec::new()));
+        }
+
+        for key_info in &commit.keys {
+            self.keys
+                .insert(key_info.thumbprint.as_bytes().to_vec(), ser(key_info)?);
+        }
+
+        let row = CommitRow {
+            commit: CommitRef {
+                commit_id: commit.commit_ids.first().cloned().unwrap_or_default(),
+                sequence: commit.sequence,
+                pre: commit.pre.clone(),
+                pr: commit.prs.first().cloned().unwrap_or_default(),
+                sr: commit.srs.first().cloned(),
+                ar: commit.ars.first().cloned(),
+                cr: commit.crs.first().cloned().unwrap_or_default(),
+                blob_hashes: commit.blob_hashes.clone(),
+                manifest: commit.manifest,
+            },
+            entries,
+            pg,
+        };
+        self.commits.insert(
+            commit_key(&commit.principal_id, commit.sequence),
+            Some(ser(&row)?),
+        );
+        Ok(())
+    }
+
+    /// Write everything staged in one atomic batch, with `tip` (the
+    /// principal's `commit_count`th commit) as its tip and summary.
+    ///
+    /// Also writes the `meta` partition's registry claim (S3a,
+    /// c-registry-generated) in the SAME batch, so that claim is produced
+    /// by, and only by, this write-sealed derivation path -- never a value
+    /// written independently of it. A write that bypasses this entirely
+    /// (raw fjall access, exactly the class `IndexerWrite`'s
+    /// [`DeriveToken`] seals off) can still edit `index_meta` directly, but
+    /// doing so no longer matches what [`FjallIndexer::registry`] reports
+    /// for a store this path produced, which is the divergence
+    /// `rs/cyphr-storage/tests/rebuild_compare.rs`'s m3 mutation asserts.
+    fn write(
+        self,
+        db: &Database,
+        ks: &Keyspaces,
+        tip: &IndexableCommit,
+        commit_count: u64,
+        created: i64,
+    ) -> Result<(), IndexerError> {
+        let mut batch = db.batch();
+        let rows = [(&ks.commits, self.commits), (&ks.aliases, self.aliases)];
+        for (keyspace, staged) in rows {
+            for (key, value) in staged {
+                match value {
+                    Some(value) => batch.insert(keyspace, key, value),
+                    None => batch.remove(keyspace, key),
+                }
+            }
+        }
+        for (key, holder) in self.holders {
+            match holder {
+                Some(holder) => batch.insert(&ks.digests, key, ser(&holder)?),
+                None => batch.remove(&ks.digests, key),
+            }
+        }
+        for (key, value) in self.keys {
+            batch.insert(&ks.public_keys, key, value);
+        }
+
         batch.insert(
-            digests,
-            variant.as_bytes(),
-            ser(&EntityRef {
-                digest: variant.clone(),
-                blob_hash: first_blob_hash,
-                entity_type: EntityType::Commit,
-                sequence: Some(commit.sequence),
+            &ks.meta,
+            META_KEY,
+            ser(&IndexMeta {
+                version: SCHEMA_VERSION,
+                partitions: PARTITION_NAMES.iter().map(|s| s.to_string()).collect(),
             })?,
         );
+        let id = tip.principal_id.to_string();
+        let pid_key = id.as_bytes();
+        let pr = tip.prs.first().cloned().unwrap_or_default();
+        batch.insert(
+            &ks.tips,
+            pid_key,
+            ser(&TipState {
+                principal_id: tip.principal_id.clone(),
+                pr: pr.clone(),
+                sr: tip.srs.first().cloned(),
+                ar: tip.ars.first().cloned(),
+                cr: tip.crs.first().cloned().unwrap_or_default(),
+                commit_id: tip.commit_ids.first().cloned().unwrap_or_default(),
+                commit_count,
+                last_updated: tip.timestamp,
+            })?,
+        );
+        batch.insert(
+            &ks.principals,
+            pid_key,
+            ser(&PrincipalSummary {
+                principal_id: tip.principal_id.clone(),
+                pr,
+                commit_count,
+                created,
+                last_updated: tip.timestamp,
+            })?,
+        );
+        batch.commit().map_err(to_backend_err)
     }
-
-    for key_info in &commit.keys {
-        batch.insert(public_keys, key_info.thumbprint.as_bytes(), ser(key_info)?);
-    }
-
-    batch.commit().map_err(to_backend_err)
 }
 
 #[cfg(test)]

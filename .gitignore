@@ -1,8 +1,8 @@
 .vscode
 target
-Cargo.lock
 .repomap*
 .ledger/
 .meetings
 .scratch
 .grepai/
+rs/mutants.out/

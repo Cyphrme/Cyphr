@@ -25,6 +25,50 @@ pub struct PoolMeta {
     /// Named keys.
     #[serde(default)]
     pub key: Vec<PoolKey>,
+    /// Numbered keys: derived on load, never stored in the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numbered: Option<NumberedKeys>,
+}
+
+/// Recipe for the numbered keys `#0 .. #<count-1>`.
+///
+/// Key `#n` is the Ed25519 key whose private half is `SHA-256(seed "/" n)`
+/// (n in decimal). Ed25519 takes any 32 bytes as a private key, so the
+/// derivation needs no rejection loop. This is test material derived from a
+/// public seed: it protects nothing, and the seed is never a protocol hash
+/// input. Changing `seed` changes every numbered vector.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NumberedKeys {
+    /// Public seed mixed into every derivation.
+    pub seed: String,
+    /// How many numbered keys exist.
+    pub count: u32,
+}
+
+impl NumberedKeys {
+    /// The pool key named `#<n>`.
+    ///
+    /// # Errors
+    ///
+    /// `PoolValidation` if the Ed25519 public half cannot be derived.
+    pub fn key(&self, n: u32) -> Result<PoolKey, Error> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        let prv = coz::HashAlg::Sha256.hash_bytes(format!("{}/{n}", self.seed).as_bytes());
+        let pub_key =
+            coz::Alg::Ed25519
+                .derive_public_key(&prv)
+                .ok_or_else(|| Error::PoolValidation {
+                    message: format!("numbered key #{n}: Ed25519 derivation failed"),
+                })?;
+        Ok(PoolKey {
+            name: format!("#{n}"),
+            alg: "Ed25519".to_string(),
+            pub_key: Base64UrlUnpadded::encode_string(&pub_key),
+            prv: Some(Base64UrlUnpadded::encode_string(&prv)),
+            tag: Some(format!("Numbered test key {n}")),
+        })
+    }
 }
 
 /// A key in the pool.
@@ -67,6 +111,56 @@ impl PoolKey {
             // with UnsupportedAlgorithm during replay.
             Ok(coz::Thumbprint::from_bytes(pub_bytes))
         }
+    }
+
+    /// This key as a [`cyphr::Key`] (its `alg`, `pub` and thumbprint).
+    ///
+    /// # Errors
+    ///
+    /// `PoolValidation` if `pub` is not base64url or the key is refused by
+    /// the core (an algorithm it does not support).
+    pub fn key(&self) -> Result<cyphr::Key, Error> {
+        use coz::base64ct::Encoding;
+
+        let pub_bytes =
+            coz::base64ct::Base64UrlUnpadded::decode_vec(&self.pub_key).map_err(|e| {
+                Error::PoolValidation {
+                    message: format!("key '{}': invalid base64url pub: {e}", self.name),
+                }
+            })?;
+        cyphr::Key::new(self.alg.clone(), self.compute_tmb()?, pub_bytes).map_err(|e| {
+            Error::PoolValidation {
+                message: format!("key '{}': {e}", self.name),
+            }
+        })
+    }
+
+    /// A software signer over this key's private half.
+    ///
+    /// # Errors
+    ///
+    /// `MissingPrivateKey` for a public-only key; `PoolValidation` if a
+    /// half is not base64url.
+    pub fn software_signer(&self) -> Result<cyphr::signer::SoftwareSigner, Error> {
+        use coz::base64ct::Encoding;
+
+        let decode = |what: &str, v: &str| {
+            coz::base64ct::Base64UrlUnpadded::decode_vec(v).map_err(|e| Error::PoolValidation {
+                message: format!("key '{}': invalid base64url {what}: {e}", self.name),
+            })
+        };
+        let prv = self
+            .prv
+            .as_deref()
+            .ok_or_else(|| Error::MissingPrivateKey {
+                name: self.name.clone(),
+            })?;
+        Ok(cyphr::signer::SoftwareSigner::new(
+            &self.alg,
+            &decode("prv", prv)?,
+            &decode("pub", &self.pub_key)?,
+            &self.compute_tmb()?,
+        ))
     }
 
     /// Compute thumbprint as base64url string.
@@ -116,8 +210,21 @@ impl PoolKey {
 }
 
 impl Pool {
-    /// Load a pool from a TOML file.
+    /// Load a pool from a TOML file, with its numbered keys derived and
+    /// appended after the named ones.
     pub fn load(path: &Path) -> Result<Self, Error> {
+        let mut pool = Self::load_declared(path)?;
+        if let Some(numbered) = pool.pool.numbered.clone() {
+            for n in 0..numbered.count {
+                pool.pool.key.push(numbered.key(n)?);
+            }
+        }
+        Ok(pool)
+    }
+
+    /// Load a pool exactly as the file states it: named keys only. For
+    /// tools that rewrite the file, which must not persist derived keys.
+    pub fn load_declared(path: &Path) -> Result<Self, Error> {
         let content = std::fs::read_to_string(path).map_err(|e| Error::Read {
             path: path.display().to_string(),
             source: e,
@@ -205,22 +312,8 @@ impl Pool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_pool_load() {
-        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("tests/keys/pool.toml");
-
-        let pool = Pool::load(&pool_path).expect("failed to load pool.toml");
-        assert_eq!(pool.pool.version, "0.1.0");
-        assert!(pool.get("golden").is_some());
-        assert!(pool.get("alice").is_some());
-        assert!(pool.get("nonexistent").is_none());
-    }
-
+    /// Backs: the key pool rejects an unsupported-algorithm key (RS256) instead of generating
+    /// fixtures from it. Unit: build-time tooling with no end-to-end surface.
     #[test]
     fn test_pool_validate() {
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -240,6 +333,9 @@ mod tests {
         assert!(errors.iter().any(|e| e.contains("unsupported_key")));
     }
 
+    /// Backs: the golden key in the pool has the pinned thumbprint every golden vector depends on
+    /// (SPEC 2.2 thumbprint); also proves the pool loads. Unit: pool is fixture tooling, not a
+    /// protocol surface.
     #[test]
     fn test_golden_key_thumbprint() {
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
