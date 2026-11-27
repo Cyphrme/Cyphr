@@ -119,6 +119,11 @@ pub fn verify_naked_revoke(envelope: &Value) -> Result<NakedRevoke, RevokeFailur
         .ok_or(RevokeFailure::Malformed("no pay"))?;
     let sig = Base64UrlUnpadded::decode_vec(text(envelope.get("sig"), "no sig")?)
         .map_err(|_| RevokeFailure::Malformed("sig is not base64url"))?;
+    // SPEC 4.6.1 lists the singular `key` as prohibited, with or without
+    // `keys`.
+    if envelope.get("key").is_some() {
+        return Err(RevokeFailure::Malformed("key is prohibited; use keys"));
+    }
     let key = match envelope
         .get("keys")
         .and_then(Value::as_array)
