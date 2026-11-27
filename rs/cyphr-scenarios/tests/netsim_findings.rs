@@ -533,10 +533,18 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     );
 }
 
-/// `cell`, a base64url string, with its first byte altered.
+/// `cell`, a base64url digest, with its first byte altered. A labelled
+/// digest (`ALG:digest`) keeps its label: only the digest is tampered.
 fn flip_first_byte(cell: &mut serde_json::Value) {
-    let mut bytes = coz::base64ct::Base64UrlUnpadded::decode_vec(cell.as_str().expect("a string"))
-        .expect("base64url");
+    let text = cell.as_str().expect("a string");
+    let (label, digest) = text.split_once(':').map_or(("", text), |(l, d)| (l, d));
+    let mut bytes = coz::base64ct::Base64UrlUnpadded::decode_vec(digest).expect("base64url");
     bytes[0] ^= 0xff;
-    *cell = coz::base64ct::Base64UrlUnpadded::encode_string(&bytes).into();
+    let digest = coz::base64ct::Base64UrlUnpadded::encode_string(&bytes);
+    *cell = if label.is_empty() {
+        digest
+    } else {
+        format!("{label}:{digest}")
+    }
+    .into();
 }
