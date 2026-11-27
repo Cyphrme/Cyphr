@@ -439,18 +439,13 @@ fn pg_ids() -> Vec<PrincipalGenesis> {
         .collect()
 }
 
-/// [`pg_ids`] as the strings a commit records.
-fn pg_variants() -> Vec<String> {
-    pg_ids().iter().map(ToString::to_string).collect()
-}
-
 /// A commit carrying `principal/create`. Its `prs` are the post-commit PR
 /// (which differs from the PG); `pg` is what the engine records for the
 /// PG-establishing commit.
 fn principal_create_commit(name: &str, seq: u64) -> IndexableCommit {
     let mut commit = make_commit(name, seq, 1000 + seq as i64);
     commit.cozies[0].typ = "cyphr.me/cyphr/principal/create".to_string();
-    commit.pg = pg_variants();
+    commit.pg = pg_ids();
     commit
 }
 
@@ -557,6 +552,60 @@ pub async fn alias_pg_variants_resolve_to_the_principal<I: Indexer + IndexerWrit
     }
 }
 
+/// Backs "an id is its canonical spelling" at the index seam, for every
+/// backend: a principal whose id holds two hash variants (a mixed-algorithm
+/// keyset) is the same principal under the value and under its
+/// printed-then-parsed form. Commits written under either form extend one
+/// chain, and a read by either form returns the same tip and chain. Turns red
+/// if a backend keys by the variant map in one place and by the printed
+/// string in another.
+pub async fn a_mixed_algorithm_id_is_one_principal_by_value_or_printed_form<
+    I: Indexer + IndexerWrite,
+>(
+    indexer: &I,
+) {
+    use std::collections::BTreeMap;
+
+    let token = DeriveToken::for_conformance_tests();
+    let variants: BTreeMap<HashAlg, Box<[u8]>> = [
+        (
+            HashAlg::Sha256,
+            digest_bytes("mixed-256", 32).into_boxed_slice(),
+        ),
+        (
+            HashAlg::Sha512,
+            digest_bytes("mixed-512", 64).into_boxed_slice(),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let value = PrincipalGenesis::from_multihash(
+        cyphr::MultihashDigest::new(variants).expect("two variants of their own widths"),
+    )
+    .expect("non-empty");
+    let printed: PrincipalGenesis = value.to_string().parse().expect("the printed form parses");
+
+    let mut first = make_commit("mixed", 0, 1000);
+    first.principal_id = value.clone();
+    let mut second = make_commit("mixed", 1, 2000);
+    second.principal_id = printed.clone();
+    indexer.index_commit(&first, &token).await.expect("first");
+    indexer.index_commit(&second, &token).await.expect("second");
+
+    for id in [&value, &printed] {
+        let tip = indexer.get_tip(id).await.unwrap().expect("tip");
+        assert_eq!(tip.commit_count, 2, "one chain under {id}");
+        assert_eq!(tip.principal_id, printed);
+        let chain = indexer.get_commit_chain(id, None, None).await.unwrap();
+        assert_eq!(chain.len(), 2, "one chain under {id}");
+    }
+    assert_eq!(
+        indexer.list_principals().await.unwrap().len(),
+        1,
+        "the two forms are one principal"
+    );
+}
+
 /// Backs the read-path DoS bound at the index seam: the established-PG
 /// marker is false until the PG-establishing commit is indexed, true for
 /// that principal only (not for a PG variant or another principal), and
@@ -591,10 +640,10 @@ pub async fn pg_established_marker_tracks_the_pg_commit<I: Indexer + IndexerWrit
 }
 
 /// A `principal/create` commit for `id` whose PG variants are `pg`.
-fn create_commit_with_pg(id: &str, seq: u64, pg: &[&str]) -> IndexableCommit {
+fn create_commit_with_pg(id: &str, seq: u64, pg: &[PrincipalGenesis]) -> IndexableCommit {
     let mut c = make_commit(id, seq, 1000 + seq as i64);
     c.cozies[0].typ = "cyphr.me/cyphr/principal/create".to_string();
-    c.pg = pg.iter().map(|s| s.to_string()).collect();
+    c.pg = pg.to_vec();
     c
 }
 
@@ -611,7 +660,6 @@ pub async fn alias_conflict_second_principal_is_refused<I: Indexer + IndexerWrit
     let (a, b) = ("alice-id", "bob-id");
     let pg_id = PrincipalGenesis::from_digest(HashAlg::Sha256, digest_bytes("contested-pg", 32))
         .expect("a 32-byte digest is a SHA-256 width");
-    let pg = pg_id.to_string();
     for id in [a, b] {
         indexer
             .index_commit(&make_commit(id, 0, 1000), &token)
@@ -619,12 +667,18 @@ pub async fn alias_conflict_second_principal_is_refused<I: Indexer + IndexerWrit
             .expect("commit 0");
     }
     indexer
-        .index_commit(&create_commit_with_pg(a, 1, &[&pg]), &token)
+        .index_commit(
+            &create_commit_with_pg(a, 1, std::slice::from_ref(&pg_id)),
+            &token,
+        )
         .await
         .expect("A establishes the PG");
 
     let err = indexer
-        .index_commit(&create_commit_with_pg(b, 1, &[&pg]), &token)
+        .index_commit(
+            &create_commit_with_pg(b, 1, std::slice::from_ref(&pg_id)),
+            &token,
+        )
         .await
         .expect_err("B re-pointing A's alias must be refused");
     assert!(matches!(err, IndexerError::Conflict(_)), "got {err:?}");
@@ -650,7 +704,10 @@ pub async fn alias_conflict_second_principal_is_refused<I: Indexer + IndexerWrit
     );
     assert!(!indexer.is_pg_established(&pid(b)).await.unwrap());
     indexer
-        .index_commit(&create_commit_with_pg(a, 1, &[&pg]), &token)
+        .index_commit(
+            &create_commit_with_pg(a, 1, std::slice::from_ref(&pg_id)),
+            &token,
+        )
         .await
         .expect("re-indexing A's own commit stays a no-op");
 }
@@ -669,9 +726,8 @@ pub async fn alias_conflict_naming_another_principal_is_refused<I: Indexer + Ind
             .await
             .expect("commit 0");
     }
-    let a_spelled = pid(a).to_string();
     let err = indexer
-        .index_commit(&create_commit_with_pg(b, 1, &[&a_spelled]), &token)
+        .index_commit(&create_commit_with_pg(b, 1, &[pid(a)]), &token)
         .await
         .expect_err("an alias spelling A's id must be refused");
     assert!(matches!(err, IndexerError::Conflict(_)), "got {err:?}");
@@ -986,6 +1042,7 @@ pub async fn run_all<I: Indexer + IndexerWrite, G>(fresh: impl Fn() -> (I, G)) {
     new_indexer_methods(&fresh().0).await;
     alias_pg_variants_resolve_to_the_principal(&fresh().0).await;
     pg_established_marker_tracks_the_pg_commit(&fresh().0).await;
+    a_mixed_algorithm_id_is_one_principal_by_value_or_printed_form(&fresh().0).await;
     alias_conflict_second_principal_is_refused(&fresh().0).await;
     alias_conflict_naming_another_principal_is_refused(&fresh().0).await;
     digest_conflict_same_principal_repeat_is_allowed(&fresh().0).await;

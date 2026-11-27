@@ -76,6 +76,10 @@ rule_crate_name()    { git grep -nE 'cyphr-client|cyphr_client' -- rs packaging 
 # short names `pg`, `principal`, `own_principal`, `id` for one) is a place
 # the type was not adopted. Plain `rs/*/src` would match nothing; the
 # `:(glob)` form is the one that selects files.
+# `cyphr-scenarios` is outside this line on purpose (see TESTS): it is a
+# black-box harness that drives the CLI and server binaries and holds a
+# principal as the text those programs print (its `Principal` handle),
+# parsing to the type at each call into a library (`Principal::pg`).
 rule_principal_id_type() { git grep -nE 'principal_id: &str|\b(pg|principal|own_principal): &str' -- "$SRC" "${TESTS[@]}"; }
 # The field of `PrincipalGenesis` is private and nothing outside
 # `rs/cyphr/src/state.rs` builds one as a tuple. Tests count here: the

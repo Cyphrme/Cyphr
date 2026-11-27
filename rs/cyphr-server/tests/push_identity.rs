@@ -89,7 +89,7 @@ async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
 }
 
 /// Backs: same refusal for a well-formed-looking but wrong 32-byte id on
-/// an attestor server, where `parse_genesis_id_str` passes (right length)
+/// an attestor server, where the id is well formed
 /// yet the id is not this genesis's. This is the in-tree
 /// `routes.rs` `push_test_genesis` shape (`[0x61; 32]`). Red now because
 /// only the id's byte length is checked.

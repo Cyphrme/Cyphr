@@ -27,10 +27,9 @@ mod common;
 
 use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post_json};
 
-/// The id a `/tip` response reports for `principal_id`: its bare digest
-/// (routes report the stored PG without its algorithm label).
+/// The id a `/tip` response reports for `principal_id`: its labelled form.
 fn reported_id(principal_id: &cyphr::PrincipalGenesis) -> String {
-    principal_id.wire_digest()
+    principal_id.to_string()
 }
 
 // ========================================================================

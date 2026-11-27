@@ -331,7 +331,7 @@ impl Harness {
         let held = PeerTip::parse(&v)?;
         // The observer must be reading the principal it asked about.
         assert!(
-            p.same_as(&held.principal_id),
+            p.pg() == held.principal_id,
             "peer `{peer}` answered for {}, asked about {}",
             held.principal_id,
             p.0

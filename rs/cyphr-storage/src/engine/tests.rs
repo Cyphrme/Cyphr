@@ -456,7 +456,7 @@ async fn submit_commit_refuses_id_not_derived_from_genesis() {
 async fn alias_conflict_is_refused_before_anything_is_written() {
     let blobs = MemoryBlobStore::new();
     let engine = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
-    let pg = vec![contested_pg().to_string()];
+    let pg = vec![contested_pg()];
 
     let a0: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":1}}"];
     engine
@@ -519,7 +519,7 @@ async fn alias_conflict_is_refused_before_anything_is_written() {
 #[tokio::test]
 async fn rebuild_quarantines_a_contested_pg_alias() {
     use super::{QuarantineReason, QuarantinedManifest};
-    let pg = vec![contested_pg().to_string()];
+    let pg = vec![contested_pg()];
     let mut reports = Vec::new();
     for order in [["alice", "bob"], ["bob", "alice"]] {
         let engine = test_engine();

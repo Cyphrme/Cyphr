@@ -202,7 +202,7 @@ async fn first_keyed_boot_creates_and_serves_the_principal() {
         .expect("first keyed boot bootstraps the principal");
 
     assert!(
-        !sp.pg().wire_digest().is_empty(),
+        !sp.pg().to_string().is_empty(),
         "a bootstrapped principal has a PG"
     );
 
@@ -458,14 +458,20 @@ async fn token_after_rotation_is_signed_by_the_new_key() {
 async fn own_tip_keyed_server_signs_its_own_pg_tip() {
     let (state, _identity, _dir) = common::attestor_server().await;
     let pg = state.principal.as_ref().expect("bootstrapped").pg().clone();
-    let bare = pg.wire_digest();
+    let bare = pg
+        .to_string()
+        .split_once(':')
+        .expect("labelled id")
+        .1
+        .to_string();
     let app = cyphr_server::build_router(state);
 
     let (status, env) = common::get_json(app.clone(), &format!("/tip?pg={pg}")).await;
     assert_eq!(status, axum::http::StatusCode::OK, "{pg}: {env:?}");
     assert_eq!(env["statement"]["kind"], "signed", "{pg}: {env:?}");
     assert_eq!(
-        env["statement"]["coz"]["pay"]["pg"], bare,
+        env["statement"]["coz"]["pay"]["pg"],
+        pg.to_string(),
         "the report attests the server's own PG"
     );
 

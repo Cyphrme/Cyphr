@@ -59,7 +59,7 @@ struct Forge {
     sequence: u64,
     /// Primary commit id; may deliberately equal a victim's real digest.
     commit_id: String,
-    pg: Vec<String>,
+    pg: Vec<PrincipalGenesis>,
     /// Blob the forged entity should resolve to.
     blob_hash: Blake3Hash,
 }
@@ -327,7 +327,7 @@ async fn pushed_coz_cannot_plant_a_pg_alias_on_rebuild() {
 
     let phantom = fake_pg(0xD0);
     let mut forge = Forge::naming(&phantom, 0xD1);
-    forge.pg = vec![planted.to_string()];
+    forge.pg = vec![planted.clone()];
     w.push_forged(&forge).await;
 
     w.state.engine.rebuild_index_from_manifests().await.unwrap();

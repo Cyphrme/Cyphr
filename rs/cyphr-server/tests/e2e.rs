@@ -51,8 +51,8 @@ async fn tip_after_bootstrap() {
     );
     assert_eq!(
         tip["principal_id"],
-        principal_id.wire_digest(),
-        "the wire spelling of an id is its bare digest"
+        principal_id.to_string(),
+        "the wire spelling of an id is its labelled form"
     );
 
     let engine_tip = state
@@ -86,8 +86,8 @@ async fn patch_after_bootstrap() {
 
     assert_eq!(
         patch["principal_id"],
-        principal_id.wire_digest(),
-        "the wire spelling of an id is its bare digest"
+        principal_id.to_string(),
+        "the wire spelling of an id is its labelled form"
     );
     let entries = patch["entries"].as_array().unwrap();
     let commits = fixture["commits"].as_array().unwrap();
@@ -414,7 +414,7 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
             principal_id: &cyphr::PrincipalGenesis,
             generation: u64,
         ) -> Result<cyphr_blob_fjall::storage_fjall::FjallStorage, String> {
-            if principal_id.wire_digest() == self.parked_id.wire_digest() {
+            if principal_id == &self.parked_id {
                 let mut s = self.gate.state.lock().unwrap();
                 if s.0 {
                     s.1 = true;
@@ -646,8 +646,8 @@ async fn push_new_principal_happy_path() {
         get_json(app.clone(), &format!("/tip?pg={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK);
     let tip = envelope_payload(&tip_envelope);
-    // `/tip` names the principal by its bare canonical digest.
-    assert_eq!(tip["principal_id"], principal_id.wire_digest());
+    // `/tip` names the principal by its labelled canonical id.
+    assert_eq!(tip["principal_id"], principal_id.to_string());
     assert_eq!(tip["commit_count"].as_u64().unwrap(), 1);
 
     let (patch_status, patch_envelope) = get_json(app, &format!("/patch?pg={principal_id}")).await;

@@ -56,7 +56,7 @@ async fn line(g: &Kp, keys: &[&Kp], t: i64) -> Line {
 
 struct Fixture {
     g: Kp,
-    /// The bare digest the server's evidence items carry on the wire.
+    /// The labelled id the server's evidence items carry on the wire.
     pg: String,
     id: cyphr::PrincipalGenesis,
     canonical: Line,
@@ -152,7 +152,7 @@ fn fixture() -> &'static Fixture {
             let unrelated = line(&g, &refs[2 * DEPTH..3 * DEPTH], t).await;
             let sibling = line(&g, &[refs[DEPTH], refs[3 * DEPTH]], t).await;
             Fixture {
-                pg: g.tmb.to_b64(),
+                pg: format!("SHA-512:{}", g.tmb.to_b64()),
                 id: format!("SHA-512:{}", g.tmb.to_b64())
                     .parse()
                     .expect("labelled id"),

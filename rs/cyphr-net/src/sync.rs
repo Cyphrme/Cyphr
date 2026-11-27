@@ -1513,7 +1513,7 @@ async fn locate_fork<C: Connector>(
     let proved = |rival: &WireBundle| {
         serde_json::json!({
             "kind": "principal-fork",
-            "pg": record.id.wire_digest(),
+            "pg": record.id,
             "height": height,
             "pre": pre,
             "a": ours,

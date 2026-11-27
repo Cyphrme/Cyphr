@@ -576,6 +576,19 @@ pub fn genesis_principal_id(genesis: &crate::Genesis) -> Result<PrincipalGenesis
     Ok(cyphr::PrincipalState::genesis(key.clone())?.pr_id()?)
 }
 
+/// Each variant of a [`MultihashDigest`] as its own single-variant id: the
+/// spellings a principal's PG is addressed by.
+fn variant_ids(
+    mh: &cyphr::multihash::MultihashDigest,
+) -> Result<Vec<PrincipalGenesis>, EngineError> {
+    mh.algorithms()
+        .map(|alg| {
+            let digest = mh.get_or_err(alg)?;
+            Ok(PrincipalGenesis::from_digest(alg, digest.to_vec())?)
+        })
+        .collect()
+}
+
 /// Format all variants of a [`MultihashDigest`] as tagged digest strings (`"alg:base64url"`).
 fn format_multihash_all(
     mh: &cyphr::multihash::MultihashDigest,

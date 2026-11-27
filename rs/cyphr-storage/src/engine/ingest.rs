@@ -948,9 +948,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     (None, None) => return Err(no_disclosed_genesis()),
                 };
                 let key = record_key(&genesis, bundle).await;
-                let names_key = key
-                    .as_ref()
-                    .is_some_and(|key| claimed.as_multihash().matches(key.as_multihash()));
+                let names_key = key.as_ref().is_some_and(|key| claimed == key);
                 // A commit that is no genesis commit derives no key; the
                 // core refuses it with its own reason below.
                 if key.is_some() && !names_key {
@@ -1732,7 +1730,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .unwrap_or_default();
 
         let pg = match principal.pg() {
-            Some(pg) if !had_pg => format_multihash_all(pg.as_multihash())?,
+            Some(pg) if !had_pg => variant_ids(pg.as_multihash())?,
             _ => Vec::new(),
         };
 

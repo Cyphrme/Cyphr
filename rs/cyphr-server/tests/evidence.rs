@@ -278,7 +278,7 @@ async fn fork_evidence_is_served_and_verified_offline() {
     let proof = verify_principal_fork(item, &pr.id, genesis().await, &held)
         .await
         .expect("the client verifies the fork from the chain it fetched");
-    assert_eq!((proof.pg, proof.height), (pr.id.wire_digest(), 1));
+    assert_eq!((proof.pg, proof.height), (pr.id.clone(), 1));
 
     let refused = async |item: &serde_json::Value,
                          pg: &cyphr::PrincipalGenesis,
@@ -611,7 +611,7 @@ async fn a_nonce_siblings_fork_is_not_evidence_against_the_other() {
     };
     let relabel = |item: &serde_json::Value| {
         let mut item = item.clone();
-        item["pg"] = serde_json::json!(honest_pg.wire_digest());
+        item["pg"] = serde_json::json!(honest_pg.to_string());
         item
     };
 

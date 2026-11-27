@@ -85,7 +85,7 @@ pub fn verify(cli: &Cli, identity: &PrincipalGenesis) -> crate::Result<()> {
     if commits.is_empty() {
         // Genesis state - verify by reconstructing from keystore
         let keystore = super::common::open_backend(cli)?;
-        let key = load_key_from_keystore(&keystore, &identity.wire_digest())?;
+        let key = load_key_from_keystore(&keystore, &super::common::keystore_name(identity)?)?;
         let principal = cyphr::PrincipalState::genesis(key)?;
 
         // Verify PG matches (L1 has no PG)

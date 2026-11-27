@@ -53,8 +53,13 @@ impl Harness {
         assert_eq!(used, chosen, "verdict peers differ from the chosen set");
 
         // anchor: the one the scenario chose.
+        // A verdict names a genesis-key anchor by its thumbprint, which is
+        // the digest part of a Level 1 principal's labelled id.
         assert!(
-            Principal(e.anchor_id.to_owned()).same_as(&v.anchor.id),
+            e.anchor_id == v.anchor.id
+                || e.anchor_id
+                    .split_once(':')
+                    .is_some_and(|(_, digest)| digest == v.anchor.id),
             "verdict anchor {} is not the chosen {}",
             v.anchor.id,
             e.anchor_id
@@ -182,11 +187,9 @@ impl Harness {
             .evidence
             .iter()
             .map(|x| match x {
-                Evidence::PrincipalFork(pr) => Proven::PrincipalFork {
-                    pg: pr.bare().to_owned(),
-                },
+                Evidence::PrincipalFork(pr) => Proven::PrincipalFork { pg: pr.pg() },
                 Evidence::PeerEquivocation { peer } => Proven::PeerEquivocation {
-                    pg: p.bare().to_owned(),
+                    pg: p.pg(),
                     peer: peer.clone(),
                 },
             })

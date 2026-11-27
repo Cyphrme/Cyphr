@@ -76,17 +76,10 @@ pub type ActionResult<T> = Result<T, ActionError>;
 
 /// A principal's canonical address: the PG once it is established, or the
 /// genesis tmb (equal to its PR) while it is a Level 1-2 principal that has
-/// not committed. Peers report it as a bare digest, so compare handles with
-/// [`Principal::bare`], never as raw strings.
+/// not committed, in the labelled spelling every surface prints. Compare
+/// handles through [`Principal::pg`], never as raw strings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Principal(pub String);
-
-fn split_tag(s: &str) -> (Option<&str>, &str) {
-    match s.split_once(':') {
-        Some((tag, digest)) => (Some(tag), digest),
-        None => (None, s),
-    }
-}
 
 impl Principal {
     /// The handle as the typed id. A handle comes from what the CLI or a
@@ -100,19 +93,6 @@ impl Principal {
         self.0
             .parse()
             .unwrap_or_else(|e| panic!("scenario principal {:?} is not a labelled id: {e}", self.0))
-    }
-
-    /// The handle without any algorithm tag (`SHA-512:abc` and `abc` are
-    /// one address).
-    pub fn bare(&self) -> &str {
-        split_tag(&self.0).1
-    }
-
-    /// Whether `other` names the same principal in any spelling: the same
-    /// digest, and the same algorithm tag when both carry one.
-    pub fn same_as(&self, other: &str) -> bool {
-        let ((ta, da), (tb, db)) = (split_tag(&self.0), split_tag(other));
-        da == db && (ta.is_none() || tb.is_none() || ta == tb)
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,8 +114,8 @@ pub struct LocalView {
 /// What a peer itself holds for a principal, read from its own `GET /tip`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerTip {
-    /// The principal as the peer reports it (a bare digest).
-    pub principal_id: String,
+    /// The principal as the peer reports it.
+    pub principal_id: cyphr::PrincipalGenesis,
     /// The peer's one tip while Active; while it reports Error (no single
     /// tip, SPEC 15.5) its first head, with `pr` and `ar` empty.
     pub tip: Tip,
@@ -166,7 +146,7 @@ impl PeerTip {
                 .map(|h| Some(Tip(h["commit_id"].as_str()?.to_owned())))
                 .collect::<Option<_>>()?;
             return Some(PeerTip {
-                principal_id: t["principal_id"].as_str()?.to_owned(),
+                principal_id: t["principal_id"].as_str()?.parse().ok()?,
                 tip: heads.first()?.clone(),
                 head_heights: t["heads"]
                     .as_array()?
@@ -183,7 +163,7 @@ impl PeerTip {
         }
         let tip = Tip(t["commit_id"].as_str()?.to_owned());
         Some(PeerTip {
-            principal_id: t["principal_id"].as_str()?.to_owned(),
+            principal_id: t["principal_id"].as_str()?.parse().ok()?,
             heads: vec![tip.clone()],
             head_heights: vec![t["commit_count"].as_u64()?],
             standing: Standing::Active,

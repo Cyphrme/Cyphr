@@ -508,8 +508,8 @@ async fn anchor_is_reported_and_subject_is_the_replayed_pg() {
     let (a, b) = (kp(), kp());
     let (line, pg) = genesis_over(&a, &[&b]).await;
     assert_ne!(
-        pg.wire_digest(),
-        a.tmb.to_b64(),
+        pg.to_string(),
+        format!("SHA-256:{}", a.tmb.to_b64()),
         "the fixture's PG must differ from the anchor"
     );
     let mirror = Mirror::of(line);
@@ -532,8 +532,8 @@ async fn anchor_is_reported_and_subject_is_the_replayed_pg() {
         .expect("signed in");
     assert_eq!(session.principal, pg, "the subject is the replayed PG");
     assert_ne!(
-        session.principal.wire_digest(),
-        a.tmb.to_b64(),
+        session.principal.to_string(),
+        format!("SHA-256:{}", a.tmb.to_b64()),
         "not the anchor's thumbprint"
     );
     assert_eq!(session.trust.principal, pg);
@@ -739,7 +739,7 @@ fn forked_peer(
     peer.rival = Some(rival.clone());
     peer.evidence = vec![json!({
         "kind": "principal-fork",
-        "pg": pg.wire_digest(),
+        "pg": pg.to_string(),
         "height": height,
         "pre": height.checked_sub(1).map(|i| canonical.prs[i].clone()),
         "a": entry_bundle(height, &canonical.entries[height]),

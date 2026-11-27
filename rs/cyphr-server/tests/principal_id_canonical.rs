@@ -55,7 +55,9 @@ fn sha256_and_sha384_ids(p: &cyphr::Principal) -> (String, String) {
 /// `golden` (no nonce): its bare tmb `X` and `SHA-256:X` (SPEC 5.1).
 fn implicit_spellings(pool: &test_fixtures::Pool) -> (String, String) {
     let id = common::implicit_principal_id(pool, "golden");
-    (id.wire_digest(), id.to_string())
+    let labelled = id.to_string();
+    let bare = labelled.split_once(':').expect("labelled id").1.to_string();
+    (bare, labelled)
 }
 
 async fn tip(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value) {

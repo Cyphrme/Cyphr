@@ -202,7 +202,7 @@ impl Connector for Fake {
 fn fork_item(pg: &cyphr::PrincipalGenesis, a: &Line, b: &Line, height: usize) -> Value {
     json!({
         "kind": "principal-fork",
-        "pg": pg.wire_digest(),
+        "pg": pg.to_string(),
         "height": height,
         "pre": height.checked_sub(1).map(|i| a.prs[i].clone()),
         "a": entry_bundle(height, &a.entries[height]),
@@ -447,7 +447,7 @@ async fn record_cutoff_is_its_receipt_and_one_revoke_stands() {
 }
 
 /// A genesis commit opened by `opener` over the key set `{opener} + others`:
-/// its line and bare PG.
+/// its line and PG.
 async fn genesis_over(opener: &Kp, others: &[&Kp]) -> (Line, cyphr::PrincipalGenesis) {
     let mut p = cyphr::Principal::implicit(opener.domain_key(T0))
         .await

@@ -272,6 +272,15 @@ pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
     Ok(cyphr::PrincipalState::genesis(genesis_key)?.pr_id()?)
 }
 
+/// The name a keystore holds a Level 1 identity's genesis key under: the
+/// thumbprint, which is the digest of the id itself (SPEC 3.1).
+pub fn keystore_name(identity: &PrincipalGenesis) -> crate::Result<String> {
+    use cyphr::StateDigest;
+    Ok(Base64UrlUnpadded::encode_string(
+        identity.as_multihash().first_variant()?,
+    ))
+}
+
 /// Load a principal from the storage engine, detached from its durable
 /// commit log ([`CliPrincipal`]); [`save_principal_to_engine`] writes what
 /// the caller then commits.
@@ -289,7 +298,7 @@ pub fn load_principal_from_engine(
         // stored yet. A multi-key principal exists only through its
         // genesis commit (SPEC 5.1), so with no tip there is nothing to
         // resolve it from.
-        let tmb = identity.wire_digest();
+        let tmb = keystore_name(identity)?;
         if keystore.public(&tmb).is_err() {
             return Err(crate::Error::UnresolvableGenesis(identity.to_string()));
         }
@@ -434,7 +443,7 @@ pub fn local_genesis(
     keystore: &impl KeyBackend,
     identity: &PrincipalGenesis,
 ) -> crate::Result<Option<Genesis>> {
-    let tmb = identity.wire_digest();
+    let tmb = keystore_name(identity)?;
     if keystore.public(&tmb).is_ok() {
         return Ok(Some(Genesis::Implicit(load_key_from_keystore(
             keystore, &tmb,

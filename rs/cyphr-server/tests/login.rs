@@ -290,8 +290,7 @@ async fn bootstrap_active_with_key(
     add_key: &str,
 ) -> String {
     let id = bootstrap_active_labelled(app, pool, genesis_name, add_key).await;
-    let pg: cyphr::PrincipalGenesis = id.parse().expect("labelled PG");
-    pg.wire_digest()
+    id.split_once(':').expect("labelled PG").1.to_string()
 }
 
 /// Bootstrap a golden `lifecycle/` fixture so the login handler can load it:

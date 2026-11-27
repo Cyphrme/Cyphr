@@ -123,8 +123,53 @@ impl StateDigest for PrincipalRoot {
 /// let pg = PrincipalGenesis::from_digest(HashAlg::Sha256, vec![0u8; 32]).unwrap();
 /// let _ = &pg.0;
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// # Equality
+///
+/// A principal id is its canonical spelling, the single `ALG:digest` that
+/// `Display` prints: the first variant in the digest's own order, which is
+/// the algorithm `active_algs` names. `Eq`, `Hash` and `Ord` are defined on
+/// that spelling alone, so a genesis holding several variants equals the id
+/// parsed from its own printed form, hashes the same, and sorts with it.
+/// Whether two ids name one principal by a shared hash variant is a
+/// question about roots, [`MultihashDigest::matches`], which is not an
+/// equivalence and so is not `Eq`.
+#[derive(Debug, Clone)]
 pub struct PrincipalGenesis(MultihashDigest);
+
+impl PrincipalGenesis {
+    /// The canonical variant: what `Display` prints and equality compares.
+    /// A genesis is never empty (every constructor refuses it).
+    fn canonical(&self) -> Option<(&HashAlg, &[u8])> {
+        self.0.variants().iter().next().map(|(alg, d)| (alg, &**d))
+    }
+}
+
+impl PartialEq for PrincipalGenesis {
+    fn eq(&self, other: &Self) -> bool {
+        self.canonical() == other.canonical()
+    }
+}
+
+impl Eq for PrincipalGenesis {}
+
+impl std::hash::Hash for PrincipalGenesis {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.canonical().hash(state);
+    }
+}
+
+impl PartialOrd for PrincipalGenesis {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PrincipalGenesis {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.canonical().cmp(&other.canonical())
+    }
+}
 
 impl PrincipalGenesis {
     /// A PG from a digest `bytes` taken under `alg`, the hash that produced
@@ -160,31 +205,6 @@ impl PrincipalGenesis {
     /// `EmptyMultihash` if `pr` has no variants.
     pub fn from_initial(pr: &PrincipalRoot) -> crate::error::Result<Self> {
         Self::from_multihash(pr.0.clone())
-    }
-}
-
-impl PrincipalGenesis {
-    /// The digest of the spelling [`Display`](std::fmt::Display) prints,
-    /// without its label: the form the signed statements a server issues
-    /// carry for `pg` (their `alg` aligns it, SPEC 2.2.3). Output only; an
-    /// input is never read in this spelling.
-    #[must_use]
-    pub fn wire_digest(&self) -> String {
-        let text = self.to_string();
-        text.split_once(':')
-            .map_or(text.clone(), |(_, digest)| digest.to_owned())
-    }
-
-    /// Whether `digest`, a statement's unlabelled `pg`, is the digest of
-    /// one of this genesis's variants. The label is not read: the claim is
-    /// a statement field aligned by its `alg`, not an id.
-    #[must_use]
-    pub fn names_wire_digest(&self, digest: &str) -> bool {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        self.0
-            .variants()
-            .values()
-            .any(|bytes| Base64UrlUnpadded::encode_string(bytes) == digest)
     }
 }
 

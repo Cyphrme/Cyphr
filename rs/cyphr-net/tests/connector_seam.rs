@@ -45,13 +45,14 @@ fn sign(auth: &Authority, pay: serde_json::Value) -> serde_json::Value {
     })
 }
 
-/// A two-entry patch for principal `pr`, signed by `auth`.
+/// A two-entry patch for the principal whose bare digest is `pr` (the
+/// statement carries it labelled), signed by `auth`.
 fn patch_body(auth: &Authority, pr: &str) -> Vec<u8> {
     let digest = |b: u8| format!("SHA-256:{}", b64(b));
     let pay = serde_json::json!({
         "alg": auth.key.alg,
         "typ": "cyphr-server/receipt/tip",
-        "pg": pr,
+        "pg": format!("SHA-256:{pr}"),
         "sequence": 1,
         "commit_id": digest(9),
         "roots": { "pr": digest(1), "sr": digest(2), "ar": digest(3), "cr": digest(4) },

@@ -28,7 +28,7 @@ struct MemoryState {
     public_keys: HashMap<String, PublicKeyInfo>,
     /// Alias table: Principal Root variant → the principal id it names.
     /// Derived state; see [`Indexer::get_tip`] for the resolution rule.
-    aliases: HashMap<String, PrincipalGenesis>,
+    aliases: HashMap<PrincipalGenesis, PrincipalGenesis>,
     /// Principals whose PG is established (see [`Indexer::is_pg_established`]).
     established: std::collections::HashSet<PrincipalGenesis>,
     /// See [`IndexerWrite::set_quarantined`]; survives [`IndexerWrite::clear`].
@@ -42,7 +42,7 @@ struct MemoryState {
 #[derive(Debug)]
 struct Written {
     entries: Vec<(String, EntityRef)>,
-    pg: Vec<String>,
+    pg: Vec<PrincipalGenesis>,
 }
 
 impl MemoryState {
@@ -52,7 +52,7 @@ impl MemoryState {
         if self.tips.contains_key(id) {
             id
         } else {
-            self.aliases.get(&id.to_string()).unwrap_or(id)
+            self.aliases.get(id).unwrap_or(id)
         }
     }
 }
@@ -231,16 +231,11 @@ fn is_indexed(state: &MemoryState, commit: &IndexableCommit) -> Result<bool, Ind
 /// such a write names no new truth, it rewrites an old one. The only
 /// exclusive claim; digests name sets of holders.
 fn claims_conflict(state: &MemoryState, commit: &IndexableCommit) -> Result<(), IndexerError> {
-    for pr in commit
-        .pg
-        .iter()
-        .filter(|pr| **pr != commit.principal_id.to_string())
-    {
-        let owner = state.aliases.get(pr).or_else(|| {
-            pr.parse::<PrincipalGenesis>()
-                .ok()
-                .and_then(|id| state.principals.get_key_value(&id).map(|(k, _)| k))
-        });
+    for pr in commit.pg.iter().filter(|pr| **pr != commit.principal_id) {
+        let owner = state
+            .aliases
+            .get(pr)
+            .or_else(|| state.principals.get_key_value(pr).map(|(k, _)| k));
         if owner.is_some_and(|o| *o != commit.principal_id) {
             return Err(IndexerError::Conflict(format!(
                 "PG alias {pr} already names another principal; refusing to re-point it to {}",
@@ -307,7 +302,7 @@ fn index_one(state: &mut MemoryState, commit: &IndexableCommit) -> Result<(), In
     // Alias each PG variant to the principal. The conflict check
     // above guarantees none names anyone else.
     for pr in &commit.pg {
-        if *pr != commit.principal_id.to_string() {
+        if *pr != commit.principal_id {
             state
                 .aliases
                 .insert(pr.clone(), commit.principal_id.clone());
@@ -356,7 +351,7 @@ fn index_one(state: &mut MemoryState, commit: &IndexableCommit) -> Result<(), In
             pg: commit
                 .pg
                 .iter()
-                .filter(|pr| **pr != commit.principal_id.to_string())
+                .filter(|pr| **pr != commit.principal_id)
                 .cloned()
                 .collect(),
         },

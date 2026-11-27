@@ -154,8 +154,8 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
         "tip must succeed on a keyless server: {tip_envelope:?}"
     );
     let tip_payload = assert_unsigned_envelope(&tip_envelope);
-    // `/tip` names the principal by its bare canonical digest.
-    assert_eq!(tip_payload["principal_id"], principal_id.wire_digest());
+    // `/tip` names the principal by its labelled canonical id.
+    assert_eq!(tip_payload["principal_id"], principal_id.to_string());
     assert_eq!(tip_payload["commit_count"].as_u64().unwrap(), 1);
     let pr_digest = tip_payload["pr"]
         .as_str()

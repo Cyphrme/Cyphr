@@ -67,13 +67,13 @@ pub struct IndexableCommit {
     pub timestamp: i64,
     /// Public keys extracted from key-introducing transactions.
     pub keys: Vec<PublicKeyInfo>,
-    /// Principal Genesis variants (tagged digest strings), set only on the
+    /// Principal Genesis variants (each a single-variant id), set only on the
     /// commit that establishes the PG (`principal/create`): the PR held
     /// immediately BEFORE that commit, not the commit's own post-commit PR
     /// (SPEC §3.7.1). Empty on every other commit. `serde(default)` so a
     /// manifest written before this field existed still deserializes.
     #[serde(default)]
-    pub pg: Vec<String>,
+    pub pg: Vec<PrincipalGenesis>,
     /// The hash of the manifest blob that records this commit: where its
     /// grouping, signers and first-seen time are read from when needed.
     /// Set once the manifest is stored; `None` inside the manifest itself,

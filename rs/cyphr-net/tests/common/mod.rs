@@ -358,7 +358,7 @@ pub fn tip_envelope(signer: &Kp) -> serde_json::Value {
         "now": 1_700_000_500,
         "tmb": signer.tmb.to_b64(),
         "typ": "cyphr-server/receipt/tip",
-        "pg": pr.wire_digest(),
+        "pg": pr.to_string(),
         "sequence": 1,
         "commit_id": digest(9),
         "roots": { "pr": digest(1), "sr": digest(2), "ar": digest(3), "cr": digest(4) },

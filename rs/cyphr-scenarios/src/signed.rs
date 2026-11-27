@@ -62,8 +62,8 @@ pub fn verify_statement(bytes: &[u8], alg: &str, pub_b64: &str, tmb: &str) -> Re
 /// What a served evidence item proves, once verified.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Proven {
-    PrincipalFork { pg: String },
-    PeerEquivocation { pg: String, peer: String },
+    PrincipalFork { pg: PrincipalGenesis },
+    PeerEquivocation { pg: PrincipalGenesis, peer: String },
 }
 
 /// What the verifier holds of a principal's chain, read from a peer's
@@ -510,8 +510,12 @@ pub async fn verify_evidence(
     peers: &BTreeMap<String, String>,
     chain: &ChainView,
 ) -> Result<Proven, String> {
-    let pg = item["pg"].as_str().ok_or("item has no pg")?.to_owned();
-    if !requested.names_wire_digest(&pg) {
+    let pg: PrincipalGenesis = item["pg"]
+        .as_str()
+        .ok_or("item has no pg")?
+        .parse()
+        .map_err(|e: cyphr::Error| format!("item pg: {e}"))?;
+    if pg != *requested {
         return Err(format!("item names {pg}, not the requested {requested}"));
     }
     let (a, b) = (&item["a"], &item["b"]);

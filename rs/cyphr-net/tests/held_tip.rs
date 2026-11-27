@@ -37,7 +37,7 @@ fn authority() -> Authority {
 fn error_payload() -> Value {
     json!({
         "state": "error",
-        "principal_id": b64(7),
+        "principal_id": digest(7),
         "fork_point": { "height": 3, "pre": digest(1) },
         "heads": [
             { "commit_id": digest(8), "sequence": 4, "held_since": 1_700_000_100 },
@@ -54,7 +54,7 @@ fn held_envelope(a: &Authority, typ: &str) -> Value {
         "now": 1_700_000_500,
         "tmb": tmb.to_b64(),
         "typ": typ,
-        "pg": b64(7),
+        "pg": digest(7),
         "fork_point": { "height": 3, "pre": digest(1) },
         "heads": [
             { "commit_id": digest(8), "sequence": 4, "held_since": 1_700_000_100 },
@@ -106,7 +106,7 @@ fn error_tip_answer_parses_to_fork_point_and_heads() {
 fn active_tip_answer_still_parses() {
     let body = json!({
         "v": 1,
-        "payload": { "principal_id": b64(7), "pr": digest(1), "sr": null, "ar": null,
+        "payload": { "principal_id": digest(7), "pr": digest(1), "sr": null, "ar": null,
             "cr": null, "commit_id": digest(9), "commit_count": 3, "last_updated": 5, "now": 6 },
         "statement": { "kind": "unsigned" },
     });
@@ -172,7 +172,7 @@ fn entry(sequence: u64, id: u8) -> Value {
 fn error_patch_reads_as_the_canonical_chain_and_keeps_every_branch() {
     let body = |canonical: [bool; 2]| {
         json!({ "v": 1, "payload": {
-            "principal_id": b64(7),
+            "principal_id": digest(7),
             "entries": [entry(0, 1), entry(1, 2)],
             "actions": [],
             "fork_point": { "height": 2, "pre": digest(102) },
@@ -203,7 +203,7 @@ fn error_patch_reads_as_the_canonical_chain_and_keeps_every_branch() {
     let none = serde_json::to_vec(&body([false, false])).expect("body");
     verify_patch_body(&none, &id, None).expect_err("no canonical branch is refused");
 
-    let active = json!({ "v": 1, "payload": { "principal_id": b64(7),
+    let active = json!({ "v": 1, "payload": { "principal_id": digest(7),
         "entries": [entry(0, 1)], "actions": [] }, "statement": { "kind": "unsigned" } });
     let active = verify_patch_body(&serde_json::to_vec(&active).expect("body"), &id, None)
         .expect("Active reads");

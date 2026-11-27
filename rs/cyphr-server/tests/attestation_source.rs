@@ -21,8 +21,7 @@ use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post
 /// principals, so the injected values must differ between them. Keyed on
 /// the id's digest.
 fn corrupt_root(kind: &str, principal_id: &cyphr::PrincipalGenesis) -> String {
-    let digest = principal_id.wire_digest();
-    format!("SHA-256:CORRUPTED_{kind}_{digest}")
+    format!("SHA-256:CORRUPTED_{kind}_{principal_id}")
 }
 fn corrupt_pr(p: &cyphr::PrincipalGenesis) -> String {
     corrupt_root("PR", p)

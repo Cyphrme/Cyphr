@@ -113,3 +113,43 @@ proptest! {
         }
     }
 }
+
+/// A genesis holding a SHA-256 and a SHA-512 variant (a mixed-algorithm
+/// keyset): the digests are fixed bytes so the printed id is pinned.
+fn mixed() -> PrincipalGenesis {
+    let map: BTreeMap<HashAlg, Box<[u8]>> = [
+        (HashAlg::Sha256, vec![1u8; 32].into_boxed_slice()),
+        (HashAlg::Sha512, vec![2u8; 64].into_boxed_slice()),
+    ]
+    .into_iter()
+    .collect();
+    PrincipalGenesis::from_multihash(MultihashDigest::new(map).expect("variants"))
+        .expect("non-empty")
+}
+
+/// The canonical spelling of a mixed-algorithm genesis, by value: the
+/// first variant in `HashAlg`'s order, SHA-256 here. A change of this
+/// string changes every stored and printed id of such a principal.
+#[test]
+fn a_mixed_algorithm_genesis_prints_its_sha256_variant() {
+    assert_eq!(
+        mixed().to_string(),
+        "SHA-256:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+    );
+}
+
+/// Equality, hash and order are on the canonical spelling: the value equals
+/// the id parsed from its own printed form, and the two hash alike.
+#[test]
+fn a_mixed_algorithm_genesis_equals_its_printed_then_parsed_form() {
+    use std::hash::{BuildHasher, RandomState};
+    let pg = mixed();
+    let parsed: PrincipalGenesis = pg.to_string().parse().expect("parses");
+    assert_eq!(pg, parsed);
+    assert_eq!(pg.cmp(&parsed), std::cmp::Ordering::Equal);
+    let state = RandomState::new();
+    assert_eq!(state.hash_one(&pg), state.hash_one(&parsed));
+    // The SHA-512 variant alone is another id, not this one.
+    let second = PrincipalGenesis::from_digest(HashAlg::Sha512, vec![2u8; 64]).expect("width");
+    assert_ne!(pg, second);
+}

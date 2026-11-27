@@ -12,6 +12,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::signer::SignerError;
+use cyphr::{HashAlg, PrincipalGenesis};
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::build_router;
 use cyphr_server::receipt::{ReceiptError, ReceiptSigner, Roots, commit_receipt};
@@ -191,9 +192,9 @@ async fn commit_receipt_reports_a_signer_failure_as_receipt_error_signer() {
         ar: Some(digest(3)),
         cr: Some(digest(4)),
     };
-    let pr = Base64UrlUnpadded::encode_string(&[7u8; 32]);
+    let pr = PrincipalGenesis::from_digest(HashAlg::Sha256, vec![7u8; 32]).expect("pg");
 
-    let result = commit_receipt(&signer, 1_700_000_000, pr, 0, digest(5), &roots).await;
+    let result = commit_receipt(&signer, 1_700_000_000, &pr, 0, digest(5), &roots).await;
     assert!(
         matches!(result, Err(ReceiptError::Signer(_))),
         "a failing signer must surface as ReceiptError::Signer: {result:?}"

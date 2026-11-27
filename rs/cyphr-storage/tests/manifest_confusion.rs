@@ -443,7 +443,7 @@ async fn via_action_only_bundle_cannot_plant_aliases_or_digests() {
     let before = principals(&e).await;
 
     let mut hostile = forged(&aid, 0, 0x40);
-    hostile.pg = vec![victim.to_string(), fake_digest(0x41)];
+    hostile.pg = vec![victim.clone(), fake_pg(0x41)];
     let blobs = craft(
         raw_blobs_disclosing_genesis(&fx, &fx["commits"][1]),
         &hostile,
@@ -908,7 +908,7 @@ fn craft_with(
     let target = [victim.clone(), own.clone(), fake_pg(0x70)][h.target].clone();
     let mut commit = forged(&target, h.sequence, h.tag);
     if h.pg_victim {
-        commit.pg = vec![victim.to_string(), fake_digest(h.tag ^ 9)];
+        commit.pg = vec![victim.clone(), fake_pg(h.tag ^ 9)];
     }
     let mut bytes = craft(blobs, &commit);
     if h.escaped_key {

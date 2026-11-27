@@ -526,10 +526,9 @@ pub fn verify_authenticated_envelope(
     let coz = signed_by(body, expected)?;
     let report = TipReport::parse(&coz).map_err(|_| PatchFailure::MalformedReport)?;
 
-    // `report.pg` is the statement's bare b64ut genesis identifier (SPEC
-    // section 2.2.3's default form): it names `principal_id` when it is
-    // the digest of the id.
-    if !principal_id.names_wire_digest(&report.pg.to_string()) {
+    // `report.pg` is the labelled id the statement attests: it must be
+    // the principal asked about.
+    if report.pg != *principal_id {
         return Err(PatchFailure::PrincipalMismatch);
     }
 
@@ -552,7 +551,7 @@ pub fn verify_held_envelope(
 ) -> Result<HeldReport, PatchFailure> {
     let coz = signed_by(body, expected)?;
     let report = HeldReport::parse(&coz).map_err(|_| PatchFailure::MalformedReport)?;
-    if !principal_id.names_wire_digest(&report.pg.to_string()) {
+    if report.pg != *principal_id {
         return Err(PatchFailure::PrincipalMismatch);
     }
     Ok(report)

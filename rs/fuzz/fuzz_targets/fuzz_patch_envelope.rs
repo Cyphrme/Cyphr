@@ -128,7 +128,7 @@ fuzz_target!(|data: &[u8]| {
     let pay = json!({
         "alg": key.alg,
         "typ": "cyphr-server/receipt/tip",
-        "pr": pr,
+        "pg": format!("SHA-256:{pr}"),
         "sequence": sequence(&mut u),
         "commit_id": digest(&mut u),
         "roots": { "pr": digest(&mut u), "sr": digest(&mut u), "ar": digest(&mut u), "cr": cr },
@@ -166,8 +166,7 @@ fuzz_target!(|data: &[u8]| {
             .report
             .expect("an authenticated patch carries its report");
         assert_eq!(
-            report.pg.to_string(),
-            asked.wire_digest(),
+            report.pg, asked,
             "accepted a report for a principal that was not asked for"
         );
     }

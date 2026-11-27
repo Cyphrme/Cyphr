@@ -32,8 +32,8 @@ async fn fjall_indexer_passes_the_shared_conformance_suite() {
 #[tokio::test]
 async fn alias_table_is_one_registered_kv_table() {
     let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    let mut commit = conformance::make_commit("SHA-256:genesis-digest", 0, 1000);
-    commit.pg = vec!["SHA-256:pg-digest".to_string()];
+    let mut commit = conformance::make_commit("genesis-digest", 0, 1000);
+    commit.pg = vec![conformance::pid("pg-digest")];
     commit.cozies[0].typ = "cyphr.me/cyphr/principal/create".to_string();
     indexer
         .index_commit(&commit, &DeriveToken::for_conformance_tests())

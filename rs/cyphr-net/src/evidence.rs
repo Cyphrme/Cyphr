@@ -98,9 +98,8 @@ pub enum EvidenceFailure {
 pub enum EvidenceItem {
     /// Two commits at one position of one principal.
     PrincipalFork {
-        /// The principal's bare genesis identifier, as a signed server
-        /// statement spells it.
-        pg: String,
+        /// The principal's id.
+        pg: PrincipalGenesis,
         /// The position both commits take.
         height: u64,
         /// The Principal Root both extend; `None` at height 0.
@@ -126,7 +125,9 @@ impl EvidenceItem {
                 .map(str::to_owned)
                 .ok_or(EvidenceFailure::Malformed(what))
         };
-        let pg = text("pg", "no pg")?;
+        let pg = text("pg", "no pg")?
+            .parse()
+            .map_err(|_| EvidenceFailure::Malformed("pg is not a labelled principal id"))?;
         match item.get("kind").and_then(Value::as_str) {
             Some("principal-fork") => {
                 let height = item
@@ -173,7 +174,7 @@ fn commit_blobs(commit: Option<&Value>) -> Result<WireBundle, EvidenceFailure> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForkProof {
     /// The principal's bare genesis identifier, as the item named it.
-    pub pg: String,
+    pub pg: PrincipalGenesis,
     /// The position both commits take.
     pub height: u64,
     /// The Principal Root both extend; `None` at height 0.
@@ -257,7 +258,7 @@ pub(crate) async fn verify_principal_fork_reusing(
         a,
         b,
     } = EvidenceItem::parse(item)?;
-    if !pg.names_wire_digest(&item_pg) {
+    if item_pg != *pg {
         return Err(EvidenceFailure::OtherPrincipal);
     }
     let prefix = usize::try_from(height)
@@ -488,7 +489,7 @@ pub async fn verify_fork_items(
     let mut pending: Vec<(usize, Option<String>, &Value)> = Vec::new();
     for item in off_chain {
         match EvidenceItem::parse(item) {
-            Ok(EvidenceItem::PrincipalFork { pg: named, .. }) if !pg.names_wire_digest(&named) => {
+            Ok(EvidenceItem::PrincipalFork { pg: named, .. }) if named != *pg => {
                 set.rejected.push(EvidenceFailure::OtherPrincipal);
             },
             Ok(EvidenceItem::PrincipalFork { height, pre, .. }) => {

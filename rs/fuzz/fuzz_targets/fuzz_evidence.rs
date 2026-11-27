@@ -52,7 +52,7 @@ fuzz_target!(|data: &[u8]| {
             };
             json!({
                 "kind": "principal-fork",
-                "pg": b64(&[7; 32]),
+                "pg": format!("SHA-256:{}", b64(&[7; 32])),
                 "height": u64::arbitrary(&mut u).unwrap_or_default() % 4,
                 "pre": if bool::arbitrary(&mut u).unwrap_or(false) { Value::Null } else { json!(blob(&mut u)) },
                 "a": {"txs": [[blob(&mut u)]]},

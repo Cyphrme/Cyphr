@@ -110,7 +110,7 @@ struct IndexMeta {
 struct CommitRow {
     commit: CommitRef,
     entries: Vec<(String, EntityRef)>,
-    pg: Vec<String>,
+    pg: Vec<PrincipalGenesis>,
 }
 
 /// Encode a `commits` partition key: `principal_id`'s length (big-endian
@@ -674,9 +674,13 @@ impl IndexerWrite for FjallIndexer {
 fn claims_conflict(ks: &Keyspaces, commit: &IndexableCommit) -> Result<(), IndexerError> {
     let id = commit.principal_id.to_string();
     let pid_key = id.as_bytes();
-    for pr in commit.pg.iter().filter(|pr| **pr != id) {
-        let alias_owner = ks.aliases.get(pr).map_err(to_backend_err)?;
-        let names_principal = ks.principals.contains_key(pr).map_err(to_backend_err)?;
+    for pr in commit.pg.iter().filter(|pr| **pr != commit.principal_id) {
+        let alias = pr.to_string();
+        let alias_owner = ks.aliases.get(alias.as_bytes()).map_err(to_backend_err)?;
+        let names_principal = ks
+            .principals
+            .contains_key(alias.as_bytes())
+            .map_err(to_backend_err)?;
         let other = match alias_owner {
             Some(owner) => owner.as_ref() != pid_key,
             None => names_principal,
@@ -794,7 +798,7 @@ fn db_replace_chain_from(
             staged.holders.insert(key, kept);
         }
         for pr in &row.pg {
-            staged.aliases.insert(pr.as_bytes().to_vec(), None);
+            staged.aliases.insert(pr.to_string().into_bytes(), None);
         }
         if !row.pg.is_empty() {
             staged.aliases.insert(pg_marker_key(principal_id), None);
@@ -879,10 +883,15 @@ impl Staged {
         let id = commit.principal_id.to_string();
         let pid_key = id.as_bytes();
         // The principal's own id needs no alias.
-        let pg: Vec<String> = commit.pg.iter().filter(|pr| **pr != id).cloned().collect();
+        let pg: Vec<PrincipalGenesis> = commit
+            .pg
+            .iter()
+            .filter(|pr| **pr != commit.principal_id)
+            .cloned()
+            .collect();
         for pr in &pg {
             self.aliases
-                .insert(pr.as_bytes().to_vec(), Some(pid_key.to_vec()));
+                .insert(pr.to_string().into_bytes(), Some(pid_key.to_vec()));
         }
         if !commit.pg.is_empty() {
             self.aliases

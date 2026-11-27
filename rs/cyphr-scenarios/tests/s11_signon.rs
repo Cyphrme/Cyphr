@@ -50,16 +50,16 @@ async fn s11_signon() {
         "the relying party must report the genesis key it was handed"
     );
     assert!(
-        !pr.same_as(&enrolled),
+        !pr.0.ends_with(&format!(":{enrolled}")),
         "the fixture must separate the PG from the anchor"
     );
-    assert!(
-        session.principal.same_as(pr.bare()),
-        "the token's subject {:?} is not the principal's PG",
-        session.principal
+    assert_eq!(
+        session.principal.pg(),
+        pr.pg(),
+        "the token's subject is not the principal's PG"
     );
     assert!(
-        !session.principal.same_as(&enrolled),
+        !session.principal.0.ends_with(&format!(":{enrolled}")),
         "the subject is the principal, not the anchor key"
     );
     assert!(

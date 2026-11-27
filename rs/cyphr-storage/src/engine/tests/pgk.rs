@@ -257,7 +257,7 @@ impl BlobStore for GatedBlobs {
 
 fn meta_claiming_pg(id: &str) -> IndexableCommit {
     let mut m = make_meta(id, 0, 1000);
-    m.pg = vec![contested_pg().to_string()];
+    m.pg = vec![contested_pg()];
     m
 }
 

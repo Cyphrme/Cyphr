@@ -101,7 +101,8 @@ answer as an error.
 
 Every statement's `pay` also carries `alg`, `now` and `tmb` (the signer's
 key). `roots.cr` is JSON `null` when no commit root exists yet, never `""`.
-`pg` in a statement is the bare principal genesis identifier. Receipt design
+`pg` in a statement is the labelled principal genesis id (`ALG:digest`; the
+statement's `alg` is the server's, so nothing aligns a bare digest). Receipt design
 is in `docs/specs/receipts.md`. Wire bytes are pinned by
 `commit_receipt_matches_golden_vector` and `tip_report_matches_golden_vector`
 in `rs/cyphr-server/tests/receipts.rs`; an Error-state `/patch` is signed
@@ -114,8 +115,8 @@ example `SHA-256:<b64>`), and only that: `pg` in a query, `principal_id` in a
 `/push` or `/resync` body, the `pg` of a login, and a pinned peer's `pg` in the
 config. A bare digest is refused with `400` and an error that shows the
 labelled form (`unlabelled principal id: expected ALG:digest, ...`). Responses
-name a principal by its bare digest, as the signed statements do, except a
-login token's subject, which is the labelled id.
+name a principal by the same labelled id, as the signed statements and the
+login token's subject do.
 
 ### Rate-limit classes
 
@@ -188,7 +189,7 @@ Query: `pg` (string, required): principal identifier.
 {
   "v": 1,
   "payload": {
-    "principal_id": "<bare PG>",
+    "principal_id": "<PG, labelled>",
     "pr": "SHA-256:…",
     "sr": "SHA-256:…",
     "ar": "SHA-256:…",
@@ -219,7 +220,7 @@ Query: `pg` (string, required): principal identifier.
   "v": 1,
   "payload": {
     "state": "error",
-    "principal_id": "<bare PG>",
+    "principal_id": "<PG, labelled>",
     "fork_point": { "height": 2, "pre": "SHA-256:…" },
     "heads": [
       { "commit_id": "SHA-256:…", "sequence": 2, "held_since": 1700000050 }
@@ -280,7 +281,7 @@ another principal is `404`, and one held at several positions is `409`.
 {
   "v": 1,
   "payload": {
-    "principal_id": "<bare PG>",
+    "principal_id": "<PG, labelled>",
     "entries": [
       {
         "commit_id": "SHA-256:…",
@@ -439,7 +440,7 @@ Query: `pg` (string, required): a labelled principal id (`ALG:digest`).
     "items": [
       {
         "kind": "principal-fork",
-        "pg": "<bare PG>",
+        "pg": "<PG, labelled>",
         "height": 2,
         "pre": "SHA-256:…",
         "a": { "txs": [["<b64url coz>"]] },
@@ -543,7 +544,7 @@ No parameters. Always `200`, `unsigned`. The payload is tagged by `tier`:
 ```json
 {
   "tier": "attestor",
-  "pg": "<bare PG>",
+  "pg": "<PG, labelled>",
   "alg": "Ed25519",
   "pub": "<b64url>",
   "tmb": "<b64url>",
@@ -888,7 +889,7 @@ credential; no header is read.
 {
   "v": 1,
   "payload": {
-    "pg": "<bare PG>",
+    "pg": "<PG, labelled>",
     "key": "<login key tmb>",
     "binding": "key",
     "exp": 1700000900

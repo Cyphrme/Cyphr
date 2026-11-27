@@ -128,7 +128,7 @@ fn choose_anchor(
             "pinned",
         ));
     }
-    if let Some(key) = keystore_key(keystore, &identity.wire_digest()) {
+    if let Some(key) = keystore_key(keystore, &super::common::keystore_name(identity)?) {
         let tmb = key.tmb().to_b64();
         return Ok((Anchor::GenesisKey(key), tmb, "trusted-genesis"));
     }
@@ -611,7 +611,7 @@ async fn run_round<C: Connector>(
         // When the anchor is the identity itself the check cannot fail, so
         // it vouches for nothing.
         "anchor": {"value": round.anchor_value, "source": round.anchor_source,
-            "is_identity": round.identity.names_wire_digest(&round.anchor_value)},
+            "is_identity": super::common::keystore_name(round.identity)? == round.anchor_value},
         "verdict": match assessed.consensus {
             Consensus::Active => "Active",
             Consensus::Error => "Error",

@@ -328,7 +328,8 @@ pub(super) fn manifest_principal(source: &PinSource<'_>, member: &str) -> Option
         .chain(rest)
         .filter(|(_, m)| {
             Some(&m.commit.principal_id) == as_id.as_ref()
-                || m.commit.prs.iter().chain(&m.commit.pg).any(|d| d == member)
+                || m.commit.prs.iter().any(|d| d == member)
+                || as_id.as_ref().is_some_and(|id| m.commit.pg.contains(id))
         })
         .map(|(_, m)| &m.commit.principal_id)
         .collect();

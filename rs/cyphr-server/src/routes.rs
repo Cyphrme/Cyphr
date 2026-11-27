@@ -64,7 +64,7 @@ pub struct ResyncRequest {
 #[derive(Debug, Serialize)]
 pub struct ResyncResponse {
     /// The principal's storage key.
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     /// The asserted tip's PR.
     pub id: String,
     /// `false` when a proof for this tip was already held.
@@ -151,7 +151,7 @@ fn absent_cr(cr: &str) -> Option<String> {
 /// Response for `GET /tip`.
 #[derive(Debug, Serialize)]
 pub struct TipResponse {
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     pub pr: String,
     /// `null` for a Dead principal that holds no data.
     pub sr: Option<String>,
@@ -179,7 +179,7 @@ pub struct TipResponse {
 pub struct ErrorTipResponse {
     /// Always `"error"`.
     pub state: &'static str,
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     pub fork_point: cyphr_storage::engine::ForkPoint,
     pub heads: Vec<HeldHeadResponse>,
     pub now: i64,
@@ -221,7 +221,7 @@ pub struct PatchEntryResponse {
 /// Response for `GET /patch`.
 #[derive(Debug, Serialize)]
 pub struct PatchResponseBody {
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     pub entries: Vec<PatchEntryResponse>,
     /// Every action-only bundle held (SPEC 4.8.1): actions hold no chain
     /// position, so they are served whatever range the commits cover.
@@ -401,7 +401,7 @@ pub async fn tip(
     let root = proving_log(&state, &t).await?.root_at(t.commit_count);
 
     let payload = TipResponse {
-        principal_id: t.principal_id.wire_digest(),
+        principal_id: t.principal_id.clone(),
         pr: t.pr.clone(),
         sr: t.sr.clone(),
         ar: t.ar.clone(),
@@ -429,7 +429,7 @@ async fn error_tip(
     error: cyphr_storage::engine::ErrorState,
 ) -> Json<Envelope<ErrorTipResponse>> {
     let now = crate::auth::server_now();
-    let pg = principal_id.wire_digest();
+    let pg = principal_id.clone();
     let coz = held_statement(state, principal_id, &error).await;
     let payload = ErrorTipResponse {
         state: "error",
@@ -460,7 +460,7 @@ async fn held_statement(
     error: &cyphr_storage::engine::ErrorState,
 ) -> Option<coz::CozJson> {
     let signer = state.attestor_signer()?;
-    let pg = principal_id.wire_digest();
+    let pg = principal_id;
     let claims: Vec<receipt::HeldClaim> = error
         .heads
         .iter()
@@ -703,7 +703,7 @@ pub async fn evidence(
         .fork_evidence(&query.pg)
         .await
         .map_err(AppError::engine)?;
-    let pg = principal.wire_digest();
+    let pg = principal;
     let items = forks
         .iter()
         .map(|f| {
@@ -783,7 +783,7 @@ pub async fn resync(
     Ok((
         StatusCode::OK,
         Json(Envelope::unsigned(ResyncResponse {
-            principal_id: receipt.principal_id.to_string(),
+            principal_id: receipt.principal_id,
             id: receipt.id,
             stored: receipt.stored,
             promoted: receipt.promoted,
@@ -890,7 +890,7 @@ async fn sign_tip_attestation(
     match receipt::tip_report(
         signer.as_ref(),
         crate::auth::server_now(),
-        t.principal_id.wire_digest(),
+        &t.principal_id,
         sequence,
         t.commit_id.clone(),
         &roots,
@@ -1072,7 +1072,7 @@ pub async fn patch(
         .collect();
 
     let payload = PatchResponseBody {
-        principal_id: response.principal_id.wire_digest(),
+        principal_id: response.principal_id.clone(),
         entries,
         actions,
         fork_point,
@@ -1237,7 +1237,7 @@ async fn push_response(
     match receipt::commit_receipt(
         signer,
         now,
-        result.principal_id.wire_digest(),
+        &result.principal_id,
         tip.sequence,
         tip.commit_id.clone(),
         &roots,

@@ -13,8 +13,8 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::HashAlg;
 use cyphr::state::TaggedDigest;
+use cyphr::{HashAlg, PrincipalGenesis};
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::config::ServerConfig;
@@ -169,7 +169,7 @@ fn restamp_sequence(
 /// byte. `check_equivocation`/`receipt::tip_report` parse
 /// `commit_id`/`roots` as `TaggedDigest`, so this suite's placeholders,
 /// which used to be human-readable or hand-typed repeated-letter
-/// literals, must genuinely parse. `pr` is NOT tagged -- see
+/// literals, must genuinely parse. `pg` is a typed id -- see
 /// [`principal_digest`].
 fn digest(byte: u8) -> String {
     TaggedDigest::new(HashAlg::Sha256, vec![byte; 32])
@@ -177,16 +177,13 @@ fn digest(byte: u8) -> String {
         .to_string()
 }
 
-/// Render a distinct, valid BARE genesis-identifier string from a
-/// repeated seed byte -- the untagged counterpart to [`digest`]. A
-/// receipt's top-level `pr` is the attested principal's genesis
-/// identifier: SPEC §2.2.3's DEFAULT (untagged) identifier form, not the
-/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption.
-/// Every `pr`/`principal_id` fixture in this suite uses this helper,
+/// Build a distinct, valid typed genesis id from a repeated seed byte. A
+/// receipt's top-level `pg` is the attested principal's labelled genesis
+/// id. Every `pg`/`principal_id` fixture in this suite uses this helper,
 /// never [`digest`].
-fn principal_digest(byte: u8) -> String {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    Base64UrlUnpadded::encode_string(&[byte; 32])
+fn principal_digest(byte: u8) -> PrincipalGenesis {
+    PrincipalGenesis::from_digest(HashAlg::Sha256, vec![byte; 32])
+        .expect("32 bytes is SHA-256's digest length")
 }
 
 /// Two root sets that differ only in `cr`, standing in for a conflicting
@@ -245,7 +242,11 @@ async fn same_key_pair_proves_equivocation() {
     let real: coz::CozJson = serde_json::from_value(tip_envelope["statement"]["coz"].clone())
         .expect("real tip cozy deserializes");
 
-    let real_pr = real.pay["pg"].as_str().expect("real pr").to_string();
+    let real_pr: PrincipalGenesis = real.pay["pg"]
+        .as_str()
+        .expect("real pr")
+        .parse()
+        .expect("the receipt names a labelled principal id");
     let real_sequence = real.pay["sequence"].as_u64().expect("real sequence");
     let real_commit_count = real.pay["commit_count"]
         .as_u64()
@@ -257,7 +258,7 @@ async fn same_key_pair_proves_equivocation() {
     let conflicting = receipt::tip_report(
         identity.as_ref(),
         now,
-        real_pr,
+        &real_pr,
         real_sequence,
         digest(0x50),
         &roots_b(),
@@ -306,7 +307,11 @@ async fn cross_key_pair_proves_equivocation() {
     let real: coz::CozJson = serde_json::from_value(tip_envelope["statement"]["coz"].clone())
         .expect("real tip cozy deserializes");
 
-    let real_pr = real.pay["pg"].as_str().expect("real pr").to_string();
+    let real_pr: PrincipalGenesis = real.pay["pg"]
+        .as_str()
+        .expect("real pr")
+        .parse()
+        .expect("the receipt names a labelled principal id");
     let real_sequence = real.pay["sequence"].as_u64().expect("real sequence");
     let real_commit_count = real.pay["commit_count"]
         .as_u64()
@@ -319,7 +324,7 @@ async fn cross_key_pair_proves_equivocation() {
     let conflicting = receipt::tip_report(
         &rotated_identity,
         now,
-        real_pr,
+        &real_pr,
         real_sequence,
         digest(0x50),
         &roots_b(),
@@ -355,7 +360,7 @@ async fn different_principal_pair_is_not_equivocation() {
     let a = receipt::tip_report(
         &identity,
         1_700_000_000,
-        principal_digest(0x10),
+        &principal_digest(0x10),
         3,
         digest(0x20),
         &roots_a(),
@@ -367,7 +372,7 @@ async fn different_principal_pair_is_not_equivocation() {
     let b = receipt::tip_report(
         &identity,
         1_700_000_000,
-        principal_digest(0x11),
+        &principal_digest(0x11),
         3,
         digest(0x21),
         &roots_b(),
@@ -391,7 +396,7 @@ async fn different_sequence_pair_is_not_equivocation() {
     let a = receipt::tip_report(
         &identity,
         1_700_000_000,
-        principal_digest(0x10),
+        &principal_digest(0x10),
         3,
         digest(0x20),
         &roots_a(),
@@ -403,7 +408,7 @@ async fn different_sequence_pair_is_not_equivocation() {
     let b = receipt::tip_report(
         &identity,
         1_700_000_100,
-        principal_digest(0x10),
+        &principal_digest(0x10),
         4,
         digest(0x21),
         &roots_b(),
@@ -428,7 +433,7 @@ async fn bad_signature_pair_is_not_equivocation() {
     let a = receipt::tip_report(
         &identity,
         1_700_000_000,
-        principal_digest(0x10),
+        &principal_digest(0x10),
         3,
         digest(0x20),
         &roots_a(),
@@ -440,7 +445,7 @@ async fn bad_signature_pair_is_not_equivocation() {
     let b = receipt::tip_report(
         &identity,
         1_700_000_000,
-        principal_digest(0x10),
+        &principal_digest(0x10),
         3,
         digest(0x21),
         &roots_b(),
@@ -464,7 +469,7 @@ async fn wrong_typ_pair_is_not_equivocation() {
     let tip = receipt::tip_report(
         &identity,
         1_700_000_000,
-        principal_digest(0x10),
+        &principal_digest(0x10),
         3,
         digest(0x20),
         &roots_a(),
@@ -476,7 +481,7 @@ async fn wrong_typ_pair_is_not_equivocation() {
     let commit = receipt::commit_receipt(
         &identity,
         1_700_000_000,
-        principal_digest(0x10),
+        &principal_digest(0x10),
         3,
         digest(0x20),
         &roots_a(),
