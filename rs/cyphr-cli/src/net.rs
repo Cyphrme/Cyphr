@@ -316,7 +316,7 @@ impl Peer {
             .ok_or_else(|| self.malformed("the answer carries no token".into()))
     }
 
-    /// Send a naked revoke envelope (`{pay, sig, key}`, SPEC 6.4) to the peer.
+    /// Send a naked revoke envelope (`{pay, sig, keys}`, SPEC 6.4) to the peer.
     ///
     /// # Errors
     ///

@@ -30,8 +30,9 @@ use serde::Deserialize;
 use crate::error::AppError;
 
 /// A naked-revoke request in the disclosed-key wire shape: the signed
-/// `key/revoke` coz PLUS the public key it names. `key` is REQUIRED; it is
-/// typed `Option` only so an absent key yields a controlled 400 through
+/// `key/revoke` coz PLUS the public key it names, in `keys` (SPEC 4.6.1), an
+/// array of exactly one. `keys` is REQUIRED; it is typed `Option` only so an
+/// absent field yields a controlled 400 through
 /// [`AppError`] rather than an axum extractor rejection whose body is not the
 /// `{"error": ..}` shape clients parse.
 #[derive(Debug, Deserialize)]
@@ -42,8 +43,9 @@ pub struct NakedRevokeEnvelope {
     #[serde(with = "coz::b64")]
     pub sig: Vec<u8>,
     /// The disclosed public key the revoke names. Absent => the request is
-    /// rejected (a naked revoke must disclose its key).
-    pub key: Option<DisclosedKey>,
+    /// rejected (a naked revoke must disclose its key); any count but one is
+    /// refused by the core rule.
+    pub keys: Option<Vec<DisclosedKey>>,
 }
 
 /// The disclosed public key of a naked revoke, in the wire shape the rest of
@@ -65,7 +67,7 @@ pub struct VerifiedRevoke {
     pub revoked_tmb: Thumbprint,
     /// The revocation timestamp the coz declared.
     pub rvk: i64,
-    /// The full `{pay, sig, key}` envelope as verified -- self-contained,
+    /// The full `{pay, sig, keys}` envelope as verified -- self-contained,
     /// independently re-verifiable evidence to store in the death-set (needs no
     /// index to re-check).
     pub evidence: serde_json::Value,
@@ -83,8 +85,8 @@ pub struct VerifiedRevoke {
 pub async fn interpret(envelope: &NakedRevokeEnvelope) -> Result<VerifiedRevoke, AppError> {
     use cyphr::revoke::RevokeFailure;
 
-    let key = envelope
-        .key
+    let keys = envelope
+        .keys
         .as_ref()
         .ok_or_else(|| AppError::bad_request("naked revoke must disclose its public key"))?;
 
@@ -93,10 +95,13 @@ pub async fn interpret(envelope: &NakedRevokeEnvelope) -> Result<VerifiedRevoke,
     let evidence = serde_json::json!({
         "pay": envelope.pay,
         "sig": Base64UrlUnpadded::encode_string(&envelope.sig),
-        "key": {
-            "alg": key.alg,
-            "pub": Base64UrlUnpadded::encode_string(&key.pub_key),
-        },
+        "keys": keys
+            .iter()
+            .map(|key| serde_json::json!({
+                "alg": key.alg,
+                "pub": Base64UrlUnpadded::encode_string(&key.pub_key),
+            }))
+            .collect::<Vec<_>>(),
     });
 
     // The refusal text is the sender's own material, never reflected back.

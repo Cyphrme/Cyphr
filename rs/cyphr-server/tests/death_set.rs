@@ -75,7 +75,7 @@ async fn server_with_key_a_dead(pool: &Pool) -> (Arc<AppState>, tempfile::TempDi
     let revoke = serde_json::json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {"alg": k.alg, "pub": k.pub_key},
+        "keys": [{"alg": k.alg, "pub": k.pub_key}],
     });
     let (status, json) =
         common::post_json(build_router(state.clone()), "/revoke", revoke.to_string()).await;

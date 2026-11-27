@@ -184,7 +184,7 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
     );
 }
 
-/// `name`'s self-signed naked revoke (SPEC 6.4) as of `rvk`: `{pay, sig, key}`.
+/// `name`'s self-signed naked revoke (SPEC 6.4) as of `rvk`: `{pay, sig, keys}`.
 fn revoke_of(name: &str, rvk: i64) -> serde_json::Value {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     let pool = load_pool();
@@ -200,7 +200,7 @@ fn revoke_of(name: &str, rvk: i64) -> serde_json::Value {
     serde_json::json!({
         "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {"alg": k.alg, "pub": k.pub_key},
+        "keys": [{"alg": k.alg, "pub": k.pub_key}],
     })
 }
 

@@ -373,8 +373,8 @@ async fn fork_evidence_is_served_and_verified_offline() {
             "{{\"pay\":{{{}}},\"sig\":{}{}}}",
             backwards.join(","),
             v["sig"],
-            v.get("key")
-                .map_or(String::new(), |k| format!(",\"key\":{k}"))
+            v.get("keys")
+                .map_or(String::new(), |k| format!(",\"keys\":{k}"))
         );
         serde_json::json!(Base64UrlUnpadded::encode_string(text.as_bytes()))
     };

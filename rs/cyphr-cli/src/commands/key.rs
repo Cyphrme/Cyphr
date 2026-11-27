@@ -315,10 +315,10 @@ fn naked_revoke(
     let envelope = serde_json::json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {
+        "keys": [{
             "alg": public.alg,
             "pub": Base64UrlUnpadded::encode_string(&public.pub_key),
-        },
+        }],
     });
 
     // An emergency revoke goes to every peer: one that is down must not
