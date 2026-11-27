@@ -343,6 +343,11 @@ impl<'a> Generator<'a> {
             Err(e) => return self.genesis_error_golden(test, expected_error, e),
         };
         if let Err(e) = self.commit_generated_genesis(test, &mut principal).await {
+            // A misplaced `principal/create` is a defect of the intent; it
+            // must not be emitted as a stub vector.
+            if matches!(e, Error::InvalidIntent { .. }) {
+                return Err(e);
+            }
             return self.genesis_error_golden(test, expected_error, e);
         }
         if let (true, Some(declared)) = (test.is_genesis_only(), &expected_error) {
@@ -562,7 +567,9 @@ impl<'a> Generator<'a> {
     /// (to pin a genesis rule), and then lists only its genesis key: every
     /// further key enters by a `key/create` the intent states. A
     /// `principal/create` in any later commit would need a commit before
-    /// the genesis, which does not exist.
+    /// the genesis, which does not exist. The exception is an error test
+    /// whose last commit holds the `principal/create`: that is a repeat of
+    /// the genesis generated here, dated one second before it.
     async fn commit_generated_genesis(
         &self,
         test: &TestIntent,
@@ -576,7 +583,14 @@ impl<'a> Generator<'a> {
                 .flatten()
                 .any(|t| t.typ.ends_with(cyphr::parsed_coz::typ::PRINCIPAL_CREATE))
         };
+        // An error test whose last commit holds the `principal/create` is a
+        // repeat of the genesis generated here, which `failing_commit`
+        // signs and the core refuses (SPEC 7.6: DUPLICATE).
+        let declares_error = test.expected.as_ref().is_some_and(|e| e.error.is_some());
+        let repeats_genesis = |i: usize| declares_error && i + 1 == test.commit.len();
+        let mut repeat = false;
         match test.commit.iter().position(creates) {
+            Some(i) if repeats_genesis(i) && (i > 0 || test.principal.len() > 1) => repeat = true,
             Some(0) if test.principal.len() > 1 => {
                 return Err(invalid(
                     "an intent stating its own genesis lists only the genesis key",
@@ -598,7 +612,10 @@ impl<'a> Generator<'a> {
             .flat_map(|c| c.tx.iter().flatten().map(|t| t.now))
             .chain(test.action.iter().map(|a| a.now))
             .min()
-            .unwrap_or(GENESIS_NOW);
+            .unwrap_or(GENESIS_NOW)
+            // A repeat dated with the genesis would be the genesis's own coz
+            // again and be refused as `CozReuse` before its own defect.
+            - i64::from(repeat);
         let genesis = test
             .principal
             .first()
