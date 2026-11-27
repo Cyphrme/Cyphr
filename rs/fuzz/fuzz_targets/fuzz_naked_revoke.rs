@@ -104,10 +104,10 @@ fuzz_target!(|data: &[u8]| {
         NakedRevokeEnvelope {
             pay,
             sig,
-            key: Some(DisclosedKey {
+            keys: Some(vec![DisclosedKey {
                 alg: "ES256".into(),
                 pub_key: pubk.clone(),
-            }),
+            }]),
         }
     };
 
