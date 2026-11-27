@@ -72,7 +72,6 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
             .unwrap_or_else(|| panic!("{test_name}: txs_order but no commit"));
         let actual: Vec<String> = commit
             .transactions()
-            .iter()
             .zip(order)
             .map(|(tx, stated)| {
                 let (alg, _) = parse_alg_digest(stated).expect("tagged TX");
@@ -84,7 +83,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
             })
             .collect();
         assert_eq!(
-            commit.transactions().len(),
+            commit.transactions().count(),
             order.len(),
             "{test_name}: txs_order length"
         );

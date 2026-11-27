@@ -1221,7 +1221,6 @@ impl<'a> Generator<'a> {
             .last()
             .map(|c| {
                 c.transactions()
-                    .iter()
                     .flat_map(|tx| tx.0.iter().map(|cz| cz.czd().to_b64()))
                     .collect()
             })
@@ -2029,10 +2028,9 @@ impl<'a> Generator<'a> {
         let txs_order = principal
             .commits()
             .last()
-            .filter(|c| c.transactions().iter().any(|tx| tx.0.len() > 1))
+            .filter(|c| c.transactions().any(|tx| tx.0.len() > 1))
             .map(|c| {
                 c.transactions()
-                    .iter()
                     .filter_map(|tx| tx.id(&[first_alg]))
                     .filter_map(|id| id.get(first_alg).map(|d| (first_alg, d.to_vec())))
                     .map(|(alg, d)| format!("{alg}:{}", Base64UrlUnpadded::encode_string(&d)))

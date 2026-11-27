@@ -368,7 +368,6 @@ impl WireBundle {
             actions: Vec::new(),
             txs: commit
                 .transactions()
-                .iter()
                 .map(|tx| tx.0.iter().map(|c| serde_json::to_vec(c.raw())).collect())
                 .collect::<Result<_, _>>()?,
             keys: commit

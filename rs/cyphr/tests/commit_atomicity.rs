@@ -275,7 +275,6 @@ async fn refused_bundle_writes_nothing() {
     };
     let mut txs: Vec<Vec<StoredCoz>> = commit
         .transactions()
-        .iter()
         .map(|tx| tx.0.iter().map(stored).collect())
         .collect();
     let keys = vec![key_a.key().expect("key")];

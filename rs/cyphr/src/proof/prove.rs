@@ -194,10 +194,7 @@ impl<S: eml::Storage> Principal<S> {
     /// Commit `s` opened for a stitch.
     fn opening_at(&self, s: u64) -> Result<OpeningW, ProofError> {
         let commit = self.held(s)?;
-        let (closing_tx, mutations) = commit
-            .transactions()
-            .split_last()
-            .ok_or_else(|| unprovable(format!("commit {s} has no transactions")))?;
+        let (closing_tx, mutations) = (commit.commit_tx(), commit.mutations());
         // Admission refuses every commit transaction of several cozies.
         let [closing] = closing_tx.0.as_slice() else {
             return Err(unprovable(format!(
