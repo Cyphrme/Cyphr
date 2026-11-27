@@ -15,7 +15,8 @@ use crate::state::{AuthRoot, PrincipalRoot, StateRoot};
 /// A finalized, atomic bundle of cozies.
 ///
 /// Per SPEC §4:
-/// - `Commit ID = MR(sort(czd₀, czd₁, ...))` for cozies in this commit only
+/// - `TR = MR(TX₀, TX₁, ...)` over this commit's transactions "in order as given by the principal",
+///   the commit transaction last (§3.7.5)
 /// - `CS = MR(AS, Commit ID)` binds the auth state to the commit
 /// - `arrow = MR(pre, fwd, TMR)` on the closing `commit/create` cz references the previous commit's
 ///   CS (or promoted AS for genesis)
