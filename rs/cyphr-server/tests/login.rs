@@ -1439,3 +1439,82 @@ async fn login_role_is_not_interchangeable_with_other_statements() {
         "the golden key must not be dead: {json:?}"
     );
 }
+
+// ========================================================================
+// Principal-id spelling at the login edge (CLOSE-DECISIONS D5, Q1)
+// ========================================================================
+
+/// The label a bare digest was printed under, read off its width here in
+/// the test only (the code under test must never do this).
+fn labelled(genesis: &str, bare: &str) -> String {
+    let hash = match bare.len() {
+        43 => "SHA-256",
+        64 => "SHA-384",
+        86 => "SHA-512",
+        n => panic!("{genesis}: unexpected digest length {n}"),
+    };
+    format!("{hash}:{bare}")
+}
+
+/// Over the pool's principals (each a different genesis key, so a different
+/// digest): a login claiming its principal by the labelled `ALG:digest` is
+/// accepted, and the token subject is that same labelled id, which parses
+/// and prints back unchanged.
+///
+/// Red before ID: the subject is the bare digest. End to end: yes.
+#[tokio::test]
+async fn login_claims_the_labelled_id_and_the_subject_is_that_id() {
+    let state = login_state();
+    let pool = load_pool();
+    for (genesis, key) in [("golden", "key_a"), ("alice", "key_b")] {
+        let bare =
+            bootstrap_active_with_key(build_router(state.clone()), &pool, genesis, key).await;
+        let id = labelled(genesis, &bare);
+
+        let ok = login_body(&pool, genesis, AUDIENCE, Some(&id), None, now_secs());
+        let (status, json) = post_json(build_router(state.clone()), "/auth/login", ok).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{genesis}: labelled login: {json:?}"
+        );
+        let token = envelope_payload(&json)["token"].as_str().expect("token");
+        let claims = state
+            .identity
+            .as_ref()
+            .unwrap()
+            .verify_token(token, now_secs())
+            .expect("issued token verifies");
+        let subject = claims.pg.to_string();
+        let parsed: cyphr::PrincipalGenesis = subject
+            .parse()
+            .unwrap_or_else(|e| panic!("{genesis}: subject {subject:?} is not a labelled id: {e}"));
+        assert_eq!(parsed.to_string(), subject, "{genesis}: Display round trip");
+        assert_eq!(subject, id, "{genesis}: the subject is the id logged in");
+    }
+}
+
+/// A login claiming the bare digest is refused, whatever the principal,
+/// with an error that shows the labelled form; no token is issued and no
+/// width is guessed.
+///
+/// Red before ID: the bare claim is accepted (200). End to end: yes.
+#[tokio::test]
+async fn login_refuses_a_bare_id_and_shows_the_labelled_form() {
+    let state = login_state();
+    let pool = load_pool();
+    for (genesis, key) in [("golden", "key_a"), ("alice", "key_b")] {
+        let bare =
+            bootstrap_active_with_key(build_router(state.clone()), &pool, genesis, key).await;
+        let refused = login_body(&pool, genesis, AUDIENCE, Some(&bare), None, now_secs());
+        let (status, json) = post_json(build_router(state.clone()), "/auth/login", refused).await;
+        assert!(
+            status.is_client_error(),
+            "{genesis}: a bare claim must be refused, got {status}: {json:?}"
+        );
+        assert!(
+            json.to_string().contains("unlabelled principal id"),
+            "{genesis}: the refusal must show the labelled form: {json:?}"
+        );
+    }
+}

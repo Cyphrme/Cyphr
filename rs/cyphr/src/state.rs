@@ -108,6 +108,21 @@ impl StateDigest for PrincipalRoot {
 /// Principal Genesis (PG) - SPEC §3.7.1
 ///
 /// The first PR ever computed. Permanent, never changes.
+///
+/// The digest is private, so no caller outside this crate can hold a
+/// genesis with no variants: each constructor refuses one, and `Display`
+/// never prints an empty string. Neither of these builds one:
+///
+/// ```compile_fail,E0423
+/// use cyphr::{MultihashDigest, PrincipalGenesis};
+/// let _ = PrincipalGenesis(MultihashDigest::default());
+/// ```
+///
+/// ```compile_fail,E0616
+/// use cyphr::{PrincipalGenesis, state::HashAlg};
+/// let pg = PrincipalGenesis::from_digest(HashAlg::Sha256, vec![0u8; 32]).unwrap();
+/// let _ = &pg.0;
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrincipalGenesis(pub MultihashDigest);
 
