@@ -75,14 +75,24 @@ fn golden_signer() -> SoftwareSigner {
 /// A keyed, bootstrapped server that also serves logins for `AUDIENCE`,
 /// with the `golden` principal pushed. Returns the state, the Noise
 /// address, the principal id and the temp-dir guard.
-async fn server() -> (Arc<AppState>, SocketAddr, String, tempfile::TempDir) {
+async fn server() -> (
+    Arc<AppState>,
+    SocketAddr,
+    cyphr::PrincipalGenesis,
+    tempfile::TempDir,
+) {
     server_with(None).await
 }
 
 /// [`server`] with the configured session lifetime.
 async fn server_with(
     session_ttl_secs: Option<i64>,
-) -> (Arc<AppState>, SocketAddr, String, tempfile::TempDir) {
+) -> (
+    Arc<AppState>,
+    SocketAddr,
+    cyphr::PrincipalGenesis,
+    tempfile::TempDir,
+) {
     let dir = tempfile::tempdir().expect("tempdir");
     let key_path = write_signing_key(dir.path());
     let config = ServerConfig {
@@ -119,23 +129,31 @@ async fn server_with(
 }
 
 /// A fresh authenticated Noise session as the `golden` principal.
-async fn session(state: &Arc<AppState>, addr: SocketAddr, pr: &str) -> NoiseConnector {
+async fn session(
+    state: &Arc<AppState>,
+    addr: SocketAddr,
+    pr: &cyphr::PrincipalGenesis,
+) -> NoiseConnector {
     session_as(state, addr, pr, &golden_signer()).await
 }
 
 /// A fresh Level 1 principal (a key that is its own principal) and its
 /// signer: whoever dials a server needs no account to authenticate.
-fn fresh_level_one() -> (String, SoftwareSigner) {
+fn fresh_level_one() -> (cyphr::PrincipalGenesis, SoftwareSigner) {
     let kp = coz::Alg::Ed25519.generate_keypair();
     let tmb = kp.alg.compute_thumbprint(&kp.pub_bytes).expect("tmb");
     let signer = SoftwareSigner::new(kp.alg.name(), &kp.prv_bytes, &kp.pub_bytes, &tmb);
-    (tmb.to_b64(), signer)
+    let key = cyphr::Key::new(kp.alg.name().to_string(), tmb, kp.pub_bytes.clone())
+        .expect("key binds its tmb");
+    let id = cyphr_storage::engine::genesis_principal_id(&cyphr_storage::Genesis::Implicit(key))
+        .expect("a Level 1 key derives an id");
+    (id, signer)
 }
 
 async fn session_as(
     state: &Arc<AppState>,
     addr: SocketAddr,
-    pr: &str,
+    pr: &cyphr::PrincipalGenesis,
     signer: &SoftwareSigner,
 ) -> NoiseConnector {
     let app = build_router(state.clone());
@@ -150,7 +168,11 @@ async fn session_as(
     )
     .expect("key binds its tmb")
     .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
-    let mut held = PeerChain::pin(d["pg"].as_str().expect("pg"), genesis).await;
+    let mut held = PeerChain::pin(
+        &d["pg"].as_str().expect("pg").parse().expect("labelled pg"),
+        genesis,
+    )
+    .await;
     held.follow(&RouterConnector(app))
         .await
         .expect("follow the server chain");
@@ -169,11 +191,15 @@ fn now() -> i64 {
 /// The timestamp-flow login the `golden` key signs for `pr`, committing to
 /// the channel whose handshake hash is `h` when it is given (a native
 /// client's login over Noise).
-fn login_body(pr: &str, h: Option<&[u8]>) -> String {
+fn login_body(pr: &cyphr::PrincipalGenesis, h: Option<&[u8]>) -> String {
     login_body_with(pr, h, &[])
 }
 
-fn login_body_with(pr: &str, h: Option<&[u8]>, extra: &[(&str, &str)]) -> String {
+fn login_body_with(
+    pr: &cyphr::PrincipalGenesis,
+    h: Option<&[u8]>,
+    extra: &[(&str, &str)],
+) -> String {
     let pool = load_pool();
     let key = pool.get(GOLDEN_KEY).expect("golden in pool");
     let prv = Base64UrlUnpadded::decode_vec(key.prv.as_ref().expect("prv")).expect("prv");
@@ -183,10 +209,8 @@ fn login_body_with(pr: &str, h: Option<&[u8]>, extra: &[(&str, &str)]) -> String
     pay.now = Some(now());
     pay.tmb = Some(key.compute_tmb().expect("tmb"));
     pay.typ = Some(format!("{AUDIENCE}/user/login/request/create"));
-    pay.extra.insert(
-        "pg".to_string(),
-        serde_json::Value::String(cyphr_storage::engine::bare_digest(pr).to_string()),
-    );
+    pay.extra
+        .insert("pg".to_string(), serde_json::Value::String(pr.to_string()));
     if let Some(h) = h {
         pay.extra.insert(
             "h".to_string(),
@@ -224,7 +248,7 @@ async fn over_noise(conn: &NoiseConnector, request: Request) -> (u16, serde_json
 async fn native_login(
     state: &Arc<AppState>,
     addr: SocketAddr,
-    pr: &str,
+    pr: &cyphr::PrincipalGenesis,
 ) -> (NoiseConnector, String) {
     let conn = session(state, addr, pr).await;
     let h = conn.channel_binding().expect("binding").as_bytes().to_vec();

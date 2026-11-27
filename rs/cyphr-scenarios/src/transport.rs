@@ -40,8 +40,12 @@ impl Identity {
         Ok(Self { kp, tmb })
     }
 
-    fn pg(&self) -> String {
-        self.tmb.to_b64()
+    /// The id of this Level 1 principal: its key's thumbprint, under the
+    /// hash its own algorithm names.
+    fn pg(&self) -> Result<cyphr::PrincipalGenesis, String> {
+        let alg = cyphr::state::hash_alg_from_str(self.kp.alg.name()).map_err(|e| e.to_string())?;
+        cyphr::PrincipalGenesis::from_digest(alg, self.tmb.as_bytes().to_vec())
+            .map_err(|e| e.to_string())
     }
 
     fn signer(&self) -> SoftwareSigner {
@@ -60,7 +64,7 @@ impl Identity {
             self.kp.pub_bytes.clone(),
         )
         .map_err(|e| e.to_string())?;
-        Ok(PeerChain::pin(&self.pg(), key).await)
+        Ok(PeerChain::pin(&self.pg()?, key).await)
     }
 }
 
@@ -132,7 +136,12 @@ async fn connect_fresh(
     )
     .map_err(|e| e.to_string())?
     .with_first_seen(g["first_seen"].as_i64().ok_or("no first_seen")?);
-    let mut held = PeerChain::pin(d["pg"].as_str().ok_or("/server has no pg")?, genesis).await;
+    let server_pg: cyphr::PrincipalGenesis = d["pg"]
+        .as_str()
+        .ok_or("/server has no pg")?
+        .parse()
+        .map_err(|e: cyphr::Error| e.to_string())?;
+    let mut held = PeerChain::pin(&server_pg, genesis).await;
     // The peer may have rotated its signing key since its genesis: a client
     // brings the chain it pinned up to the peer's own, from the peer's own
     // HTTP face, before it judges the key the peer signs the handshake with.
@@ -144,7 +153,7 @@ async fn connect_fresh(
     .map_err(|e| format!("following the peer's own chain: {e}"))?;
 
     let me = Identity::generate()?;
-    NoiseConnector::connect(addr, &mut held, &me.signer(), &me.pg())
+    NoiseConnector::connect(addr, &mut held, &me.signer(), &me.pg()?)
         .await
         .map_err(|e| e.to_string())
 }
@@ -177,7 +186,17 @@ async fn serve_envelope(
     let mut channel = Channel::respond(stream).await?;
     let h = channel.handshake_hash().to_vec();
     let alg = me.kp.alg.name();
-    let pay = statement_pay(alg, &me.tmb, &me.pg(), Role::Responder, &h, 0)?;
+    let pay = statement_pay(
+        alg,
+        &me.tmb,
+        &me.pg()
+            .map_err(|_| cyphr_net::transport::TransportError::BadBinding {
+                what: "the hostile responder has no id",
+            })?,
+        Role::Responder,
+        &h,
+        0,
+    )?;
     let sig = coz::sign_json(&pay, alg, &me.kp.prv_bytes, &me.kp.pub_bytes)
         .map(|(sig, _)| sig)
         .ok_or(cyphr_net::transport::TransportError::BadBinding {
@@ -225,10 +244,10 @@ async fn fetch_from_hostile(
 ) -> Result<Result<cyphr_net::VerifiedPatch, PatchFailure>, String> {
     let (addr, mut pinned) = hostile_responder(envelope).await?;
     let me = Identity::generate()?;
-    let conn = NoiseConnector::connect(addr, &mut pinned, &me.signer(), &me.pg())
+    let conn = NoiseConnector::connect(addr, &mut pinned, &me.signer(), &me.pg()?)
         .await
         .map_err(|e| e.to_string())?;
-    let pg = pinned.pg().to_string();
+    let pg = pinned.pg().clone();
     Ok(fetch_patch(
         &conn,
         &PatchRequest {

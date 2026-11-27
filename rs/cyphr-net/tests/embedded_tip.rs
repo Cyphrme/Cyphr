@@ -23,7 +23,7 @@ fn clock() -> i64 {
 
 /// B's chain as a peer serves it.
 struct Line {
-    pg: String,
+    pg: cyphr::PrincipalGenesis,
     entries: Vec<Vec<String>>,
     prs: Vec<String>,
     tip: String,

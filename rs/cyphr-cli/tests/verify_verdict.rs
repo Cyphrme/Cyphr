@@ -229,7 +229,7 @@ fn verdict_follows_the_branch_the_principal_resolves_to() {
     );
     assert_eq!(
         after["resolved_by"],
-        id.as_str(),
+        common::tmb(&id),
         "names the resolving key: {after}"
     );
     // The abandoned branch is retained as proof of error (SPEC 15.8) in the
@@ -272,7 +272,10 @@ fn data_fork_after_adopting_the_remote_is_evidence_the_verifier_replays() {
     accepted(&a.push(&id, &s1.url), "base to peer 1");
     accepted(&a.push(&id, &s2.url), "base to peer 2");
     let b = a.clone_identity(&id);
-    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+    let (ident, signer) = (
+        format!("--identity={id}"),
+        format!("--signer={}", common::tmb(&id)),
+    );
     let data = |u: &User, msg: &str| {
         u.setup(&["data", "action", &ident, &signer, &format!("--msg={msg}")]);
         u.setup(&["data", "commit", &ident, &signer]);
@@ -513,7 +516,10 @@ fn adoption_keeps_an_existing_backup_of_the_same_second() {
     let id = a.new_identity();
     accepted(&a.push(&id, &s1.url), "base to peer");
     let b = a.clone_identity(&id);
-    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+    let (ident, signer) = (
+        format!("--identity={id}"),
+        format!("--signer={}", common::tmb(&id)),
+    );
     let data = |u: &User, msg: &str| {
         u.setup(&["data", "action", &ident, &signer, &format!("--msg={msg}")]);
         u.setup(&["data", "commit", &ident, &signer]);

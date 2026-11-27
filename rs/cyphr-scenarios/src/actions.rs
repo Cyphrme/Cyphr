@@ -89,6 +89,19 @@ fn split_tag(s: &str) -> (Option<&str>, &str) {
 }
 
 impl Principal {
+    /// The handle as the typed id. A handle comes from what the CLI or a
+    /// peer prints, which is always the labelled spelling, so one that does
+    /// not parse is a defect of the scenario that built it.
+    ///
+    /// # Panics
+    ///
+    /// If the handle is not a labelled principal id.
+    pub fn pg(&self) -> cyphr::PrincipalGenesis {
+        self.0
+            .parse()
+            .unwrap_or_else(|e| panic!("scenario principal {:?} is not a labelled id: {e}", self.0))
+    }
+
     /// The handle without any algorithm tag (`SHA-512:abc` and `abc` are
     /// one address).
     pub fn bare(&self) -> &str {
@@ -516,11 +529,16 @@ impl Harness {
             let mut set = tokio::task::JoinSet::new();
             for i in sent..sent + batch {
                 let http = self.http.clone();
-                // 43 base64url characters: the shape of a thumbprint or an
-                // unpadded SHA-256 PG, which is never one a peer holds.
+                // A labelled SHA-256 id that is never one a peer holds, and
+                // the 43-character shape of a thumbprint for `/revoked`.
+                let mut digest = vec![0u8; 32];
+                digest[24..].copy_from_slice(&(i as u64).to_be_bytes());
+                let bogus_pg = cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, digest)
+                    .map(|pg| pg.to_string())
+                    .map_err(|e| ActionError::Failed(format!("flood id: {e}")))?;
                 let bogus = format!("{i:0>43}");
                 let url = if i % 2 == 0 {
-                    format!("{base}/evidence?pg={bogus}")
+                    format!("{base}/evidence?pg={bogus_pg}")
                 } else {
                     format!("{base}/revoked?tmbs={bogus}")
                 };
@@ -1178,6 +1196,9 @@ impl Client<'_> {
     pub async fn attribute(&self, s: &Statement) -> ActionResult<Attribution> {
         let ident = self.get(&s.peer, "/server", None).await?;
         let pg = field(&ident["payload"], "pg")?;
+        let pg_id: cyphr::PrincipalGenesis = pg
+            .parse()
+            .map_err(|e| ActionError::Failed(format!("`{}` /server pg: {e}", s.peer)))?;
         // The peer's genesis as it states it; the replay accepts it only if
         // it derives the PG.
         let genesis = crate::signed::genesis_key(&ident["payload"]["genesis"])
@@ -1195,7 +1216,7 @@ impl Client<'_> {
             .bytes()
             .await
             .map_err(|e| ActionError::Failed(e.to_string()))?;
-        let chain = crate::signed::ChainView::from_patch_with_genesis(&body, &pg, genesis)
+        let chain = crate::signed::ChainView::from_patch_with_genesis(&body, &pg_id, genesis)
             .await
             .map_err(|e| ActionError::Failed(format!("`{}`'s own chain: {e}", s.peer)))?;
         let coz: serde_json::Value =
@@ -1332,7 +1353,7 @@ impl Client<'_> {
             .and_then(|i| patch["payload"]["entries"].get(i))
             .ok_or_else(|| ActionError::Failed(format!("`{to}` serves no commit {height}")))?;
         // The commit's bundle exactly as served: `txs`, `keys`, `actions`.
-        let mut body = serde_json::json!({"principal_id": p.bare()});
+        let mut body = serde_json::json!({"principal_id": p.0});
         for field in ["txs", "keys", "actions"] {
             if let Some(v) = entry.get(field) {
                 body[field] = v.clone();
@@ -1409,7 +1430,8 @@ impl Client<'_> {
             let genesis = key_of_entry(&self.h.genesis_of(&p)?)?;
             *guard = Some(Enrolled {
                 party: cyphr_net::RelyingParty::new(
-                    p.bare(),
+                    &p.0.parse::<cyphr::PrincipalGenesis>()
+                        .map_err(|e| ActionError::Failed(format!("principal {}: {e}", p.0)))?,
                     cyphr_net::Anchor::GenesisKey(genesis),
                     rp.config.clone(),
                     cyphr::principal::system_clock,
@@ -1467,7 +1489,7 @@ impl Client<'_> {
             login,
             token: Token(session.token),
             key: KeyRef(session.key.to_b64()),
-            principal: Principal(session.principal),
+            principal: Principal(session.principal.to_string()),
         })
     }
 }

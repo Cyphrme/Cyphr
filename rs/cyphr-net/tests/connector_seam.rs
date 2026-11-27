@@ -121,8 +121,6 @@ async fn serve_http(body: Vec<u8>) -> String {
     format!("http://{addr}")
 }
 
-const PR: &str = "SHA-256:principal";
-
 /// Claim: the same authority body yields the same verified entries and the
 /// same attested tip over HTTP and over an in-memory pipe. Red if the core
 /// has a carrier-specific path. End-to-end scenario: no (client-side only).
@@ -133,7 +131,7 @@ async fn connector_pipe_and_http_reach_same_verified_tip() {
     let pr_wire = b64(7);
     let body = patch_body(&auth, &pr_wire);
     let request = PatchRequest {
-        principal_id: &format!("SHA-256:{pr_wire}"),
+        principal_id: &format!("SHA-256:{pr_wire}").parse().expect("labelled id"),
         anchor: None,
     };
 
@@ -163,7 +161,7 @@ async fn connector_without_binding_refused_when_required() {
     let auth = authority();
     let pipe = Pipe::new(patch_body(&auth, &b64(7)), None);
     let request = PatchRequest {
-        principal_id: PR,
+        principal_id: &format!("SHA-256:{}", b64(7)).parse().expect("labelled id"),
         anchor: None,
     };
     let err = fetch_patch(
@@ -197,7 +195,7 @@ async fn connector_binding_is_exposed_to_caller() {
     let binding = ChannelBinding::new(BindingKind::NoiseHandshakeHash, vec![0xAA; 32]);
     let pipe = Pipe::new(patch_body(&auth, &pr_wire), Some(binding.clone()));
     let request = PatchRequest {
-        principal_id: &format!("SHA-256:{pr_wire}"),
+        principal_id: &format!("SHA-256:{pr_wire}").parse().expect("labelled id"),
         anchor: None,
     };
     let got = fetch_patch(
@@ -219,7 +217,7 @@ fn connector_envelope_verifier_refuses_forgeries() {
     let auth = authority();
     let pr_wire = b64(7);
     let body: serde_json::Value = serde_json::from_slice(&patch_body(&auth, &pr_wire)).unwrap();
-    let id = format!("SHA-256:{pr_wire}");
+    let id: cyphr::PrincipalGenesis = format!("SHA-256:{pr_wire}").parse().expect("labelled id");
 
     let ok = verify_authenticated_envelope(&body, &auth.key, &id).expect("genuine verifies");
     assert_eq!(ok.sequence, 1);
@@ -238,8 +236,12 @@ fn connector_envelope_verifier_refuses_forgeries() {
     );
 
     assert_eq!(
-        verify_authenticated_envelope(&body, &auth.key, &format!("SHA-256:{}", b64(8)))
-            .unwrap_err(),
+        verify_authenticated_envelope(
+            &body,
+            &auth.key,
+            &format!("SHA-256:{}", b64(8)).parse().expect("labelled id")
+        )
+        .unwrap_err(),
         PatchFailure::PrincipalMismatch
     );
 }

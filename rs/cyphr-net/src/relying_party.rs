@@ -25,11 +25,11 @@ use std::time::Duration;
 
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::principal::Clock;
 use rand::RngCore;
 
 use crate::connector::{ChannelBinding, Connector};
-use crate::evidence::names_pg;
 use crate::login::{self, Issuer, LoginRequest, SignError, SpentChallenges, VerifyError};
 use crate::sync::{Anchor, PeerStanding, PullPeer, PullReport, Record, RecordTip, pull};
 
@@ -173,7 +173,7 @@ pub enum SessionBinding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trust {
     /// The principal, as the relying party was pinned to it.
-    pub principal: String,
+    pub principal: PrincipalGenesis,
     /// The key, active in the chain the relying party replayed from its
     /// own anchor.
     pub key: Thumbprint,
@@ -192,9 +192,8 @@ pub struct Session {
     /// The opaque session token. A fresh 256-bit value, not derived from
     /// anything the principal signed.
     pub token: String,
-    /// The canonical principal: the PG the relying party is pinned to,
-    /// however the login spelled it.
-    pub principal: String,
+    /// The principal: the PG the relying party is pinned to.
+    pub principal: PrincipalGenesis,
     /// The key that signed in.
     pub key: Thumbprint,
     /// What the session is tied to.
@@ -260,7 +259,12 @@ impl RelyingParty {
     /// A relying party for the principal `principal_id` (its PG) pinned at
     /// `anchor`. It holds no view until [`refresh`](Self::refresh) succeeds.
     #[must_use]
-    pub fn new(principal_id: &str, anchor: Anchor, config: RpConfig, clock: Clock) -> Self {
+    pub fn new(
+        principal_id: &PrincipalGenesis,
+        anchor: Anchor,
+        config: RpConfig,
+        clock: Clock,
+    ) -> Self {
         Self {
             record: Record::new(principal_id, anchor).with_clock(clock),
             config,
@@ -510,6 +514,7 @@ impl RelyingParty {
             VerifyError::NotALogin | VerifyError::AudienceMissing => {
                 Refusal::Malformed("typ is not a login")
             },
+            VerifyError::PgMalformed(_) => Refusal::Malformed("pg is not a labelled principal id"),
             VerifyError::ChannelMalformed => Refusal::Malformed("h is not base64url"),
             VerifyError::ChallengeInvalid => Refusal::ChallengeInvalid,
             VerifyError::InvalidSignature => Refusal::InvalidSignature,
@@ -517,7 +522,7 @@ impl RelyingParty {
         if parsed.audience != self.config.audience {
             return Err(Refusal::AudienceMismatch);
         }
-        if !names_pg(self.bare_principal(), &parsed.pg) {
+        if parsed.pg != *self.record.principal_id() {
             return Err(Refusal::Malformed("pg does not name the pinned principal"));
         }
         // The login names the channel it is for: the claim a native client
@@ -619,11 +624,6 @@ impl RelyingParty {
         }
     }
 
-    fn bare_principal(&self) -> &str {
-        let id = self.record.principal_id();
-        id.split_once(':').map_or(id, |(_, bare)| bare)
-    }
-
     fn require_current(&self, now: i64) -> Result<Duration, Refusal> {
         let at = self
             .last_pull
@@ -693,10 +693,7 @@ impl RelyingParty {
             .tip()
             .ok_or(Refusal::Stale(UnmetCurrency::NoPull))?;
         Ok(Trust {
-            principal: self
-                .record
-                .subject()
-                .ok_or(Refusal::Stale(UnmetCurrency::NoPull))?,
+            principal: self.record.principal_id().clone(),
             key: key.clone(),
             tip,
             pull_age,
@@ -714,7 +711,9 @@ mod tests {
 
     fn relying_party() -> RelyingParty {
         RelyingParty::new(
-            "pg",
+            &"SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                .parse()
+                .expect("labelled id"),
             Anchor::GenesisCommit("SHA-256:genesis".to_owned()),
             RpConfig {
                 audience: "rp.example".to_owned(),

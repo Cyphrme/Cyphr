@@ -125,7 +125,7 @@ fn active_tip_answer_still_parses() {
 fn held_statement_verifies_and_refuses_forgeries() {
     let a = authority();
     let body = held_envelope(&a, HELD_REPORT_TYP);
-    let id = format!("SHA-256:{}", b64(7));
+    let id: cyphr::PrincipalGenesis = digest(7).parse().expect("labelled id");
     let report = verify_held_envelope(&body, &a.key, &id).expect("genuine verifies");
     assert_eq!(report.fork_point.height, 3);
     assert_eq!(report.heads.len(), 2);
@@ -135,7 +135,7 @@ fn held_statement_verifies_and_refuses_forgeries() {
         PatchFailure::EnvelopeUnsignedOrMisSigned
     );
     assert_eq!(
-        verify_held_envelope(&body, &a.key, &format!("SHA-256:{}", b64(8))).unwrap_err(),
+        verify_held_envelope(&body, &a.key, &digest(8).parse().expect("labelled id")).unwrap_err(),
         PatchFailure::PrincipalMismatch
     );
     let tip_typed = held_envelope(&a, "cyphr-server/receipt/tip");
@@ -151,7 +151,7 @@ fn held_statement_verifies_and_refuses_forgeries() {
 fn held_statement_is_never_a_tip_report() {
     let a = authority();
     let body = held_envelope(&a, HELD_REPORT_TYP);
-    let id = format!("SHA-256:{}", b64(7));
+    let id: cyphr::PrincipalGenesis = digest(7).parse().expect("labelled id");
     assert_eq!(
         verify_authenticated_envelope(&body, &a.key, &id).unwrap_err(),
         PatchFailure::MalformedReport
@@ -182,7 +182,7 @@ fn error_patch_reads_as_the_canonical_chain_and_keeps_every_branch() {
             ],
         }, "statement": { "kind": "unsigned" } })
     };
-    let id = format!("SHA-256:{}", b64(7));
+    let id: cyphr::PrincipalGenesis = digest(7).parse().expect("labelled id");
     let bytes = serde_json::to_vec(&body([false, true])).expect("body");
     let patch = verify_patch_body(&bytes, &id, None).expect("an Error patch reads");
     let seqs: Vec<u64> = patch.entries.iter().map(|e| e.sequence).collect();

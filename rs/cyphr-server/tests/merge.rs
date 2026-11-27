@@ -19,7 +19,7 @@ use axum::Router;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
-use cyphr::{Error, Key, MergeStatus, Principal, merge_status};
+use cyphr::{Error, Key, MergeStatus, Principal, PrincipalGenesis, merge_status};
 use cyphr_server::build_router;
 use serde_json::{Value, json};
 
@@ -41,7 +41,7 @@ struct Peer {
     principal: Principal,
     /// The server-side id, the PG (SPEC 3.1, 5.1): set once the genesis
     /// commit is authored.
-    id: Option<String>,
+    id: Option<PrincipalGenesis>,
 }
 
 impl Peer {
@@ -64,7 +64,7 @@ impl Peer {
     }
 
     /// The server-side id: the PG its genesis commit fixed (SPEC 3.1, 5.1).
-    fn id(&self) -> String {
+    fn id(&self) -> PrincipalGenesis {
         self.id
             .clone()
             .expect("the genesis commit is authored first")

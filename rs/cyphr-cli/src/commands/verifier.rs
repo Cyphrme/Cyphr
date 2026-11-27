@@ -20,9 +20,9 @@
 
 use std::time::Duration;
 
-use cyphr::Key;
 use cyphr::principal::system_clock;
 use cyphr::replay::WireBundle;
+use cyphr::{Key, PrincipalGenesis};
 use cyphr_net::{
     Anchor, BindingPolicy, BundleError, Connector, ExchangeBundle, HttpConnector, HttpOptions,
     PatchFailure, PatchRequest, PeerFailure, PeerStanding, PullPeer, PullReport, Record,
@@ -31,13 +31,11 @@ use cyphr_net::{
 use cyphr_storage::Genesis;
 use cyphr_storage::engine::{
     Assessment, Consensus, EngineError, ForkView, PulledOffer, Recovery, ResyncOffer, Review,
-    bare_digest,
 };
 use serde_json::{Value, json};
 
 use super::common::{
-    CliStorageEngine, block_on, current_timestamp, get_principal_id, parse_principal_genesis,
-    parse_store, raw_chain, store_path,
+    CliStorageEngine, block_on, current_timestamp, parse_store, raw_chain, store_path,
 };
 use crate::choices::Choices;
 use crate::keystore::KeyBackend;
@@ -52,7 +50,7 @@ const DEFAULT_FRESHNESS_SECS: u64 = 300;
 /// What a run was told: the flags, with the choices file behind them.
 pub struct Inputs<'a> {
     /// The identity (the principal's genesis, base64url).
-    pub identity: &'a str,
+    pub identity: &'a PrincipalGenesis,
     /// `--peer` flags.
     pub peers: &'a [String],
     /// `--anchor`.
@@ -74,11 +72,7 @@ fn emit(cli: &Cli, value: &Value, table: impl FnOnce()) -> crate::Result<()> {
 /// Everything a round needs that does not change during it.
 struct Round<'a> {
     cli: &'a Cli,
-    identity: &'a str,
-    /// The bare digest the wire and the pull step use.
-    wire: String,
-    /// The tagged id the store keys the principal by.
-    principal_id: String,
+    identity: &'a PrincipalGenesis,
     store: CliStorageEngine,
     anchor: Anchor,
     anchor_value: String,
@@ -107,22 +101,25 @@ fn anchor_rule(value: &str) -> Error {
 /// opener the first commit held or offered discloses (`hint`).
 fn choose_anchor(
     keystore: &impl KeyBackend,
-    identity: &str,
-    wire: &str,
+    identity: &PrincipalGenesis,
     given: Option<&str>,
     first: Option<&WireBundle>,
 ) -> crate::Result<(Anchor, String, &'static str)> {
     let opener = first.and_then(|b| opener_of(b).ok());
     if let Some(value) = given {
-        if let Some(key) = keystore_key(keystore, value).or_else(|| {
-            opener
-                .clone()
-                .filter(|k| k.tmb().to_b64() == bare_digest(value))
-        }) {
+        if let Some(key) = keystore_key(keystore, value)
+            .or_else(|| opener.clone().filter(|k| k.tmb().to_b64() == value))
+        {
             let tmb = key.tmb().to_b64();
             return Ok((Anchor::GenesisKey(key), tmb, "pinned"));
         }
-        if bare_digest(value) == wire || !value.contains(':') {
+        // The principal genesis alone is no anchor, and neither is a value
+        // that is not a labelled commit id.
+        if value
+            .parse::<PrincipalGenesis>()
+            .is_ok_and(|pg| pg == *identity)
+            || !value.contains(':')
+        {
             return Err(anchor_rule(value));
         }
         return Ok((
@@ -131,7 +128,7 @@ fn choose_anchor(
             "pinned",
         ));
     }
-    if let Some(key) = keystore_key(keystore, identity) {
+    if let Some(key) = keystore_key(keystore, &identity.wire_digest()) {
         let tmb = key.tmb().to_b64();
         return Ok((Anchor::GenesisKey(key), tmb, "trusted-genesis"));
     }
@@ -150,24 +147,20 @@ fn choose_anchor(
 impl<'a> Round<'a> {
     fn open(
         cli: &'a Cli,
-        identity: &'a str,
+        identity: &'a PrincipalGenesis,
         anchor_given: Option<&str>,
         freshness: u64,
         offered_first: Option<&WireBundle>,
     ) -> crate::Result<Self> {
         let store = parse_store(cli)?;
         let keystore = super::common::open_backend(cli)?;
-        let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
-        let wire = bare_digest(&principal_id).to_owned();
-        let local = block_on(raw_chain(&store, &principal_id))??;
+        let local = block_on(raw_chain(&store, identity))??;
         let first = local.first().map(|c| &c.bundle).or(offered_first);
         let (anchor, anchor_value, anchor_source) =
-            choose_anchor(&keystore, identity, &wire, anchor_given, first)?;
+            choose_anchor(&keystore, identity, anchor_given, first)?;
         Ok(Self {
             cli,
             identity,
-            wire,
-            principal_id,
             store,
             anchor,
             anchor_value,
@@ -179,8 +172,8 @@ impl<'a> Round<'a> {
     /// The record the local store holds, replayed from the anchor.
     async fn record(&self) -> crate::Result<Record> {
         use cyphr_net::{ActionBundle, PatchEntry};
-        let patch = if self.store.get_tip(&self.principal_id).await?.is_some() {
-            Some(self.store.get_patch(&self.principal_id, None, None).await?)
+        let patch = if self.store.get_tip(self.identity).await?.is_some() {
+            Some(self.store.get_patch(self.identity, None, None).await?)
         } else {
             None
         };
@@ -206,7 +199,7 @@ impl<'a> Round<'a> {
             })
             .unwrap_or_default();
         Record::from_entries(
-            &self.wire,
+            self.identity,
             self.anchor.clone(),
             system_clock,
             &entries,
@@ -244,7 +237,7 @@ impl<'a> Round<'a> {
         let answers = self
             .store
             .ingest_pulled(
-                &self.principal_id,
+                self.identity,
                 &PulledOffer {
                     genesis: genesis.as_ref(),
                     commits: if held { commits } else { &[] },
@@ -371,8 +364,8 @@ fn resolution_of(commits: &[String; 2], assessed: &Assessment) -> Option<Resolut
 /// paired with the retained rival's bundle, and each key the principal ever
 /// held that has a revoke record.
 async fn held_of(round: &Round<'_>) -> crate::Result<(Vec<HeldFork>, Vec<HeldRevoke>)> {
-    let assessed = round.store.assess(&round.principal_id).await?;
-    let (_, evidence) = round.store.fork_evidence(&round.principal_id).await?;
+    let assessed = round.store.assess(round.identity).await?;
+    let (_, evidence) = round.store.fork_evidence(round.identity).await?;
     let mut forks = Vec::new();
     for contest in assessed.forks.iter().filter(|c| c.commits.len() >= 2) {
         let Some(alg) = contest
@@ -461,14 +454,14 @@ async fn run_round<C: Connector>(
     // chain, which verifies each, and the verdict below reads them.
     let mut served: Vec<(Vec<Value>, Vec<WireBundle>)> = Vec::new();
     for peer in peers {
-        let Ok(pops) = fetch_resyncs(peer.connector, &round.wire).await else {
+        let Ok(pops) = fetch_resyncs(peer.connector, round.identity).await else {
             continue;
         };
         if pops.is_empty() {
             continue;
         }
         let request = PatchRequest {
-            principal_id: &round.wire,
+            principal_id: round.identity,
             anchor: None,
         };
         let Ok(patch) =
@@ -509,14 +502,14 @@ async fn run_round<C: Connector>(
     // What the store holds now, branches kept as a peer keeps them: its
     // canonical chain is the record, and its assessment the verdict.
     let record = round.record().await?;
-    let assessed = round.store.assess(&round.principal_id).await?;
+    let assessed = round.store.assess(round.identity).await?;
     let tip = record
         .tip()
-        .ok_or_else(|| Error::EmptyHistory(round.identity.to_owned()))?;
+        .ok_or_else(|| Error::EmptyHistory(round.identity.to_string()))?;
 
     let entry = state
         .principals
-        .entry(round.wire.clone())
+        .entry(round.identity.clone())
         .or_insert_with(PrincipalState::default);
     for o in &report.peers {
         let (standing, detail) = standing_of(&o.standing);
@@ -618,7 +611,7 @@ async fn run_round<C: Connector>(
         // When the anchor is the identity itself the check cannot fail, so
         // it vouches for nothing.
         "anchor": {"value": round.anchor_value, "source": round.anchor_source,
-            "is_identity": bare_digest(&round.anchor_value) == round.wire},
+            "is_identity": round.identity.names_wire_digest(&round.anchor_value)},
         "verdict": match assessed.consensus {
             Consensus::Active => "Active",
             Consensus::Error => "Error",
@@ -632,7 +625,7 @@ async fn run_round<C: Connector>(
     // a principal in Error, and for any viewer choice still in force (a
     // resolved fork's abandoned head included).
     let review = HumanRecovery(entry.recovery.clone()).review(
-        &round.wire,
+        round.identity,
         assessed.consensus,
         &fork_views(&forks),
     );
@@ -668,7 +661,12 @@ fn fork_views(forks: &[HeldFork]) -> Vec<ForkView> {
 struct HumanRecovery(Option<RecoveryChoice>);
 
 impl Recovery for HumanRecovery {
-    fn review(&self, _principal_id: &str, _protocol: Consensus, forks: &[ForkView]) -> Review {
+    fn review(
+        &self,
+        _principal_id: &PrincipalGenesis,
+        _protocol: Consensus,
+        forks: &[ForkView],
+    ) -> Review {
         match self.0.as_ref().filter(|c| {
             forks
                 .iter()
@@ -827,11 +825,7 @@ fn verify_once(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<Value> {
         // First contact with no anchor and no history: the genesis commit a
         // peer serves is a hint, reported as one, never as trust.
         Err(Error::AnchorRule(_)) if anchor.is_none() => {
-            let wire = bare_digest(&get_principal_id(&parse_principal_genesis(
-                inputs.identity,
-            )?)?)
-            .to_owned();
-            let first = block_on(genesis_hint(&wire, &connectors))?;
+            let first = block_on(genesis_hint(inputs.identity, &connectors))?;
             Round::open(cli, inputs.identity, None, freshness, first.as_ref())?
         },
         other => other?,
@@ -843,12 +837,15 @@ fn verify_once(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<Value> {
     block_on(run_round(&round, &peers, &prefailed))?
 }
 
-/// The first commit any of `peers` serves for `wire`: the one place a
+/// The first commit any of `peers` serves for `identity`: the one place a
 /// verifier with no anchor and no history can read an opener from.
-async fn genesis_hint(wire: &str, peers: &[(&str, HttpConnector)]) -> Option<WireBundle> {
+async fn genesis_hint(
+    identity: &PrincipalGenesis,
+    peers: &[(&str, HttpConnector)],
+) -> Option<WireBundle> {
     for (_, connector) in peers {
         let request = PatchRequest {
-            principal_id: wire,
+            principal_id: identity,
             anchor: None,
         };
         if let Ok(patch) = fetch_patch(connector, &request, BindingPolicy::NotRequired, None).await
@@ -921,16 +918,15 @@ pub fn audit(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<()> {
 /// nothing a server or a commit sees.
 pub fn recover(
     cli: &Cli,
-    identity: &str,
+    identity: &PrincipalGenesis,
     head: Option<&str>,
     reason: Option<&str>,
 ) -> crate::Result<()> {
     let path = path_for(store_path(cli)?);
     let mut state = VerifierState::load(&path)?;
-    let wire = bare_digest(&get_principal_id(&parse_principal_genesis(identity)?)?).to_owned();
     let round = Round::open(cli, identity, None, DEFAULT_FRESHNESS_SECS, None)?;
     let (forks, _) = block_on(held_of(&round))??;
-    let entry = state.principals.entry(wire).or_default();
+    let entry = state.principals.entry(identity.clone()).or_default();
     entry.recovery = match head {
         None => None,
         Some(head) => {
@@ -961,12 +957,12 @@ pub fn recover(
 
 /// `cyphr gossip export`: the record, the other branch of each fork held,
 /// and the naked revokes held, as one file.
-pub fn export(cli: &Cli, identity: &str, file: &std::path::Path) -> crate::Result<()> {
+pub fn export(cli: &Cli, identity: &PrincipalGenesis, file: &std::path::Path) -> crate::Result<()> {
     let round = Round::open(cli, identity, None, DEFAULT_FRESHNESS_SECS, None)?;
     let (held_forks, held_revoked) = block_on(held_of(&round))??;
     let record = block_on(round.record())??;
     if record.tip().is_none() {
-        return Err(Error::EmptyHistory(identity.to_owned()));
+        return Err(Error::EmptyHistory(identity.to_string()));
     }
     let forks: Vec<cyphr_net::ForkFinding> = held_forks
         .iter()
@@ -996,7 +992,7 @@ pub fn export(cli: &Cli, identity: &str, file: &std::path::Path) -> crate::Resul
 /// if each chain in it were a peer.
 pub fn import(
     cli: &Cli,
-    identity: &str,
+    identity: &PrincipalGenesis,
     file: &std::path::Path,
     anchor: Option<&str>,
 ) -> crate::Result<()> {
@@ -1008,7 +1004,7 @@ pub fn import(
     })?;
     let first = bundle.chains.first().and_then(|c| c.commits.first());
     let round = Round::open(cli, identity, anchor, DEFAULT_FRESHNESS_SECS, first)?;
-    if bare_digest(&bundle.principal_id) != round.wire {
+    if bundle.principal_id != *round.identity {
         return Err(Error::InvalidArgument(format!(
             "the bundle is of {}, not {identity}",
             bundle.principal_id

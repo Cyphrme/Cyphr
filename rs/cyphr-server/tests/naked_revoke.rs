@@ -56,6 +56,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr_server::config::ServerConfig;
 use cyphr_server::{AppState, build_router};
 use cyphr_storage::blob::Blake3Hash;
@@ -106,7 +107,7 @@ fn fresh_keyed_state() -> (Arc<AppState>, TempDir) {
 /// `key_a`, both active, through the real `/push` wire path -- so `golden`
 /// and `key_a` are genuinely active keys of this exact principal AND indexed
 /// globally. Returns the principal's genesis-derived id (SPEC 3.1).
-async fn bootstrap_golden_key_a(state: &Arc<AppState>, pool: &Pool) -> String {
+async fn bootstrap_golden_key_a(state: &Arc<AppState>, pool: &Pool) -> PrincipalGenesis {
     let pid = common::golden_principal_id(pool).await;
     let body = common::build_genesis_push_body(pool, &pid, RVK).await;
     let (status, json) = common::post_json(build_router(state.clone()), "/push", body).await;
@@ -292,8 +293,13 @@ fn login_body(pool: &Pool, signer_name: &str, claimed_pr: &str, now: i64) -> Str
 }
 
 /// POST a login for `signer` claiming `pid` and return only the status.
-async fn login_status(state: &Arc<AppState>, pool: &Pool, signer: &str, pid: &str) -> StatusCode {
-    let body = login_body(pool, signer, pid, now_secs());
+async fn login_status(
+    state: &Arc<AppState>,
+    pool: &Pool,
+    signer: &str,
+    pid: &PrincipalGenesis,
+) -> StatusCode {
+    let body = login_body(pool, signer, &pid.to_string(), now_secs());
     let (status, _) = common::post_json(build_router(state.clone()), "/auth/login", body).await;
     status
 }
@@ -309,7 +315,7 @@ async fn login_status(state: &Arc<AppState>, pool: &Pool, signer: &str, pid: &st
 async fn bootstrap_via_push(
     state: &Arc<AppState>,
     pool: &Pool,
-    pid: &str,
+    pid: &PrincipalGenesis,
     genesis_name: &str,
     added_name: &str,
     now: i64,
@@ -331,7 +337,7 @@ async fn bootstrap_via_push(
 #[allow(clippy::too_many_arguments)]
 async fn followup_push_body(
     pool: &Pool,
-    pid: &str,
+    pid: &PrincipalGenesis,
     genesis_name: &str,
     genesis_added: &str,
     genesis_now: i64,
@@ -450,7 +456,7 @@ async fn forge_disclosing_non_victim_key_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
     let pid = bootstrap_golden_key_a(&state, &pool).await;
-    let pid = pid.as_str();
+    let pid = &pid;
 
     let coz = revoke_body(
         &pool,
@@ -491,7 +497,7 @@ async fn forge_disclosing_victim_key_signed_by_other_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
     let pid = bootstrap_golden_key_a(&state, &pool).await;
-    let pid = pid.as_str();
+    let pid = &pid;
 
     let coz = revoke_body(
         &pool,
@@ -788,7 +794,7 @@ async fn death_record_survives_restart_and_reindex() {
 
     let state1 = keyed_state_at(&data_dir, &key_path);
     let pid = bootstrap_golden_key_a(&state1, &pool).await;
-    let pid = pid.as_str();
+    let pid = &pid;
     // Pre-revoke sanity: key_a logs in fine.
     assert_eq!(
         login_status(&state1, &pool, "key_a", pid).await,
@@ -837,7 +843,7 @@ async fn revoked_key_refused_at_login_sibling_survives() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
     let pid = bootstrap_golden_key_a(&state, &pool).await;
-    let pid = pid.as_str();
+    let pid = &pid;
 
     // Baseline: key_a logs in before any revoke.
     assert_eq!(
@@ -882,7 +888,7 @@ async fn revoked_key_refused_at_push() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
     let pid = common::golden_principal_id(&pool).await;
-    let pid = pid.as_str();
+    let pid = &pid;
     bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
@@ -938,7 +944,7 @@ async fn sibling_key_still_pushes_after_revoke() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
     let pid = common::golden_principal_id(&pool).await;
-    let pid = pid.as_str();
+    let pid = &pid;
     bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
@@ -990,7 +996,7 @@ async fn revoked_key_dead_globally_across_principals() {
     let pool = common::load_pool();
     let pid1 = common::genesis_push_id(&pool, "golden", "key_a").await;
     let pid2 = common::genesis_push_id(&pool, "bob", "key_a").await;
-    let (pid1, pid2) = (pid1.as_str(), pid2.as_str());
+    let (pid1, pid2) = (&pid1, &pid2);
 
     // Two independent principals, distinct genesis keys, both holding key_a.
     bootstrap_via_push(&state, &pool, pid1, "golden", "key_a", RVK).await;
@@ -1057,7 +1063,7 @@ async fn naked_revoke_does_not_mutate_pr() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
     let pid = bootstrap_golden_key_a(&state, &pool).await;
-    let pid = pid.as_str();
+    let pid = &pid;
 
     let tip_before = tip_roots(&state, pid).await;
 
@@ -1077,7 +1083,7 @@ async fn naked_revoke_does_not_mutate_pr() {
 }
 
 /// The tip roots that a naked revoke must leave untouched.
-async fn tip_roots(state: &Arc<AppState>, pid: &str) -> serde_json::Value {
+async fn tip_roots(state: &Arc<AppState>, pid: &PrincipalGenesis) -> serde_json::Value {
     let (status, json) =
         common::get_json(build_router(state.clone()), &format!("/tip?pg={pid}")).await;
     assert_eq!(status, StatusCode::OK, "tip must be readable: {json:?}");
@@ -1188,7 +1194,8 @@ async fn poison_index_directly(
     let poison = IndexableCommit {
         pg: Vec::new(),
         manifest: None,
-        principal_id: "SHA-256:nr-poisoned-index".to_string(),
+        principal_id: PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![0x99; 32])
+            .expect("32-byte digest"),
         commit_ids: vec!["SHA-256:POISON_COMMIT".to_string()],
         sequence: 0,
         pre: None,
@@ -1310,7 +1317,7 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
     // Victim: a normal principal (golden genesis adds key_a). key_a's real
     // thumbprint V = H(key_a pub) is indexed to key_a's real pub.
     let victim_pid = bootstrap_golden_key_a(&state, &pool).await;
-    let victim_pid = victim_pid.as_str();
+    let victim_pid = &victim_pid;
     let victim_tmb = tmb_b64(&pool, "key_a");
 
     // Baseline: the victim key logs in before any attack.
@@ -1494,7 +1501,8 @@ async fn archrev_a2_revoke_without_now_is_dead_everywhere() {
     let pool = common::load_pool();
     let state = keyed_state_at(&data_dir, &key_path);
     let pid = common::golden_principal_id(&pool).await;
-    bootstrap_via_push(&state, &pool, &pid, "golden", "key_a", RVK).await;
+    let pid = &pid;
+    bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
 
     let (status, json) =
         post_revoke(&state, revoke_without_now(&pool, serde_json::json!({}))).await;
@@ -1524,7 +1532,7 @@ async fn archrev_a2_revoke_without_now_is_dead_everywhere() {
     };
 
     assert_eq!(
-        login_status(&state, &pool, "key_a", &pid).await,
+        login_status(&state, &pool, "key_a", pid).await,
         StatusCode::UNAUTHORIZED
     );
     let (status, json) = push(state.clone()).await;

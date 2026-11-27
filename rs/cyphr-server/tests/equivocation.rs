@@ -229,9 +229,8 @@ async fn same_key_pair_proves_equivocation() {
     // The principal id must be the genesis-derived id: the PG of the
     // genesis commit pushed below (SPEC 5.1).
     let principal_id = common::golden_principal_id(&pool).await;
-    let principal_id = principal_id.as_str();
     let now = 1_700_100_000;
-    let push_body = common::build_genesis_push_body(&pool, principal_id, now).await;
+    let push_body = common::build_genesis_push_body(&pool, &principal_id, now).await;
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
 
@@ -296,9 +295,8 @@ async fn cross_key_pair_proves_equivocation() {
     // The principal id must be the genesis-derived id: the PG of the
     // genesis commit pushed below (SPEC 5.1).
     let principal_id = common::golden_principal_id(&pool).await;
-    let principal_id = principal_id.as_str();
     let now = 1_700_200_000;
-    let push_body = common::build_genesis_push_body(&pool, principal_id, now).await;
+    let push_body = common::build_genesis_push_body(&pool, &principal_id, now).await;
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
 

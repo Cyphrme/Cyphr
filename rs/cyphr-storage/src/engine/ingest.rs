@@ -22,7 +22,7 @@ pub struct IngestResult {
     /// may differ from the spelling the caller submitted. Read back under
     /// this id: a claimed alias can stop resolving once the commit moves
     /// the principal's state.
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     /// BLAKE3 hashes of the stored blobs.
     pub blob_hashes: Vec<Blake3Hash>,
     /// BLAKE3 hash of this commit's durable [`CommitManifest`] blob.
@@ -82,13 +82,13 @@ impl CommittedTip {
 /// lock, so another keyed lock (revoke, log generation, alias) cannot stand
 /// for it.
 pub(super) struct WriteLock<'a> {
-    pub(super) principal: String,
+    pub(super) principal: PrincipalGenesis,
     pub(super) _guard: tokio::sync::MutexGuard<'a, ()>,
 }
 
 impl WriteLock<'_> {
     /// The one principal this lock is the write lock of.
-    pub(super) fn principal(&self) -> &str {
+    pub(super) fn principal(&self) -> &PrincipalGenesis {
         &self.principal
     }
 }
@@ -307,7 +307,17 @@ impl PrincipalLocks {
     }
 
     /// Fetch (or create) `principal_id`'s lock.
-    pub(super) fn get(&self, principal_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    pub(super) fn get(&self, principal_id: &PrincipalGenesis) -> Arc<tokio::sync::Mutex<()>> {
+        self.keyed(principal_id.to_string())
+    }
+
+    /// Fetch (or create) the lock of a serialization point that is not a
+    /// principal's: `name` carries a NUL, which no parsed principal id can.
+    pub(super) fn named(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.keyed(name.to_owned())
+    }
+
+    fn keyed(&self, key: String) -> Arc<tokio::sync::Mutex<()>> {
         // A poisoned std Mutex means some prior holder of THIS lock panicked
         // while holding it. The critical section below is only a HashMap
         // entry/insert/clone on an owned String key -- no `.await`, no
@@ -316,7 +326,7 @@ impl PrincipalLocks {
         // elsewhere, not a condition adversarial request input can trigger.
         let mut locks = self.0.lock().expect("principal lock map poisoned");
         locks
-            .entry(principal_id.to_string())
+            .entry(key)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
     }
@@ -375,7 +385,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// caller to log or to treat as a fault.
     pub async fn ingest_pulled(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         offer: &PulledOffer<'_>,
     ) -> PulledAnswers {
         let genesis = || offer.genesis.cloned();
@@ -424,18 +434,27 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// Never blocks on a write: only ever holds the map's own lock for the
     /// duration of a `HashMap` lookup/insert, not across any `.await`.
-    pub(super) fn principal_lock(&self, principal_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    pub(super) fn principal_lock(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> Arc<tokio::sync::Mutex<()>> {
         self.principal_locks.get(principal_id)
+    }
+
+    /// Fetch (or create) the serialization point named `name`, for work
+    /// that is not one principal's ([`PrincipalLocks::named`]).
+    pub(super) fn named_lock(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.principal_locks.named(name)
     }
 
     /// Take `principal_id`'s write lock, `lock` being its own entry of
     /// [`Self::principal_lock`].
     pub(super) async fn lock_writes<'a>(
         lock: &'a Arc<tokio::sync::Mutex<()>>,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> WriteLock<'a> {
         WriteLock {
-            principal: principal_id.to_string(),
+            principal: principal_id.clone(),
             _guard: lock.lock().await,
         }
     }
@@ -443,10 +462,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// [`Self::lock_writes`] if the lock is free now, `None` if it is held.
     pub(super) fn try_lock_writes<'a>(
         lock: &'a Arc<tokio::sync::Mutex<()>>,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> Option<WriteLock<'a>> {
         Some(WriteLock {
-            principal: principal_id.to_string(),
+            principal: principal_id.clone(),
             _guard: lock.try_lock().ok()?,
         })
     }
@@ -809,7 +828,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     )]
     pub async fn submit_commit(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: Option<crate::Genesis>,
         bundle: &WireBundle,
     ) -> Result<IngestResult, EngineError> {
@@ -839,7 +858,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// stores neither commit.
     pub async fn submit_pair(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: Option<crate::Genesis>,
         parent: &WireBundle,
         bundle: &WireBundle,
@@ -875,7 +894,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     pub(super) async fn submit_commit_with(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: Option<crate::Genesis>,
         bundle: &WireBundle,
         pair: Option<&WireBundle>,
@@ -908,7 +927,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 "principal_id is not the genesis-derived id: {claimed}"
             ))
         };
-        let (genesis, new_key) = match stored.as_deref() {
+        let (genesis, new_key) = match stored.as_ref() {
             // The record decides a stored principal's genesis: its first
             // commit, whatever genesis the caller names.
             Some(stored_id) => (self.genesis_of_stored(stored_id).await?, None),
@@ -931,7 +950,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 let key = record_key(&genesis, bundle).await;
                 let names_key = key
                     .as_ref()
-                    .is_some_and(|key| claimed == key || claimed == bare_digest(key));
+                    .is_some_and(|key| claimed.as_multihash().matches(key.as_multihash()));
                 // A commit that is no genesis commit derives no key; the
                 // core refuses it with its own reason below.
                 if key.is_some() && !names_key {
@@ -945,7 +964,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             },
         };
         let canonical = stored.or(new_key).ok_or_else(not_genesis_id)?;
-        let principal_id = canonical.as_str();
+        let principal_id = &canonical;
 
         // Serialize the whole sequence-resolution-through-ingest critical
         // section per principal_id: two concurrent callers for the SAME
@@ -1041,13 +1060,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     // Refused, and kept as evidence: it verifies on the chain.
                     self.keep_evidence(bundle, build.commit, &embedded).await;
                     return Err(EngineError::Errored {
-                        principal_id: principal_id.to_string(),
+                        principal_id: principal_id.clone(),
                     });
                 },
                 Ok(Built::Commit(build)) => build,
                 Ok(Built::Actions(_)) if errored.is_some() => {
                     return Err(EngineError::Errored {
-                        principal_id: principal_id.to_string(),
+                        principal_id: principal_id.clone(),
                     });
                 },
                 Ok(Built::Actions(staged)) => {
@@ -1104,7 +1123,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     // kept state of the next write.
                     return Ok((
                         IngestResult {
-                            principal_id: principal_id.to_string(),
+                            principal_id: principal_id.clone(),
                             blob_hashes,
                             manifest_hash: None,
                             tip,
@@ -1224,7 +1243,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         && self.is_errored(principal_id).await.unwrap_or(false)
                     {
                         return Err(EngineError::Errored {
-                            principal_id: principal_id.to_string(),
+                            principal_id: principal_id.clone(),
                         });
                     }
                     return Err(refused);
@@ -1284,7 +1303,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// storage type.
     pub(super) fn verified<'a>(
         &'a self,
-        principal_id: &'a str,
+        principal_id: &'a PrincipalGenesis,
         genesis: Option<&'a crate::Genesis>,
         tip: &'a TipState,
         write: &'a WriteLock<'_>,
@@ -1342,7 +1361,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// replayed cold and compared, and a difference fails the call.
     pub(super) async fn resume_kept(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: &crate::Genesis,
         tip: &TipState,
         write: &WriteLock<'_>,
@@ -1393,7 +1412,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// is the replay's to repair).
     pub(super) async fn resume_over_log(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         state: cyphr::PrincipalState,
     ) -> Option<cyphr::Principal<S>> {
         let generation = self.logs.generation(principal_id).ok()?;
@@ -1403,7 +1422,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// Whether any commit or held action bundle of `principal_id` was
     /// admitted through an embedded principal ([`EmbeddedPin`]).
-    pub(super) async fn history_has_pins(&self, principal_id: &str) -> Result<bool, EngineError> {
+    pub(super) async fn history_has_pins(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> Result<bool, EngineError> {
         if self.actions.has_pins(principal_id) {
             return Ok(true);
         }
@@ -1434,7 +1456,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// concrete storage type.
     pub(super) fn follow_held<'a, T: cyphr::eml::Storage + Send>(
         &'a self,
-        own_id: &'a str,
+        own_id: &'a PrincipalGenesis,
         principal: &'a mut cyphr::Principal<T>,
         bundle: &'a WireBundle,
         held: &'a mut HeldCache<S>,
@@ -1446,7 +1468,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     pub(super) async fn follow_held_unboxed<T: cyphr::eml::Storage>(
         &self,
-        own_id: &str,
+        own_id: &PrincipalGenesis,
         principal: &mut cyphr::Principal<T>,
         bundle: &WireBundle,
         held: &mut HeldCache<S>,
@@ -1527,7 +1549,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// Boxed: it is the one way `follow_held` re-enters the engine, and a
     /// `Send` proof for `follow_held` otherwise runs through the whole
     /// replay call graph, past the compiler's recursion limit.
-    pub(super) fn held_tip<'a>(&'a self, member: &'a str, own_id: &'a str) -> HeldRead<'a, S> {
+    pub(super) fn held_tip<'a>(
+        &'a self,
+        member: &'a str,
+        own_id: &'a PrincipalGenesis,
+    ) -> HeldRead<'a, S> {
         Box::pin(async move {
             // A principal embedding itself names no other principal's tip; its
             // log is also the one the caller is writing.
@@ -1586,7 +1612,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// and list it for replay. Returns the blob hashes.
     pub(super) async fn store_actions(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         blobs: &[Vec<u8>],
         embedded: &[EmbeddedPin],
     ) -> Result<Vec<Blake3Hash>, EngineError> {
@@ -1602,7 +1628,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
         let manifest = ActionManifest {
             kind: ACTION_MANIFEST_KIND.to_string(),
-            principal_id: principal_id.to_string(),
+            principal_id: principal_id.clone(),
             blob_hashes: blob_hashes.clone(),
             embedded: embedded.to_vec(),
         };
@@ -1637,7 +1663,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     pub(super) async fn build_commit<'p, T: cyphr::eml::Storage>(
         principal: &'p mut cyphr::Principal<T>,
         bundle: &WireBundle,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         next_seq: u64,
     ) -> Result<Option<StagedBuild<'p, T>>, EngineError> {
         Ok(
@@ -1654,7 +1680,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     pub(super) async fn build_staged<'p, T: cyphr::eml::Storage>(
         principal: &'p mut cyphr::Principal<T>,
         bundle: &WireBundle,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         next_seq: u64,
     ) -> Result<Built<'p, T>, EngineError> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -1735,7 +1761,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
 
         let commit = IndexableCommit {
-            principal_id: principal_id.to_string(),
+            principal_id: principal_id.clone(),
             commit_ids,
             sequence: next_seq,
             pre: commit_pre,
@@ -1771,7 +1797,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .collect();
         aliases.sort_unstable();
         aliases.dedup();
-        aliases.iter().map(|a| self.principal_lock(a)).collect()
+        aliases.iter().map(|a| self.named_lock(a)).collect()
     }
 }
 /// The thumbprints that sign the transactions of `bundle`, if every coz
@@ -1902,9 +1928,10 @@ pub(super) fn bundle_signer(bundle: &WireBundle) -> Result<String, EngineError> 
 /// unique PG"). A bundle of data actions alone forms no commit: a Level 1/2
 /// principal is keyed by its genesis PR. `None` when the bundle does not
 /// replay.
-pub(super) async fn record_key(genesis: &crate::Genesis, bundle: &WireBundle) -> Option<String> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
+pub(super) async fn record_key(
+    genesis: &crate::Genesis,
+    bundle: &WireBundle,
+) -> Option<PrincipalGenesis> {
     let principal = replay_first(genesis, bundle).await?;
     let Some(pg) = principal.pg() else {
         return (principal.commits().next().is_none())
@@ -1913,10 +1940,7 @@ pub(super) async fn record_key(genesis: &crate::Genesis, bundle: &WireBundle) ->
     };
     let alg = principal.active_algs().first().copied()?;
     let digest = pg.as_multihash().get(alg)?;
-    Some(format!(
-        "{alg}:{}",
-        Base64UrlUnpadded::encode_string(digest)
-    ))
+    PrincipalGenesis::from_digest(alg, digest.to_vec()).ok()
 }
 
 /// Whether `bundle` carries a `principal/create`: a genesis commit (SPEC

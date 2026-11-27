@@ -5,17 +5,16 @@
 //! current.
 
 use base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
 use cyphr::state::TaggedDigest;
 use cyphr_net::TipAnswer;
 use cyphr_storage::blob::Blake3Hash;
-use cyphr_storage::engine::bare_digest;
 use serde_json::{Value, json};
 
 use super::common::{
-    RawCommit, block_on, current_timestamp, get_principal_id, load_principal_from_engine,
-    local_genesis, open_store, parse_principal_genesis, parse_store, raw_chain, store_path,
-    submit_history,
+    RawCommit, block_on, current_timestamp, load_principal_from_engine, local_genesis, open_store,
+    parse_store, raw_chain, store_path, submit_history,
 };
 use crate::keystore::KeyBackend;
 use crate::net::{Peer, PeerError, PeerHistory};
@@ -27,12 +26,6 @@ fn emit(cli: &Cli, value: &Value, table: impl FnOnce()) -> crate::Result<()> {
         OutputFormat::Table => table(),
     }
     Ok(())
-}
-
-/// The id the wire and the engine both accept: the bare genesis digest.
-fn wire_id(identity: &str) -> crate::Result<String> {
-    let pg = parse_principal_genesis(identity)?;
-    Ok(bare_digest(&get_principal_id(&pg)?).to_owned())
 }
 
 /// The position in `local` of the commit the peer's answer says it holds:
@@ -116,19 +109,23 @@ fn divergence_report(local: &[RawCommit], theirs: &[WireBundle], parts: usize) -
 /// replayed action is a no-op (SPEC 7.6) and the peer stores it once
 /// (content-addressed manifests). Batching them waits on the peer reporting
 /// what it holds, which would remove the resend and with it the question.
-pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> crate::Result<()> {
+pub fn push(
+    cli: &Cli,
+    identity: &PrincipalGenesis,
+    peer_url: &str,
+    assert_local: bool,
+) -> crate::Result<()> {
     let store = parse_store(cli)?;
     let keystore = super::common::open_backend(cli)?;
-    let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
-    let wire = wire_id(identity)?;
+    let principal_id = identity;
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
     // Loaded ahead of the async block: loading drives its own runtime.
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     let pushed = block_on(async {
-        let local = raw_chain(&store, &principal_id).await?;
+        let local = raw_chain(&store, principal_id).await?;
         if local.is_empty() {
-            return Err(Error::EmptyHistory(identity.to_owned()));
+            return Err(Error::EmptyHistory(identity.to_string()));
         }
         // What the peer holds decides what to send; a tip the local
         // history does not contain means the peer is ahead of, or on a
@@ -140,7 +137,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
         // caps, or reads Error; none of that is for this sender to judge.
         let mut forking: Option<String> = None;
         let mut in_error = false;
-        let start = match peer.tip(&wire).await? {
+        let start = match peer.tip(identity).await? {
             None => 0,
             Some(tip) => match held_position(&tip, &local) {
                 Some(i) => i + 1,
@@ -151,7 +148,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
                     // choice to make: refused unless `--assert-local`,
                     // which sends them whatever their number.
                     let held = describe(&tip);
-                    let theirs = peer.chain(&wire).await?.commits;
+                    let theirs = peer.chain(identity).await?.commits;
                     let same = |a: &WireBundle, b: &RawCommit| {
                         b.commit_id
                             .parse::<TaggedDigest>()
@@ -206,7 +203,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
         for (i, commit) in local.iter().enumerate().skip(start) {
             let offered_pair = parent.is_some();
             match peer
-                .push_commit_with_parent(&wire, &commit.bundle, parent.take())
+                .push_commit_with_parent(identity, &commit.bundle, parent.take())
                 .await
             {
                 Ok(()) => {},
@@ -227,7 +224,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
                 // with this commit among its heads, the fork was taken and the
                 // push is done; otherwise the peer did not take it.
                 Err(PeerError::Stale { .. }) if forking.is_some() => {
-                    if fork_kept(peer.tip(&wire).await?.as_ref(), &local, i) {
+                    if fork_kept(peer.tip(identity).await?.as_ref(), &local, i) {
                         in_error = true;
                         continue;
                     }
@@ -255,7 +252,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
                 Err(PeerError::Refused { message, .. })
                     if message.contains("COZ_REUSE")
                         && peer
-                            .tip(&wire)
+                            .tip(identity)
                             .await?
                             .and_then(|tip| held_position(&tip, &local))
                             .is_some_and(|held| held >= i) => {},
@@ -264,7 +261,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
         }
         for blob in actions {
             match peer
-                .push_commit(&wire, &WireBundle::actions(vec![blob]))
+                .push_commit(identity, &WireBundle::actions(vec![blob]))
                 .await
             {
                 Ok(()) => sent_actions += 1,
@@ -306,14 +303,13 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str, assert_local: bool) -> cr
 /// over everything it holds.
 pub fn resync(
     cli: &Cli,
-    identity: &str,
+    identity: &PrincipalGenesis,
     peer_url: &str,
     signer: Option<&str>,
 ) -> crate::Result<()> {
     let store = parse_store(cli)?;
     let keystore = super::common::open_backend(cli)?;
-    let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
-    let wire = wire_id(identity)?;
+    let principal_id = identity;
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
     // Loaded ahead of the async block: loading drives its own runtime.
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
@@ -355,11 +351,11 @@ pub fn resync(
     let (tmb, proof) = signed.ok_or(last_error)?;
 
     let (answer, sent) = block_on(async {
-        let local = raw_chain(&store, &principal_id).await?;
+        let local = raw_chain(&store, principal_id).await?;
         if local.is_empty() {
-            return Err(Error::EmptyHistory(identity.to_owned()));
+            return Err(Error::EmptyHistory(identity.to_string()));
         }
-        let start = match peer.tip(&wire).await? {
+        let start = match peer.tip(identity).await? {
             None => 0,
             Some(TipAnswer::Error { fork_point, .. }) => {
                 usize::try_from(fork_point.height).map_or(local.len(), |h| h.min(local.len()))
@@ -367,7 +363,7 @@ pub fn resync(
             Some(tip) => match held_position(&tip, &local) {
                 Some(i) => i + 1,
                 None => {
-                    let theirs = peer.chain(&wire).await?.commits;
+                    let theirs = peer.chain(identity).await?.commits;
                     let same = |a: &WireBundle, b: &RawCommit| {
                         b.commit_id
                             .parse::<TaggedDigest>()
@@ -386,7 +382,7 @@ pub fn resync(
             },
         };
         let line: Vec<WireBundle> = local[start..].iter().map(|c| c.bundle.clone()).collect();
-        let answer = peer.post_resync(&wire, &proof.wire(), &line).await?;
+        let answer = peer.post_resync(identity, &proof.wire(), &line).await?;
         Ok::<_, Error>((answer, line.len()))
     })??;
 
@@ -403,17 +399,21 @@ pub fn resync(
 /// divergence, and which side to trust is the user's choice: without
 /// `trust_remote` it is refused and nothing changes; with it, only the local
 /// commits after the parting point are discarded.
-pub fn fetch(cli: &Cli, identity: &str, peer_url: &str, trust_remote: bool) -> crate::Result<()> {
+pub fn fetch(
+    cli: &Cli,
+    identity: &PrincipalGenesis,
+    peer_url: &str,
+    trust_remote: bool,
+) -> crate::Result<()> {
     let store = parse_store(cli)?;
     let keystore = super::common::open_backend(cli)?;
-    let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
-    let wire = wire_id(identity)?;
+    let principal_id = identity;
     let genesis = local_genesis(&keystore, identity)?;
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
 
     let (history, local, diverged) = block_on(async {
-        let history = peer.chain(&wire).await?;
-        let local = raw_chain(&store, &principal_id).await?;
+        let history = peer.chain(identity).await?;
+        let local = raw_chain(&store, principal_id).await?;
         // A bundle that does not decode is a bad answer, not a rival branch.
         for bundle in &history.commits {
             if let Err(why) = bundle.decode() {
@@ -445,7 +445,7 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str, trust_remote: bool) -> c
     } = history;
     let fetched = block_on(submit_history(
         &store,
-        &principal_id,
+        principal_id,
         genesis,
         &theirs,
         &actions,
@@ -553,7 +553,7 @@ struct ManifestHead {
 
 #[derive(serde::Deserialize)]
 struct CommitHead {
-    principal_id: String,
+    principal_id: PrincipalGenesis,
     sequence: u64,
     blob_hashes: Vec<Blake3Hash>,
 }
@@ -561,7 +561,7 @@ struct CommitHead {
 /// The head of an action manifest.
 #[derive(serde::Deserialize)]
 struct ActionHead {
-    principal_id: String,
+    principal_id: PrincipalGenesis,
     blob_hashes: Vec<Blake3Hash>,
 }
 
@@ -575,7 +575,7 @@ struct ActionHead {
 async fn copy_records(
     old: &super::common::CliStorageEngine,
     new: &super::common::CliStorageEngine,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     common: usize,
 ) -> crate::Result<()> {
     use std::collections::HashSet;
@@ -585,7 +585,7 @@ async fn copy_records(
         ACTION_MANIFEST_PREFIX, BRANCH_MANIFEST_PREFIX, COMMIT_MANIFEST_PREFIX,
     };
 
-    let mine = |id: &str| bare_digest(id) == bare_digest(principal_id);
+    let mine = |id: &PrincipalGenesis| id == principal_id;
     let mut gone: HashSet<Blake3Hash> = HashSet::new();
     let mut released: HashSet<Blake3Hash> = HashSet::new();
     let mut kept: HashSet<Blake3Hash> = HashSet::new();
@@ -647,7 +647,7 @@ async fn copy_records(
 /// re-signed.
 fn adopt_remote(
     cli: &Cli,
-    identity: &str,
+    identity: &PrincipalGenesis,
     peer_url: &str,
     old: super::common::CliStorageEngine,
     history: PeerHistory,
@@ -655,13 +655,13 @@ fn adopt_remote(
     common: usize,
 ) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
-    let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
+    let principal_id = identity;
     let path = store_path(cli)?.to_owned();
     // A multi-key principal's identity is its PG, not a keystore key, so
     // its genesis comes from the stored history.
     let genesis = match local_genesis(&keystore, identity)? {
         Some(g) => g,
-        None => block_on(old.resolve_genesis(&principal_id, &[]))??,
+        None => block_on(old.resolve_genesis(principal_id, &[]))??,
     };
     let PeerHistory {
         commits: theirs,
@@ -692,12 +692,12 @@ fn adopt_remote(
     {
         let new = open_store(&tmp, false)?;
         block_on(async {
-            copy_records(&old, &new, &principal_id, common).await?;
+            copy_records(&old, &new, principal_id, common).await?;
             // The shared prefix is already in `new`; the peer's commits and
             // actions follow it.
             submit_history(
                 &new,
-                &principal_id,
+                principal_id,
                 Some(genesis.clone()),
                 &theirs,
                 &their_actions,
@@ -717,7 +717,7 @@ fn adopt_remote(
             .collect();
         for (czd, blob) in local_actions.iter().filter(|(czd, _)| !held.contains(czd)) {
             let one = WireBundle::actions(vec![blob.clone()]);
-            match block_on(new.submit_commit(&principal_id, Some(genesis.clone()), &one))? {
+            match block_on(new.submit_commit(principal_id, Some(genesis.clone()), &one))? {
                 Ok(_) => {},
                 Err(cyphr_storage::engine::EngineError::Protocol(e)) => {
                     dropped.push(json!({

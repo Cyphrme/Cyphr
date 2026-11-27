@@ -108,8 +108,11 @@ fuzz_target!(|data: &[u8]| {
     let (key, prv) = authority();
 
     if mode % 2 == 0 {
-        let _ = verify_patch_body(rest, "SHA-256:principal", Some(key));
-        let _ = verify_patch_body(rest, "SHA-256:principal", None);
+        let principal =
+            cyphr::PrincipalGenesis::from_digest(cyphr::state::HashAlg::Sha256, vec![7; 32])
+                .expect("a 32-byte digest is a SHA-256 width");
+        let _ = verify_patch_body(rest, &principal, Some(key));
+        let _ = verify_patch_body(rest, &principal, None);
         return;
     }
 
@@ -154,14 +157,17 @@ fuzz_target!(|data: &[u8]| {
     } else {
         String::arbitrary(&mut u).unwrap_or_default()
     };
+    // An edge refuses an id that is not a labelled one before any fetch.
+    let Ok(asked) = asked.parse::<cyphr::PrincipalGenesis>() else {
+        return;
+    };
     if let Ok(verified) = verify_patch_body(&body, &asked, Some(key)) {
         let report = verified
             .report
             .expect("an authenticated patch carries its report");
-        let bare = asked.split_once(':').map_or(asked.as_str(), |(_, d)| d);
         assert_eq!(
             report.pg.to_string(),
-            bare,
+            asked.wire_digest(),
             "accepted a report for a principal that was not asked for"
         );
     }

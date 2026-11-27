@@ -73,8 +73,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::Key;
 use cyphr::signer::{Signer, SignerError};
+use cyphr::{Key, PrincipalGenesis};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -479,7 +479,7 @@ pub struct BindStatement {
     coz: coz::CozJson,
     alg: String,
     h: Vec<u8>,
-    pg: String,
+    pg: PrincipalGenesis,
     role: String,
     tmb: coz::Thumbprint,
     sidecar: Option<serde_json::Value>,
@@ -524,7 +524,11 @@ impl BindStatement {
         Ok(Self {
             alg: str_field(&coz.pay, "alg")?.to_string(),
             h: b64_field(&coz.pay, "h")?,
-            pg: str_field(&coz.pay, "pg")?.to_string(),
+            pg: str_field(&coz.pay, "pg")?
+                .parse()
+                .map_err(|_| TransportError::BadBinding {
+                    what: "the statement pg is not a labelled principal id",
+                })?,
             role: str_field(&coz.pay, "role")?.to_string(),
             tmb: coz::Thumbprint::from_bytes(b64_field(&coz.pay, "tmb")?),
             sidecar: serde_json::from_slice::<serde_json::Value>(plaintext)
@@ -536,7 +540,7 @@ impl BindStatement {
 
     /// The principal the statement claims to speak for.
     #[must_use]
-    pub fn pg(&self) -> &str {
+    pub fn pg(&self) -> &PrincipalGenesis {
         &self.pg
     }
 
@@ -631,7 +635,7 @@ impl BindStatement {
 pub fn statement_pay(
     alg: &str,
     tmb: &coz::Thumbprint,
-    pg: &str,
+    pg: &PrincipalGenesis,
     role: Role,
     handshake_hash: &[u8],
     now: i64,
@@ -685,16 +689,6 @@ pub fn assemble_statement(
     serde_json::to_vec(&statement).map_err(|_| malformed("the statement does not serialize"))
 }
 
-/// Whether two spellings name one principal: equal, or equal once any
-/// algorithm tag (`ALG:digest`) is stripped.
-#[must_use]
-pub fn same_principal(a: &str, b: &str) -> bool {
-    fn bare(s: &str) -> &str {
-        s.split_once(':').map_or(s, |(_, digest)| digest)
-    }
-    a == b || bare(a) == bare(b)
-}
-
 // ---- the connector ------------------------------------------------------
 
 /// How the client came to trust the responder's chain.
@@ -711,7 +705,7 @@ pub enum PeerAnchor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthenticatedPeer {
     /// The responder's principal, as pinned.
-    pub pg: String,
+    pub pg: PrincipalGenesis,
     /// The key that signed the responder's statement.
     pub tmb: coz::Thumbprint,
     /// The extent of the held chain the statement was judged against.
@@ -751,7 +745,7 @@ impl NoiseConnector {
         addr: SocketAddr,
         responder: &mut PeerChain,
         own: &impl Signer,
-        own_principal: &str,
+        own_principal: &PrincipalGenesis,
     ) -> Result<Self, TransportError> {
         let stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(addr))
             .await
@@ -811,7 +805,7 @@ fn verify_responder(
 ) -> Result<AuthenticatedPeer, TransportError> {
     let statement = BindStatement::parse(incoming)?;
     statement.expect(Role::Responder, h)?;
-    if !same_principal(statement.pg(), chain.pg()) {
+    if statement.pg() != chain.pg() {
         return Err(TransportError::PrincipalMismatch {
             expected: chain.pg().to_string(),
             found: statement.pg().to_string(),
@@ -831,7 +825,7 @@ fn verify_responder(
         PeerAnchor::Followed
     };
     Ok(AuthenticatedPeer {
-        pg: chain.pg().to_string(),
+        pg: chain.pg().clone(),
         tmb: key.tmb().clone(),
         verified_at,
         anchor,

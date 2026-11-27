@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use cyphr::eml::MemoryStorage;
 use cyphr::replay::WireBundle;
-use cyphr::{Commit, Principal, StateDigest as _};
+use cyphr::{Commit, Principal, PrincipalGenesis, StateDigest as _};
 use serde::Deserialize as _;
 use serde_json::Value;
 
@@ -98,7 +98,8 @@ pub enum EvidenceFailure {
 pub enum EvidenceItem {
     /// Two commits at one position of one principal.
     PrincipalFork {
-        /// The principal's bare genesis identifier.
+        /// The principal's bare genesis identifier, as a signed server
+        /// statement spells it.
         pg: String,
         /// The position both commits take.
         height: u64,
@@ -229,7 +230,7 @@ pub async fn replay_chain(
 /// An [`EvidenceFailure`] naming the first check that refused.
 pub async fn verify_principal_fork(
     item: &Value,
-    pg: &str,
+    pg: &PrincipalGenesis,
     base: Principal<MemoryStorage>,
     entries: &[PatchEntry],
 ) -> Result<ForkProof, EvidenceFailure> {
@@ -244,7 +245,7 @@ pub async fn verify_principal_fork(
 /// trusted; the caller still keeps one `(base, entries)` per state.
 pub(crate) async fn verify_principal_fork_reusing(
     item: &Value,
-    pg: &str,
+    pg: &PrincipalGenesis,
     base: &Principal<MemoryStorage>,
     entries: &[PatchEntry],
     state: &mut Option<(u64, Principal<MemoryStorage>)>,
@@ -256,7 +257,7 @@ pub(crate) async fn verify_principal_fork_reusing(
         a,
         b,
     } = EvidenceItem::parse(item)?;
-    if item_pg != pg {
+    if !pg.names_wire_digest(&item_pg) {
         return Err(EvidenceFailure::OtherPrincipal);
     }
     let prefix = usize::try_from(height)
@@ -272,7 +273,7 @@ pub(crate) async fn verify_principal_fork_reusing(
     // its PG derives it through its genesis commit, which must open with
     // `base`'s genesis key (a foreign genesis is refused here, not as a
     // replay failure) and establish that PG.
-    let named_by_key = base.pr_tagged().is_ok_and(|g| names_pg(pg, &g));
+    let named_by_key = base.pr_id().is_ok_and(|g| g == *pg);
     let genesis_commit = match prefix.first() {
         Some(first) => Some(
             first
@@ -418,7 +419,7 @@ pub struct ItemSet {
 /// refused.
 pub async fn verify_fork_items(
     items: &[&Value],
-    pg: &str,
+    pg: &PrincipalGenesis,
     base: &Principal<MemoryStorage>,
     entries: &[PatchEntry],
     chain_ids: &[Option<String>],
@@ -487,7 +488,7 @@ pub async fn verify_fork_items(
     let mut pending: Vec<(usize, Option<String>, &Value)> = Vec::new();
     for item in off_chain {
         match EvidenceItem::parse(item) {
-            Ok(EvidenceItem::PrincipalFork { pg: named, .. }) if named != pg => {
+            Ok(EvidenceItem::PrincipalFork { pg: named, .. }) if !pg.names_wire_digest(&named) => {
                 set.rejected.push(EvidenceFailure::OtherPrincipal);
             },
             Ok(EvidenceItem::PrincipalFork { height, pre, .. }) => {
@@ -598,21 +599,12 @@ async fn extend(
     Ok(applied)
 }
 
-/// Whether `g`, a tagged or bare root, names `pg` (bare).
-pub(crate) fn names_pg(pg: &str, g: &str) -> bool {
-    g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg)
-}
-
 /// Whether `principal` has a PG naming `pg` in any of its algorithms.
-pub(crate) fn pg_names(principal: &Principal<MemoryStorage>, pg: &str) -> bool {
+pub(crate) fn pg_names(principal: &Principal<MemoryStorage>, pg: &PrincipalGenesis) -> bool {
     use cyphr::StateDigest as _;
-    principal.pg().is_some_and(|g| {
-        let digest = g.as_multihash();
-        digest
-            .algorithms()
-            .filter_map(|alg| digest.tagged(alg).ok())
-            .any(|t| names_pg(pg, &t.to_string()))
-    })
+    principal
+        .pg()
+        .is_some_and(|g| g.as_multihash().matches(pg.as_multihash()))
 }
 
 /// Whether the commit `bundle` opens with a coz signed by `genesis_key` (a

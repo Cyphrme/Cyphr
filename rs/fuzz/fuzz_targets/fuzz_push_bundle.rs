@@ -153,12 +153,16 @@ fuzz_target!(|data: &[u8]| {
 
     runtime().block_on(async {
         let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+        // A placeholder id for a bundle that derives none.
+        let fallback =
+            cyphr::PrincipalGenesis::from_digest(cyphr::state::HashAlg::Sha256, vec![0; 32])
+                .expect("a 32-byte digest is a SHA-256 width");
         let principal_id = match engine
-            .resolve_genesis("fuzz", std::slice::from_ref(&bundle))
+            .resolve_genesis(&fallback, std::slice::from_ref(&bundle))
             .await
         {
-            Ok(genesis) => genesis_principal_id(&genesis).unwrap_or_else(|_| "fuzz".into()),
-            Err(_) => "fuzz".into(),
+            Ok(genesis) => genesis_principal_id(&genesis).unwrap_or(fallback),
+            Err(_) => fallback,
         };
         let _ = engine.submit_commit(&principal_id, None, &bundle).await;
     });

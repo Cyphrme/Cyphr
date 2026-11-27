@@ -7,6 +7,7 @@
 //! this backend must be held to the identical behavioral bar, not a
 //! hand-picked subset.
 
+use cyphr::HashAlg;
 use cyphr_storage::index::{DeriveToken, IndexerWrite, conformance};
 
 use super::*;
@@ -81,7 +82,7 @@ async fn survives_disk_reload() {
 
     let reopened = FjallIndexer::open(dir.path()).expect("reopen");
     let tip = reopened
-        .get_tip("alice")
+        .get_tip(&conformance::pid("alice"))
         .await
         .expect("get_tip")
         .expect("tip survives reload");
@@ -92,73 +93,31 @@ async fn survives_disk_reload() {
 // c4: multi-tenant keyspace scoping must be collision-free.
 // ---------------------------------------------------------------------
 
-/// `commit_key`'s length-prefixed construction must be injective:
-/// two principal IDs where one is a literal byte-prefix of the other
-/// (the case a naive, unprefixed `pid ++ sequence` encoding gets wrong,
-/// per `commit_key`'s doc comment) must never produce keys whose ranges
-/// overlap.
-#[test]
-fn commit_key_prefix_principals_do_not_overlap() {
-    // "alice" is a literal prefix of "alice2" -- exactly the adversarial
-    // case a naive scheme collides on.
-    let short = "alice";
-    let long = "alice2";
-
-    for seq_short in [0u64, 1, u64::MAX] {
-        for seq_long in [0u64, 1, u64::MAX] {
-            assert_ne!(
-                commit_key(short, seq_short),
-                commit_key(long, seq_long),
-                "distinct principal IDs must never produce equal keys"
-            );
-        }
-    }
-
-    // The stronger property `get_commit_chain` actually depends on: no key
-    // belonging to `long` falls within `short`'s full range scan bounds
-    // (and vice versa), for every sequence number either principal could
-    // ever be indexed at.
-    let (short_lo, short_hi) = commit_key_range(short, 0, u64::MAX);
-    let (long_lo, long_hi) = commit_key_range(long, 0, u64::MAX);
-
-    for seq in [0u64, 1, 42, u64::MAX] {
-        let long_key = commit_key(long, seq);
-        assert!(
-            long_key < short_lo || long_key > short_hi,
-            "principal '{long}' sequence {seq} must fall outside '{short}''s range"
-        );
-
-        let short_key = commit_key(short, seq);
-        assert!(
-            short_key < long_lo || short_key > long_hi,
-            "principal '{short}' sequence {seq} must fall outside '{long}''s range"
-        );
-    }
-}
-
 /// Same-length principal IDs differing only in content must never
 /// collide or overlap ranges either -- the other adversarial case a weak
 /// scheme can get wrong.
 #[test]
 fn commit_key_same_length_principals_do_not_overlap() {
-    let a = "alice";
-    let b = "alicf"; // same length, differs in the last byte
+    let a = PrincipalGenesis::from_digest(HashAlg::Sha256, vec![7; 32]).expect("valid id");
+    let mut bytes = vec![7; 32];
+    bytes[31] = 8; // same length, differs in the last byte
+    let b = PrincipalGenesis::from_digest(HashAlg::Sha256, bytes).expect("valid id");
 
-    assert_ne!(commit_key(a, 0), commit_key(b, 0));
+    assert_ne!(commit_key(&a, 0), commit_key(&b, 0));
 
-    let (a_lo, a_hi) = commit_key_range(a, 0, u64::MAX);
-    let (b_lo, b_hi) = commit_key_range(b, 0, u64::MAX);
+    let (a_lo, a_hi) = commit_key_range(&a, 0, u64::MAX);
+    let (b_lo, b_hi) = commit_key_range(&b, 0, u64::MAX);
     assert!(
         a_hi < b_lo || b_hi < a_lo,
         "ranges for distinct same-length principals must not overlap"
     );
 }
 
-/// End-to-end: two principals whose IDs are literal prefixes of one
-/// another must be indexed and queried without any cross-tenant leakage
-/// through the real `Indexer` API, not just at the key-encoding level.
+/// End-to-end: two principals must be indexed and queried without any
+/// cross-tenant leakage through the real `Indexer` API, not just at the
+/// key-encoding level.
 #[tokio::test]
-async fn multitenancy_prefix_principals_are_isolated() {
+async fn multitenancy_principals_are_isolated() {
     let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
 
     for seq in 0..3 {
@@ -181,7 +140,7 @@ async fn multitenancy_prefix_principals_are_isolated() {
     }
 
     let alice_chain = indexer
-        .get_commit_chain("alice", None, None)
+        .get_commit_chain(&conformance::pid("alice"), None, None)
         .await
         .expect("alice chain");
     assert_eq!(
@@ -191,7 +150,7 @@ async fn multitenancy_prefix_principals_are_isolated() {
     );
 
     let alice2_chain = indexer
-        .get_commit_chain("alice2", None, None)
+        .get_commit_chain(&conformance::pid("alice2"), None, None)
         .await
         .expect("alice2 chain");
     assert_eq!(
@@ -200,15 +159,23 @@ async fn multitenancy_prefix_principals_are_isolated() {
         "alice2 must see only its own 2 commits"
     );
 
-    let alice_tip = indexer.get_tip("alice").await.unwrap().unwrap();
+    let alice_tip = indexer
+        .get_tip(&conformance::pid("alice"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(alice_tip.commit_count, 3);
-    let alice2_tip = indexer.get_tip("alice2").await.unwrap().unwrap();
+    let alice2_tip = indexer
+        .get_tip(&conformance::pid("alice2"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(alice2_tip.commit_count, 2);
 }
 
 /// An index commit of principal `p<i>` whose coz carries the shared `czd`.
 fn commit_sharing(i: usize, czd: &str) -> cyphr_storage::index::IndexableCommit {
-    let mut c = conformance::make_commit(&format!("SHA-256:p{i:04}"), 0, 1000);
+    let mut c = conformance::make_commit(&format!("p{i:04}"), 0, 1000);
     c.cozies[0].czd = czd.to_string();
     c
 }
@@ -234,7 +201,11 @@ async fn digest_holder_writes_do_not_grow_with_the_holder_count() {
     let holders = indexer.resolve_digest_holders(&digest).await.unwrap();
     assert_eq!(holders.len(), HOLDERS);
     let first = indexer.resolve_digest(&digest).await.unwrap().unwrap();
-    assert_eq!(first.principal_id.as_deref(), Some("SHA-256:p0000"));
+    // Canonical order is the order of the stored keys, i.e. of the printed ids.
+    let canonical_first = (0..HOLDERS)
+        .map(|i| conformance::pid(&format!("p{i:04}")))
+        .min_by_key(|id| id.to_string());
+    assert_eq!(first.principal_id, canonical_first);
 
     let ks = indexer.keyspaces();
     let largest = ks

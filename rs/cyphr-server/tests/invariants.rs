@@ -58,7 +58,7 @@ async fn two_instances_are_independent() {
     // 2. Data & Storage engine isolation: push principal to inst0
     let pool = load_pool();
     let principal_id_derived = common::golden_principal_id(&pool).await;
-    let principal_id = principal_id_derived.as_str();
+    let principal_id = &principal_id_derived;
     let now = current_unix_timestamp();
     let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
@@ -124,7 +124,7 @@ async fn refusals_are_never_signed() {
         // (instance, uri, method, body, expected_status)
         (
             attestor,
-            "/tip?pg=non-existent-principal-xyz",
+            "/tip?pg=SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "GET",
             None,
             StatusCode::NOT_FOUND,
@@ -215,7 +215,7 @@ async fn signed_statements_carry_freshness() {
 
     let pool = load_pool();
     let principal_id_derived = common::golden_principal_id(&pool).await;
-    let principal_id = principal_id_derived.as_str();
+    let principal_id = &principal_id_derived;
     let start_time = current_unix_timestamp();
     let push_body = build_genesis_push_body(&pool, principal_id, start_time).await;
 

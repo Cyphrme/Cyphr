@@ -8,29 +8,57 @@
 //! feature enabled and call these functions directly from its own
 //! `#[tokio::test]` wrappers.
 
-use cyphr::state::TaggedDigest;
+use cyphr::PrincipalGenesis;
+use cyphr::state::{HASH_ALGS, HashAlg, TaggedDigest};
 
 use super::{DeriveToken, IndexerWrite, *};
 
-/// Build a test commit for indexing.
-pub fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
-    let blob_data = format!("{principal_id}-commit-{seq}");
+/// `len` bytes of a digest derived from `seed`: a stand-in for any hash.
+fn digest_bytes(seed: &str, len: usize) -> Vec<u8> {
+    let mut bytes = vec![0u8; len];
+    blake3::Hasher::new()
+        .update(seed.as_bytes())
+        .finalize_xof()
+        .fill(&mut bytes);
+    bytes
+}
+
+/// The principal id of the test principal `name`: a SHA-256 id derived from
+/// the name, so each name is one principal.
+pub fn pid(name: &str) -> PrincipalGenesis {
+    PrincipalGenesis::from_digest(HashAlg::Sha256, digest_bytes(name, 32))
+        .expect("a 32-byte digest is a SHA-256 width")
+}
+
+/// A tagged SHA-256 digest derived from `seed`.
+fn tagged_digest(seed: &str) -> String {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    format!(
+        "SHA-256:{}",
+        Base64UrlUnpadded::encode_string(&digest_bytes(seed, 32))
+    )
+}
+
+/// Build a test commit of the principal `name` for indexing.
+pub fn make_commit(name: &str, seq: u64, timestamp: i64) -> IndexableCommit {
+    let principal_id = &pid(name);
+    let blob_data = format!("{name}-commit-{seq}");
     let blob_hash =
         crate::blob::Blake3Hash::from_bytes(*blake3::hash(blob_data.as_bytes()).as_bytes());
 
     IndexableCommit {
-        principal_id: principal_id.to_string(),
-        commit_ids: vec![format!("SHA-256:commit-{principal_id}-{seq}")],
+        principal_id: principal_id.clone(),
+        commit_ids: vec![format!("SHA-256:commit-{name}-{seq}")],
         sequence: seq,
         pre: None,
-        prs: vec![format!("SHA-256:pr-{principal_id}-{seq}")],
-        srs: vec![format!("SHA-256:sr-{principal_id}-{seq}")],
-        ars: vec![format!("SHA-256:ar-{principal_id}-{seq}")],
-        crs: vec![format!("SHA-256:cr-{principal_id}-{seq}")],
+        prs: vec![tagged_digest(&format!("pr-{name}-{seq}"))],
+        srs: vec![format!("SHA-256:sr-{name}-{seq}")],
+        ars: vec![format!("SHA-256:ar-{name}-{seq}")],
+        crs: vec![format!("SHA-256:cr-{name}-{seq}")],
         blob_hashes: vec![blob_hash],
         cozies: vec![IndexableCoz {
             blob_hash,
-            czd: format!("SHA-256:czd-{principal_id}-{seq}"),
+            czd: format!("SHA-256:czd-{name}-{seq}"),
             typ: "key/create".to_string(),
             tmb: "thumbprint".to_string(),
             alg: "ED25519".to_string(),
@@ -53,13 +81,13 @@ pub async fn index_commit_and_get_tip<I: Indexer + IndexerWrite>(indexer: &I) {
         .expect("index_commit failed");
 
     let tip = indexer
-        .get_tip("alice")
+        .get_tip(&pid("alice"))
         .await
         .expect("get_tip failed")
         .expect("tip should exist");
 
-    assert_eq!(tip.principal_id, "alice");
-    assert_eq!(tip.pr, "SHA-256:pr-alice-0");
+    assert_eq!(tip.principal_id, pid("alice"));
+    assert_eq!(tip.pr, tagged_digest("pr-alice-0"));
     assert_eq!(tip.sr.as_deref(), Some("SHA-256:sr-alice-0"));
     assert_eq!(tip.ar.as_deref(), Some("SHA-256:ar-alice-0"));
     assert_eq!(tip.commit_id, "SHA-256:commit-alice-0");
@@ -82,13 +110,13 @@ pub async fn index_commit_with_absent_roots_reads_back_none<I: Indexer + Indexer
         .await
         .expect("index_commit failed");
     let tip = indexer
-        .get_tip("alice")
+        .get_tip(&pid("alice"))
         .await
         .expect("get_tip failed")
         .expect("tip should exist");
     assert_eq!((tip.sr, tip.ar), (None, None));
     let chain = indexer
-        .get_commit_chain("alice", None, None)
+        .get_commit_chain(&pid("alice"), None, None)
         .await
         .expect("chain");
     assert_eq!((chain[0].sr.clone(), chain[0].ar.clone()), (None, None));
@@ -96,7 +124,7 @@ pub async fn index_commit_with_absent_roots_reads_back_none<I: Indexer + Indexer
 
 pub async fn get_tip_unknown_returns_none<I: Indexer + IndexerWrite>(indexer: &I) {
     let tip = indexer
-        .get_tip("nonexistent")
+        .get_tip(&pid("nonexistent"))
         .await
         .expect("get_tip failed");
     assert!(tip.is_none(), "unknown principal should return None");
@@ -119,13 +147,13 @@ pub async fn tip_updates_on_subsequent_commits<I: Indexer + IndexerWrite>(indexe
         .expect("second commit");
 
     let tip = indexer
-        .get_tip("alice")
+        .get_tip(&pid("alice"))
         .await
         .expect("get_tip failed")
         .expect("tip should exist");
 
     assert_eq!(tip.commit_count, 2);
-    assert_eq!(tip.pr, "SHA-256:pr-alice-1");
+    assert_eq!(tip.pr, tagged_digest("pr-alice-1"));
     assert_eq!(tip.last_updated, 2000);
 }
 
@@ -142,7 +170,7 @@ pub async fn index_commit_idempotent<I: Indexer + IndexerWrite>(indexer: &I) {
         .expect("duplicate index");
 
     let tip = indexer
-        .get_tip("alice")
+        .get_tip(&pid("alice"))
         .await
         .expect("get_tip failed")
         .expect("tip should exist");
@@ -161,7 +189,7 @@ pub async fn get_commit_chain_full<I: Indexer + IndexerWrite>(indexer: &I) {
     }
 
     let chain = indexer
-        .get_commit_chain("alice", None, None)
+        .get_commit_chain(&pid("alice"), None, None)
         .await
         .expect("chain failed");
     assert_eq!(chain.len(), 5);
@@ -182,7 +210,7 @@ pub async fn get_commit_chain_range<I: Indexer + IndexerWrite>(indexer: &I) {
     }
 
     let chain = indexer
-        .get_commit_chain("alice", Some(1), Some(3))
+        .get_commit_chain(&pid("alice"), Some(1), Some(3))
         .await
         .expect("chain failed");
     assert_eq!(chain.len(), 3);
@@ -192,7 +220,7 @@ pub async fn get_commit_chain_range<I: Indexer + IndexerWrite>(indexer: &I) {
 
 pub async fn get_commit_chain_unknown_returns_empty<I: Indexer + IndexerWrite>(indexer: &I) {
     let chain = indexer
-        .get_commit_chain("nonexistent", None, None)
+        .get_commit_chain(&pid("nonexistent"), None, None)
         .await
         .expect("chain failed");
     assert!(chain.is_empty());
@@ -264,7 +292,7 @@ pub async fn indexed_blobs_tracked_in_commit_chain<I: Indexer + IndexerWrite>(in
 
     // Verify blobs are tracked via commit chain (public API).
     let chain = indexer
-        .get_commit_chain("alice", None, None)
+        .get_commit_chain(&pid("alice"), None, None)
         .await
         .expect("chain failed");
     assert_eq!(chain.len(), 1);
@@ -291,9 +319,9 @@ pub async fn list_principals_returns_all<I: Indexer + IndexerWrite>(indexer: &I)
     let principals = indexer.list_principals().await.expect("list failed");
     assert_eq!(principals.len(), 2);
 
-    let ids: Vec<&str> = principals.iter().map(|p| p.principal_id.as_str()).collect();
-    assert!(ids.contains(&"alice"));
-    assert!(ids.contains(&"bob"));
+    let ids: Vec<&PrincipalGenesis> = principals.iter().map(|p| &p.principal_id).collect();
+    assert!(ids.contains(&&pid("alice")));
+    assert!(ids.contains(&&pid("bob")));
 }
 
 pub async fn principal_summary_tracks_creation_time<I: Indexer + IndexerWrite>(indexer: &I) {
@@ -315,7 +343,7 @@ pub async fn principal_summary_tracks_creation_time<I: Indexer + IndexerWrite>(i
     let principals = indexer.list_principals().await.expect("list");
     let alice = principals
         .iter()
-        .find(|p| p.principal_id == "alice")
+        .find(|p| p.principal_id == pid("alice"))
         .expect("alice");
     assert_eq!(alice.created, 1000, "created should be genesis timestamp");
     assert_eq!(alice.last_updated, 5000, "last_updated should be latest");
@@ -359,14 +387,17 @@ pub async fn new_indexer_methods<I: Indexer + IndexerWrite>(indexer: &I) {
             .unwrap();
     }
 
-    let chain = indexer.get_commit_chain("bob", None, None).await.unwrap();
+    let chain = indexer
+        .get_commit_chain(&pid("bob"), None, None)
+        .await
+        .unwrap();
     assert_eq!(chain.len(), 5);
     for (i, c) in chain.iter().enumerate() {
         assert_eq!(c.sequence, i as u64);
     }
 
     let range_chain = indexer
-        .get_commit_chain("bob", Some(1), Some(3))
+        .get_commit_chain(&pid("bob"), Some(1), Some(3))
         .await
         .unwrap();
     assert_eq!(range_chain.len(), 3);
@@ -382,10 +413,10 @@ pub async fn new_indexer_methods<I: Indexer + IndexerWrite>(indexer: &I) {
     // After clear, blob is not indexed, key is not found, tip is None, chain is empty
     assert!(!indexer.is_blob_indexed(&blob_hash).await.unwrap());
     assert!(indexer.get_key("tmb123").await.unwrap().is_none());
-    assert!(indexer.get_tip("alice").await.unwrap().is_none());
+    assert!(indexer.get_tip(&pid("alice")).await.unwrap().is_none());
     assert!(
         indexer
-            .get_commit_chain("bob", None, None)
+            .get_commit_chain(&pid("bob"), None, None)
             .await
             .unwrap()
             .is_empty()
@@ -395,18 +426,29 @@ pub async fn new_indexer_methods<I: Indexer + IndexerWrite>(indexer: &I) {
 /// Hash variants of a principal's PG (SPEC §3.7.1): the PR it held
 /// immediately BEFORE the `principal/create` commit, not that commit's own
 /// post-commit PR.
-fn pg_variants() -> Vec<String> {
-    ["SHA-256", "SHA-384", "SHA-512"]
-        .iter()
-        .map(|alg| format!("{alg}:pg-digest-{alg}"))
+fn pg_ids() -> Vec<PrincipalGenesis> {
+    HASH_ALGS
+        .into_iter()
+        .map(|alg| {
+            PrincipalGenesis::from_digest(
+                alg,
+                digest_bytes(&format!("pg-digest-{alg}"), alg.digest_size()),
+            )
+            .expect("a digest of the algorithm's own width")
+        })
         .collect()
+}
+
+/// [`pg_ids`] as the strings a commit records.
+fn pg_variants() -> Vec<String> {
+    pg_ids().iter().map(ToString::to_string).collect()
 }
 
 /// A commit carrying `principal/create`. Its `prs` are the post-commit PR
 /// (which differs from the PG); `pg` is what the engine records for the
 /// PG-establishing commit.
-fn principal_create_commit(principal_id: &str, seq: u64) -> IndexableCommit {
-    let mut commit = make_commit(principal_id, seq, 1000 + seq as i64);
+fn principal_create_commit(name: &str, seq: u64) -> IndexableCommit {
+    let mut commit = make_commit(name, seq, 1000 + seq as i64);
     commit.cozies[0].typ = "cyphr.me/cyphr/principal/create".to_string();
     commit.pg = pg_variants();
     commit
@@ -424,13 +466,14 @@ fn principal_create_commit(principal_id: &str, seq: u64) -> IndexableCommit {
 /// failed.
 pub async fn alias_pg_variants_resolve_to_the_principal<I: Indexer + IndexerWrite>(indexer: &I) {
     let token = DeriveToken::for_conformance_tests();
-    let id = "SHA-256:genesis-digest";
+    let name = "genesis";
+    let id = pid(name);
     indexer
-        .index_commit(&make_commit(id, 0, 1000), &token)
+        .index_commit(&make_commit(name, 0, 1000), &token)
         .await
         .expect("index commit 0");
 
-    let variants = pg_variants();
+    let variants = pg_ids();
     for v in &variants {
         assert!(
             indexer
@@ -443,17 +486,17 @@ pub async fn alias_pg_variants_resolve_to_the_principal<I: Indexer + IndexerWrit
     }
 
     indexer
-        .index_commit(&principal_create_commit(id, 1), &token)
+        .index_commit(&principal_create_commit(name, 1), &token)
         .await
         .expect("index principal/create commit");
     // Re-indexing is a no-op and must not duplicate or move an alias.
     indexer
-        .index_commit(&principal_create_commit(id, 1), &token)
+        .index_commit(&principal_create_commit(name, 1), &token)
         .await
         .expect("re-index principal/create commit");
 
-    let want_chain = indexer.get_commit_chain(id, None, None).await.unwrap();
-    let want_tip = indexer.get_tip(id).await.unwrap().expect("tip");
+    let want_chain = indexer.get_commit_chain(&id, None, None).await.unwrap();
+    let want_tip = indexer.get_tip(&id).await.unwrap().expect("tip");
     assert_eq!(want_chain.len(), 2, "control: the canonical chain");
     for v in &variants {
         assert_eq!(
@@ -468,16 +511,23 @@ pub async fn alias_pg_variants_resolve_to_the_principal<I: Indexer + IndexerWrit
         );
     }
 
-    // Not the PG: a digest the PG has under another label, a label no
-    // variant has, and PRs the principal held (commit 0's, and the create
-    // commit's own post-commit PR).
-    let held = [format!("SHA-256:pr-{id}-0"), format!("SHA-256:pr-{id}-1")];
-    for forged in [
-        "SHA-512:pg-digest-SHA-256",
-        "SHA3-256:pg-digest-SHA-256",
-        held[0].as_str(),
-        held[1].as_str(),
-    ] {
+    // Not the PG: a digest the PG has under another label, and PRs the
+    // principal held (commit 0's, and the create commit's own post-commit
+    // PR).
+    let relabelled = PrincipalGenesis::from_digest(
+        HashAlg::Sha512,
+        digest_bytes(&format!("pg-digest-{}", HashAlg::Sha256), 64),
+    )
+    .expect("a 64-byte digest is a SHA-512 width");
+    let held: Vec<PrincipalGenesis> = [0, 1]
+        .iter()
+        .map(|seq| {
+            tagged_digest(&format!("pr-{name}-{seq}"))
+                .parse()
+                .expect("a tagged SHA-256 digest")
+        })
+        .collect();
+    for forged in [&relabelled, &held[0], &held[1]] {
         assert!(
             indexer
                 .get_commit_chain(forged, None, None)
@@ -515,29 +565,29 @@ pub async fn alias_pg_variants_resolve_to_the_principal<I: Indexer + IndexerWrit
 /// test cannot tell which backend failed.
 pub async fn pg_established_marker_tracks_the_pg_commit<I: Indexer + IndexerWrite>(indexer: &I) {
     let token = DeriveToken::for_conformance_tests();
-    let id = "SHA-256:genesis-digest";
+    let name = "genesis";
+    let id = pid(name);
     indexer
-        .index_commit(&make_commit(id, 0, 1000), &token)
+        .index_commit(&make_commit(name, 0, 1000), &token)
         .await
         .expect("index commit 0");
-    assert!(!indexer.is_pg_established(id).await.unwrap());
+    assert!(!indexer.is_pg_established(&id).await.unwrap());
 
     indexer
-        .index_commit(&principal_create_commit(id, 1), &token)
+        .index_commit(&principal_create_commit(name, 1), &token)
         .await
         .expect("index principal/create commit");
-    assert!(indexer.is_pg_established(id).await.unwrap());
-    for v in pg_variants() {
+    assert!(indexer.is_pg_established(&id).await.unwrap());
+    for v in pg_ids() {
         assert!(
             !indexer.is_pg_established(&v).await.unwrap(),
             "the marker leaked to the alias {v}"
         );
     }
-    assert!(!indexer.is_pg_established("SHA-256:other").await.unwrap());
-    assert!(!indexer.is_pg_established("").await.unwrap());
+    assert!(!indexer.is_pg_established(&pid("other")).await.unwrap());
 
     indexer.clear(&token).await.expect("clear");
-    assert!(!indexer.is_pg_established(id).await.unwrap());
+    assert!(!indexer.is_pg_established(&id).await.unwrap());
 }
 
 /// A `principal/create` commit for `id` whose PG variants are `pg`.
@@ -558,8 +608,10 @@ fn create_commit_with_pg(id: &str, seq: u64, pg: &[&str]) -> IndexableCommit {
 /// scenarios cannot reach a second principal claiming the same PG.
 pub async fn alias_conflict_second_principal_is_refused<I: Indexer + IndexerWrite>(indexer: &I) {
     let token = DeriveToken::for_conformance_tests();
-    let (a, b) = ("SHA-256:alice-id", "SHA-256:bob-id");
-    let pg = "SHA-256:contested-pg";
+    let (a, b) = ("alice-id", "bob-id");
+    let pg_id = PrincipalGenesis::from_digest(HashAlg::Sha256, digest_bytes("contested-pg", 32))
+        .expect("a 32-byte digest is a SHA-256 width");
+    let pg = pg_id.to_string();
     for id in [a, b] {
         indexer
             .index_commit(&make_commit(id, 0, 1000), &token)
@@ -567,29 +619,38 @@ pub async fn alias_conflict_second_principal_is_refused<I: Indexer + IndexerWrit
             .expect("commit 0");
     }
     indexer
-        .index_commit(&create_commit_with_pg(a, 1, &[pg]), &token)
+        .index_commit(&create_commit_with_pg(a, 1, &[&pg]), &token)
         .await
         .expect("A establishes the PG");
 
     let err = indexer
-        .index_commit(&create_commit_with_pg(b, 1, &[pg]), &token)
+        .index_commit(&create_commit_with_pg(b, 1, &[&pg]), &token)
         .await
         .expect_err("B re-pointing A's alias must be refused");
     assert!(matches!(err, IndexerError::Conflict(_)), "got {err:?}");
 
     assert_eq!(
-        indexer.get_tip(pg).await.unwrap().map(|t| t.principal_id),
-        Some(a.to_string()),
+        indexer
+            .get_tip(&pg_id)
+            .await
+            .unwrap()
+            .map(|t| t.principal_id),
+        Some(pid(a)),
         "A's alias moved or vanished"
     );
     assert_eq!(
-        indexer.get_tip(b).await.unwrap().unwrap().commit_count,
+        indexer
+            .get_tip(&pid(b))
+            .await
+            .unwrap()
+            .unwrap()
+            .commit_count,
         1,
         "the refused commit must write nothing"
     );
-    assert!(!indexer.is_pg_established(b).await.unwrap());
+    assert!(!indexer.is_pg_established(&pid(b)).await.unwrap());
     indexer
-        .index_commit(&create_commit_with_pg(a, 1, &[pg]), &token)
+        .index_commit(&create_commit_with_pg(a, 1, &[&pg]), &token)
         .await
         .expect("re-indexing A's own commit stays a no-op");
 }
@@ -601,21 +662,27 @@ pub async fn alias_conflict_naming_another_principal_is_refused<I: Indexer + Ind
     indexer: &I,
 ) {
     let token = DeriveToken::for_conformance_tests();
-    let (a, b) = ("SHA-256:alice-id", "SHA-256:bob-id");
+    let (a, b) = ("alice-id", "bob-id");
     for id in [a, b] {
         indexer
             .index_commit(&make_commit(id, 0, 1000), &token)
             .await
             .expect("commit 0");
     }
+    let a_spelled = pid(a).to_string();
     let err = indexer
-        .index_commit(&create_commit_with_pg(b, 1, &[a]), &token)
+        .index_commit(&create_commit_with_pg(b, 1, &[&a_spelled]), &token)
         .await
         .expect_err("an alias spelling A's id must be refused");
     assert!(matches!(err, IndexerError::Conflict(_)), "got {err:?}");
     assert_eq!(
-        indexer.get_tip(a).await.unwrap().unwrap().principal_id,
-        a,
+        indexer
+            .get_tip(&pid(a))
+            .await
+            .unwrap()
+            .unwrap()
+            .principal_id,
+        pid(a),
         "A still resolves to itself"
     );
 }
@@ -628,7 +695,7 @@ pub async fn digest_conflict_same_principal_repeat_is_allowed<I: Indexer + Index
     indexer: &I,
 ) {
     let token = DeriveToken::for_conformance_tests();
-    let a = "SHA-256:alice-id";
+    let a = "alice-id";
     let sr = format!("SHA-256:{}", "C".repeat(42) + "A");
     let mut first = make_commit(a, 0, 1000);
     first.srs = vec![sr.clone()];
@@ -658,10 +725,10 @@ fn sharing_commit(id: &str, czd: &str, blob_seed: u8, sr: &str) -> IndexableComm
     c
 }
 
-fn holder_ids(holders: &[EntityRef]) -> Vec<String> {
+fn holder_ids(holders: &[EntityRef]) -> Vec<PrincipalGenesis> {
     holders
         .iter()
-        .map(|h| h.principal_id.clone().unwrap_or_default())
+        .filter_map(|h| h.principal_id.clone())
         .collect()
 }
 
@@ -677,13 +744,15 @@ pub async fn digest_holders_shared_digest_names_every_holder<I: Indexer + Indexe
 ) {
     let token = DeriveToken::for_conformance_tests();
     let (czd, sr) = (valid_digest('A'), valid_digest('C'));
-    for id in ["SHA-256:bob-id", "SHA-256:alice-id"] {
+    for id in ["bob-id", "alice-id"] {
         indexer
             .index_commit(&sharing_commit(id, &czd, 7, &sr), &token)
             .await
             .expect("a commit sharing a coz and roots with another principal");
     }
-    let want = vec!["SHA-256:alice-id".to_string(), "SHA-256:bob-id".to_string()];
+    // The canonical order is the order of the ids, not of their names.
+    let mut want = vec![pid("alice-id"), pid("bob-id")];
+    want.sort_unstable();
     for digest in [czd.clone(), sr.clone()] {
         let d: TaggedDigest = digest.parse().unwrap();
         let holders = indexer.resolve_digest_holders(&d).await.unwrap();
@@ -704,8 +773,8 @@ pub async fn digest_holders_do_not_depend_on_arrival_order<I: Indexer + IndexerW
     let token = DeriveToken::for_conformance_tests();
     let (czd, sr) = (valid_digest('A'), valid_digest('C'));
     let commits = [
-        sharing_commit("SHA-256:alice-id", &czd, 7, &sr),
-        sharing_commit("SHA-256:bob-id", &czd, 7, &sr),
+        sharing_commit("alice-id", &czd, 7, &sr),
+        sharing_commit("bob-id", &czd, 7, &sr),
     ];
     for c in &commits {
         forward.index_commit(c, &token).await.unwrap();
@@ -753,10 +822,13 @@ pub async fn index_commit_idempotency_is_keyed_by_chain_position<I: Indexer + In
         "a rival commit at an indexed position is fork evidence: {refused:?}"
     );
 
-    let chain = indexer.get_commit_chain("alice", None, None).await.unwrap();
+    let chain = indexer
+        .get_commit_chain(&pid("alice"), None, None)
+        .await
+        .unwrap();
     assert_eq!(chain.len(), 1, "one chain position, one entry: {chain:?}");
     assert_eq!(chain[0].commit_id, "SHA-256:commit-alice-0");
-    let tip = indexer.get_tip("alice").await.unwrap().unwrap();
+    let tip = indexer.get_tip(&pid("alice")).await.unwrap().unwrap();
     assert_eq!(tip.commit_count, 1);
     assert_eq!(tip.last_updated, 1000, "a rival position moved the tip");
 }
@@ -780,9 +852,9 @@ pub async fn digest_holders_are_a_duplicate_free_set<I: Indexer + IndexerWrite>(
     let token = DeriveToken::for_conformance_tests();
     let sr = valid_digest('C');
     let commits = [
-        state_root_commit("SHA-256:alice-id", 0, &sr),
-        state_root_commit("SHA-256:alice-id", 1, &sr),
-        state_root_commit("SHA-256:bob-id", 0, &sr),
+        state_root_commit("alice-id", 0, &sr),
+        state_root_commit("alice-id", 1, &sr),
+        state_root_commit("bob-id", 0, &sr),
     ];
     for c in &commits {
         forward.index_commit(c, &token).await.unwrap();
@@ -795,16 +867,11 @@ pub async fn digest_holders_are_a_duplicate_free_set<I: Indexer + IndexerWrite>(
         let holders = indexer.resolve_digest_holders(&d).await.unwrap();
         let seen: Vec<_> = holders
             .iter()
-            .map(|h| (h.principal_id.clone().unwrap_or_default(), h.sequence))
+            .filter_map(|h| Some((h.principal_id.clone()?, h.sequence)))
             .collect();
-        assert_eq!(
-            seen,
-            vec![
-                ("SHA-256:alice-id".to_string(), Some(1)),
-                ("SHA-256:bob-id".to_string(), Some(0)),
-            ],
-            "{name} holders of the shared state root"
-        );
+        let mut want = vec![(pid("alice-id"), Some(1)), (pid("bob-id"), Some(0))];
+        want.sort_unstable();
+        assert_eq!(seen, want, "{name} holders of the shared state root");
     }
 }
 
@@ -831,7 +898,7 @@ pub async fn replace_chain_from_repoints_the_chain<I: Indexer + IndexerWrite>(in
     }
     let rival = |seq: u64| {
         let mut c = make_commit("alice-rival", seq, 2000 + seq as i64);
-        c.principal_id = "alice".to_string();
+        c.principal_id = pid("alice");
         c
     };
     let refused = indexer.index_commit(&rival(1), &token).await;
@@ -842,24 +909,26 @@ pub async fn replace_chain_from_repoints_the_chain<I: Indexer + IndexerWrite>(in
 
     for bad in [
         indexer
-            .replace_chain_from("alice", 4, &[rival(4)], &token)
+            .replace_chain_from(&pid("alice"), 4, &[rival(4)], &token)
             .await,
-        indexer.replace_chain_from("alice", 1, &[], &token).await,
         indexer
-            .replace_chain_from("alice", 1, &[rival(2)], &token)
+            .replace_chain_from(&pid("alice"), 1, &[], &token)
+            .await,
+        indexer
+            .replace_chain_from(&pid("alice"), 1, &[rival(2)], &token)
             .await,
     ] {
         assert!(matches!(bad, Err(IndexerError::Consistency(_))), "{bad:?}");
     }
-    let unchanged = indexer.get_tip("alice").await.unwrap().unwrap();
+    let unchanged = indexer.get_tip(&pid("alice")).await.unwrap().unwrap();
     assert_eq!(unchanged.commit_count, 3, "a refused replacement wrote");
 
     indexer
-        .replace_chain_from("alice", 1, &[rival(1), rival(2)], &token)
+        .replace_chain_from(&pid("alice"), 1, &[rival(1), rival(2)], &token)
         .await
         .expect("replace");
     let ids: Vec<String> = indexer
-        .get_commit_chain("alice", None, None)
+        .get_commit_chain(&pid("alice"), None, None)
         .await
         .unwrap()
         .into_iter()
@@ -873,7 +942,7 @@ pub async fn replace_chain_from_repoints_the_chain<I: Indexer + IndexerWrite>(in
             "SHA-256:commit-alice-rival-2"
         ]
     );
-    let tip = indexer.get_tip("alice").await.unwrap().unwrap();
+    let tip = indexer.get_tip(&pid("alice")).await.unwrap().unwrap();
     assert_eq!(
         (tip.commit_id.as_str(), tip.commit_count, tip.last_updated),
         ("SHA-256:commit-alice-rival-2", 3, 2002)

@@ -80,7 +80,9 @@ async fn run(server: &str, audience: &str) -> Result<(), String> {
         .commit_genesis(&signer, &[], now, "cyphr.me")
         .await
         .map_err(|e| format!("genesis commit: {e}"))?;
-    let pg = tmb.to_b64();
+    let pg: cyphr::PrincipalGenesis = format!("SHA-512:{}", tmb.to_b64())
+        .parse()
+        .map_err(|e| format!("pg: {e}"))?;
 
     publish(server, &pg, &principal).await?;
 
@@ -135,7 +137,7 @@ async fn run(server: &str, audience: &str) -> Result<(), String> {
 /// Push the principal's genesis commit to `server`, as any client would.
 async fn publish(
     server: &str,
-    pg: &str,
+    pg: &cyphr::PrincipalGenesis,
     principal: &cyphr::Principal<cyphr::eml::MemoryStorage>,
 ) -> Result<(), String> {
     let commit = principal.commits().last().ok_or("no genesis commit")?;
@@ -152,7 +154,7 @@ async fn publish(
             }));
         }
     }
-    let body = json!({ "principal_id": pg, "txs": txs, "keys": keys });
+    let body = json!({ "principal_id": pg.to_string(), "txs": txs, "keys": keys });
     let response = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()

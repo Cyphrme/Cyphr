@@ -10,6 +10,7 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
+use cyphr::PrincipalGenesis;
 use serde::Deserialize;
 
 // ========================================================================
@@ -315,7 +316,7 @@ impl Default for GossipConfig {
 /// signed tip reports are checked against the keys of that principal's
 /// chain; without one they are not checked (R4: a verifier decides whose
 /// claims to accept).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(untagged)]
 pub enum PeerEntry {
     /// A base URL.
@@ -325,8 +326,46 @@ pub enum PeerEntry {
         /// The base URL.
         url: String,
         /// The Principal Genesis of the peer's server principal.
-        pg: String,
+        pg: PrincipalGenesis,
     },
+}
+
+/// The table form of a peer, read by [`PeerEntry`]'s deserializer.
+#[derive(Deserialize)]
+struct PinnedPeer {
+    url: String,
+    pg: PrincipalGenesis,
+}
+
+impl<'de> Deserialize<'de> for PeerEntry {
+    /// A URL string or a `{ url, pg }` table. Not derived as untagged: an
+    /// untagged enum answers any failure with "did not match any variant",
+    /// which would hide why a `pg` was refused (an unlabelled one shows the
+    /// labelled form).
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = PeerEntry;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a peer URL or a { url, pg } table")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, url: &str) -> Result<PeerEntry, E> {
+                Ok(PeerEntry::Url(url.to_owned()))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<PeerEntry, A::Error> {
+                let PinnedPeer { url, pg } =
+                    PinnedPeer::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(PeerEntry::Pinned { url, pg })
+            }
+        }
+        deserializer.deserialize_any(Visit)
+    }
 }
 
 impl PeerEntry {
@@ -340,7 +379,7 @@ impl PeerEntry {
 
     /// The PG of the peer's server principal, when configured.
     #[must_use]
-    pub fn pg(&self) -> Option<&str> {
+    pub fn pg(&self) -> Option<&PrincipalGenesis> {
         match self {
             Self::Url(_) => None,
             Self::Pinned { pg, .. } => Some(pg),
@@ -943,8 +982,10 @@ mod tests {
     #[test]
     fn peers_are_urls_or_pinned_tables_and_the_mode_sets_fetch_on_read() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let peers = "peers = [\"http://127.0.0.1:1\", { url = \"http://127.0.0.1:2\", pg = \
-                     \"SHA-512:abc\" }]";
+        let pg = format!("SHA-512:{}", "A".repeat(86));
+        let peers = format!(
+            "peers = [\"http://127.0.0.1:1\", {{ url = \"http://127.0.0.1:2\", pg = \"{pg}\" }}]"
+        );
         let resolve = |top: &str, gossip: &str| {
             let toml = format!("{top}\n[gossip]\n{gossip}\n{peers}\n");
             resolve_config(&parse_with_admission_table(tmp.path(), &toml)).expect("resolves")
@@ -952,7 +993,10 @@ mod tests {
 
         let service = resolve("", "");
         assert_eq!(service.gossip.peers[0].pg(), None);
-        assert_eq!(service.gossip.peers[1].pg(), Some("SHA-512:abc"));
+        assert_eq!(
+            service.gossip.peers[1].pg().map(ToString::to_string),
+            Some(pg.clone())
+        );
         assert_eq!(service.gossip.peers[1].url(), "http://127.0.0.1:2");
         assert!(!service.fetches_on_read());
         assert!(resolve("mode = \"witness\"", "").fetches_on_read());

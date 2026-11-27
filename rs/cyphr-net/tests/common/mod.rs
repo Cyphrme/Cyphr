@@ -32,6 +32,13 @@ pub fn kp() -> Kp {
 }
 
 impl Kp {
+    /// The implicit-genesis PG this key roots (Ed25519 thumbprints are SHA-512).
+    pub fn pg(&self) -> cyphr::PrincipalGenesis {
+        format!("SHA-512:{}", self.tmb.to_b64())
+            .parse()
+            .expect("labelled genesis id")
+    }
+
     pub fn signer(&self) -> cyphr::signer::SoftwareSigner {
         cyphr::signer::SoftwareSigner::new(
             self.kp.alg.name(),
@@ -83,8 +90,10 @@ impl<'a> Chain<'a> {
 
     /// The PG: the genesis commit creates only the genesis key, so it is
     /// that key's thumbprint.
-    pub fn pg(&self) -> String {
-        self.genesis.tmb.to_b64()
+    pub fn pg(&self) -> cyphr::PrincipalGenesis {
+        format!("SHA-512:{}", self.genesis.tmb.to_b64())
+            .parse()
+            .expect("labelled genesis id")
     }
 
     /// A `/patch` body carrying the genesis commit, then `entries`.
@@ -330,8 +339,11 @@ pub fn sign_as(signer: &Kp, pay: serde_json::Value) -> serde_json::Value {
 }
 
 /// The principal a tip statement is about (not the peer's own).
-pub fn subject() -> (String, coz::Thumbprint) {
-    (b64(7), coz::Thumbprint::from_bytes(vec![7; 32]))
+pub fn subject() -> (cyphr::PrincipalGenesis, coz::Thumbprint) {
+    (
+        digest(7).parse().expect("labelled id"),
+        coz::Thumbprint::from_bytes(vec![7; 32]),
+    )
 }
 
 pub fn digest(b: u8) -> String {
@@ -346,7 +358,7 @@ pub fn tip_envelope(signer: &Kp) -> serde_json::Value {
         "now": 1_700_000_500,
         "tmb": signer.tmb.to_b64(),
         "typ": "cyphr-server/receipt/tip",
-        "pg": pr,
+        "pg": pr.wire_digest(),
         "sequence": 1,
         "commit_id": digest(9),
         "roots": { "pr": digest(1), "sr": digest(2), "ar": digest(3), "cr": digest(4) },

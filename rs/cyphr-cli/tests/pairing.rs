@@ -31,7 +31,7 @@ fn accept(laptop: &User, pr: &str, file: &Path, extra: &[&str]) -> Ran {
         "key".to_owned(),
         "accept".to_owned(),
         format!("--identity={pr}"),
-        format!("--signer={pr}"),
+        format!("--signer={}", common::tmb(pr)),
         format!("--file={}", file.display()),
     ];
     args.extend(extra.iter().map(|s| (*s).to_owned()));
@@ -166,7 +166,7 @@ fn pairing_refuses_a_request_for_another_principal() {
     let (file, tmb) = request(
         &phone,
         &laptop,
-        "SomeOtherPrincipalRootThatIsNotThisOne0000000",
+        "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     );
     let r = accept(&laptop, &pr, &file, &[]);
     assert!(!r.ok && r.stderr.contains("not `"), "{}", r.stderr);

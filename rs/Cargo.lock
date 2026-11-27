@@ -646,6 +646,7 @@ name = "cyphr-blob-fjall"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "cyphr",
  "cyphr-storage",
  "eml",
  "fjall",

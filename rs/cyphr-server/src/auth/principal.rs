@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
 use cyphr_storage::{Genesis, KeyEntry};
 use serde::{Deserialize, Serialize};
@@ -119,7 +120,7 @@ struct GenesisRecord {
     /// Format version; absent in records from before versions (v1).
     #[serde(default = "file_v1")]
     v: u32,
-    pg: String,
+    pg: PrincipalGenesis,
     genesis_key: GenesisKeyRecord,
 }
 
@@ -191,7 +192,7 @@ pub enum KeyReconciliation {
 /// rewrites that file (and the fresh boot that reads it) can never act on a
 /// stale key.
 pub struct ServerPrincipal {
-    pg: String,
+    pg: PrincipalGenesis,
     genesis_key: cyphr::Key,
     signing_key_path: PathBuf,
 }
@@ -365,7 +366,7 @@ impl ServerPrincipal {
 
     /// The server principal's stable tagged PG — the identifier its chain
     /// is served under (`engine.get_tip(pg)`).
-    pub fn pg(&self) -> &str {
+    pub fn pg(&self) -> &PrincipalGenesis {
         &self.pg
     }
 
@@ -582,7 +583,7 @@ fn genesis_key_from_identity(
 async fn build_genesis(
     identity: &ServerIdentity,
     genesis_key: &cyphr::Key,
-) -> Result<(String, WireBundle), ServerPrincipalError> {
+) -> Result<(PrincipalGenesis, WireBundle), ServerPrincipalError> {
     let alg = identity.alg().name();
     let tmb_b64 = Base64UrlUnpadded::encode_string(genesis_key.tmb().as_bytes());
 

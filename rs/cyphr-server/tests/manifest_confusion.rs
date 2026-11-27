@@ -39,6 +39,7 @@ use common::{
     golden_principal_id, keyless_server, load_pool, post_json,
 };
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 
 const MANIFEST_KIND: &str = "cyphr-storage/commit-manifest/v1";
 
@@ -47,9 +48,14 @@ fn fake_digest(tag: u8) -> String {
     format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[tag; 32]))
 }
 
+/// The labelled principal id spelling [`fake_digest`]`(tag)`.
+fn fake_pg(tag: u8) -> PrincipalGenesis {
+    PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![tag; 32]).expect("32-byte digest")
+}
+
 /// What the attacker wants the rebuilt index to believe.
 struct Forge {
-    principal_id: String,
+    principal_id: PrincipalGenesis,
     sequence: u64,
     /// Primary commit id; may deliberately equal a victim's real digest.
     commit_id: String,
@@ -59,9 +65,9 @@ struct Forge {
 }
 
 impl Forge {
-    fn naming(principal_id: &str, tag: u8) -> Self {
+    fn naming(principal_id: &PrincipalGenesis, tag: u8) -> Self {
         Forge {
-            principal_id: principal_id.to_string(),
+            principal_id: principal_id.clone(),
             sequence: 1,
             commit_id: fake_digest(tag),
             pg: Vec::new(),
@@ -125,7 +131,7 @@ fn with_forged_manifest(body: &str, forge: &Forge) -> String {
 }
 
 /// Principal summaries as comparable `(id, pr, commit_count)` triples.
-async fn principals(state: &AppState) -> Vec<(String, String, u64)> {
+async fn principals(state: &AppState) -> Vec<(PrincipalGenesis, String, u64)> {
     let mut p: Vec<_> = state
         .engine
         .indexer()
@@ -144,9 +150,9 @@ struct World {
     state: Arc<AppState>,
     app: axum::Router,
     pool: test_fixtures::Pool,
-    victim: String,
+    victim: PrincipalGenesis,
     before: TipState,
-    before_principals: Vec<(String, String, u64)>,
+    before_principals: Vec<(PrincipalGenesis, String, u64)>,
     _dir: tempfile::TempDir,
 }
 
@@ -178,10 +184,10 @@ async fn world() -> World {
 impl World {
     /// Index principals other than the attacker's own, which the crafted
     /// push legitimately creates when it is accepted.
-    async fn others(&self) -> Vec<(String, String, u64)> {
+    async fn others(&self) -> Vec<(PrincipalGenesis, String, u64)> {
         let attacker = genesis_push_id(&self.pool, "alice", "carol").await;
         let mut p = principals(&self.state).await;
-        p.retain(|x| !x.0.ends_with(cyphr_storage::engine::bare_digest(&attacker)));
+        p.retain(|x| x.0 != attacker);
         p
     }
 
@@ -272,7 +278,7 @@ async fn pushed_coz_cannot_rewrite_victim_index_on_rebuild() {
 #[tokio::test]
 async fn pushed_coz_cannot_invent_a_principal_on_rebuild() {
     let w = world().await;
-    let phantom = fake_digest(0xB0);
+    let phantom = fake_pg(0xB0);
     w.push_forged(&Forge::naming(&phantom, 0xB1)).await;
 
     w.state.engine.rebuild_index_from_manifests().await.unwrap();
@@ -292,7 +298,7 @@ async fn pushed_coz_cannot_invent_a_principal_on_rebuild() {
 #[tokio::test]
 async fn pushed_coz_cannot_poison_a_scratch_rebuild() {
     let w = world().await;
-    let phantom = fake_digest(0xC0);
+    let phantom = fake_pg(0xC0);
     w.push_forged(&Forge::naming(&phantom, 0xC1)).await;
 
     w.state.engine.rebuild_index_from_scratch().await.unwrap();
@@ -313,15 +319,15 @@ async fn pushed_coz_cannot_poison_a_scratch_rebuild() {
 #[tokio::test]
 async fn pushed_coz_cannot_plant_a_pg_alias_on_rebuild() {
     let w = world().await;
-    let planted = fake_digest(0xD2);
+    let planted = fake_pg(0xD2);
     assert!(
         w.state.engine.get_tip(&planted).await.unwrap().is_none(),
         "control: the probe digest resolves to nothing before the push"
     );
 
-    let phantom = fake_digest(0xD0);
+    let phantom = fake_pg(0xD0);
     let mut forge = Forge::naming(&phantom, 0xD1);
-    forge.pg = vec![planted.clone()];
+    forge.pg = vec![planted.to_string()];
     w.push_forged(&forge).await;
 
     w.state.engine.rebuild_index_from_manifests().await.unwrap();
@@ -354,7 +360,7 @@ async fn pushed_coz_cannot_redirect_victim_digest_on_rebuild() {
         .unwrap();
     let bytes_before = w.state.engine.get_entity(&digest).await.unwrap().unwrap();
 
-    let mut forge = Forge::naming(&fake_digest(0xE0), 0xE1);
+    let mut forge = Forge::naming(&fake_pg(0xE0), 0xE1);
     forge.commit_id = w.before.commit_id.clone();
     forge.blob_hash = w.attacker_blob_hash().await;
     w.push_forged(&forge).await;

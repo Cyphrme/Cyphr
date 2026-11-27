@@ -109,9 +109,13 @@ only when unbounded (`to` absent).
 
 ### Principal identifiers
 
-`pg` (and `principal_id` in `/push`) accepts a tagged digest (`SHA-256:<b64>`)
-or a bare canonical base64url digest. Responses name a principal by its bare
-digest.
+A principal id taken as input is the labelled spelling, `ALG:digest` (for
+example `SHA-256:<b64>`), and only that: `pg` in a query, `principal_id` in a
+`/push` or `/resync` body, the `pg` of a login, and a pinned peer's `pg` in the
+config. A bare digest is refused with `400` and an error that shows the
+labelled form (`unlabelled principal id: expected ALG:digest, ...`). Responses
+name a principal by its bare digest, as the signed statements do, except a
+login token's subject, which is the labelled id.
 
 ### Rate-limit classes
 
@@ -424,8 +428,7 @@ checkable offline by replaying the principal's chain to `height`, checking
 its root is `pre`, then replaying each of `a` and `b` from there
 (`cyphr_net::evidence`). No server signature takes part.
 
-Query: `pg` (string, required): must parse as a tagged digest or a bare
-canonical genesis identifier.
+Query: `pg` (string, required): a labelled principal id (`ALG:digest`).
 
 **200**, always `unsigned`:
 

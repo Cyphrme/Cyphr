@@ -22,6 +22,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use cyphr::PrincipalGenesis;
+
 use super::{OpsError, commit_counts, open};
 use crate::config::ServerConfig;
 
@@ -59,7 +61,7 @@ pub struct RestoreReport {
 /// A principal whose restored chain is shorter than the one it replaced.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Lost {
-    pub principal: String,
+    pub principal: PrincipalGenesis,
     pub had: u64,
     pub restored: u64,
 }
@@ -168,7 +170,7 @@ fn discard_partial(partial: &Path) {
 async fn verify_copy(
     config: &ServerConfig,
     partial: &Path,
-    expected: &BTreeMap<String, u64>,
+    expected: &BTreeMap<PrincipalGenesis, u64>,
 ) -> Result<(), OpsError> {
     copy_tree(&config.record_dir(), &partial.join("record"))?;
     let mut probe = config.clone();

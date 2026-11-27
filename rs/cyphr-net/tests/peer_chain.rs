@@ -168,7 +168,11 @@ async fn pin_naming_another_pg_is_refused() {
     let c1 = peer.commit(&k1, 1_700_000_100).await;
     let pipe = Pipe::new(peer.patch(&[c1]));
 
-    let mut held = PeerChain::pin(&b64(5), g.domain_key(1_700_000_000)).await;
+    let mut held = PeerChain::pin(
+        &digest(5).parse().expect("labelled id"),
+        g.domain_key(1_700_000_000),
+    )
+    .await;
     let refused = held.follow(&pipe).await;
     assert!(
         matches!(refused, Err(PeerFailure::PinMismatch { .. })),
@@ -297,7 +301,7 @@ async fn accessors_report_the_held_chain() {
 
     let pipe = Pipe::new(peer.patch(&[c1.clone(), c2.clone()]));
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000)).await;
-    assert_eq!(held.pg(), peer.pg());
+    assert_eq!(*held.pg(), peer.pg());
     assert_eq!(held.held_tip().expect("tip").commits, 0);
     assert!(held.active_key(&g.tmb).is_ok());
     assert!(matches!(
@@ -504,7 +508,9 @@ async fn nonce_golden_chains_follow_to_the_recorded_pr() {
         let pg = cyphr::Principal::implicit(genesis.clone())
             .await
             .and_then(|p| p.pr_tagged())
-            .expect("pg");
+            .expect("pg")
+            .parse::<cyphr::PrincipalGenesis>()
+            .expect("labelled pg");
 
         let entries: Vec<Vec<String>> = golden["commits"]
             .as_array()

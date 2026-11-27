@@ -13,6 +13,7 @@
 //! so there is nothing for a kept state to resume.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
 use cyphr_blob_fjall::storage_fjall::FjallStorage;
 use cyphr_storage::Genesis;
@@ -171,7 +172,7 @@ impl Stores {
 /// A principal of genesis keys `golden`, `key_a` after its genesis commit,
 /// with the id and genesis the engine stores it under.
 struct World {
-    id: String,
+    id: PrincipalGenesis,
     genesis: Genesis,
     shadow: cyphr::Principal,
     golden: Kp,

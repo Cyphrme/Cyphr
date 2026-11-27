@@ -12,7 +12,6 @@ mod common;
 
 use common::User;
 use cyphr_blob_fjall::EmlLogs;
-use cyphr_cli::commands::common::{get_principal_id, parse_principal_genesis};
 use cyphr_storage::engine::LogFactory;
 
 /// The log generation of `identity` in `user`'s store, read by the same
@@ -27,8 +26,7 @@ fn generation(user: &User, identity: &str) -> u64 {
     let db = fjall::Database::builder(path)
         .open()
         .expect("opening the store");
-    let principal_id = get_principal_id(&parse_principal_genesis(identity).expect("identity"))
-        .expect("principal id");
+    let principal_id: cyphr::PrincipalGenesis = identity.parse().expect("labelled identity");
     EmlLogs::new(db)
         .expect("eml logs")
         .generation(&principal_id)
@@ -41,7 +39,10 @@ fn generation(user: &User, identity: &str) -> u64 {
 fn data_commits_leave_the_log_at_generation_zero() {
     let user = User::new();
     let id = user.new_identity();
-    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+    let (ident, signer) = (
+        format!("--identity={id}"),
+        format!("--signer={}", common::tmb(&id)),
+    );
     for n in 0..5 {
         user.setup(&["data", "action", &ident, &signer, &format!("--msg=m{n}")]);
         user.setup(&["data", "commit", &ident, &signer]);
@@ -60,7 +61,7 @@ fn key_add_leaves_the_log_at_generation_zero() {
     let user = User::new();
     let id = user.new_identity();
     user.add_key(&id);
-    let signer = format!("--signer={id}");
+    let signer = format!("--signer={}", common::tmb(&id));
     let ident = format!("--identity={id}");
     user.setup(&["data", "action", &ident, &signer, "--msg=after"]);
     user.setup(&["data", "commit", &ident, &signer]);

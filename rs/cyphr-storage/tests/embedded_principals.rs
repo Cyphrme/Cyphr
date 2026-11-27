@@ -9,7 +9,7 @@
 //! Every scenario pushes real signed chains over the engine seam.
 
 use cyphr::replay::WireBundle;
-use cyphr::{Principal, Tip, Tracking};
+use cyphr::{Principal, PrincipalGenesis, Tip, Tracking};
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::MemoryBlobStore;
 use cyphr_storage::engine::{DerivedRoots, EngineError, StorageEngine};
@@ -58,7 +58,7 @@ impl Kp {
 /// state the next commit is built on.
 struct Line {
     genesis: Genesis,
-    id: String,
+    id: PrincipalGenesis,
     state: Principal,
     bundles: Vec<WireBundle>,
 }
@@ -553,7 +553,7 @@ async fn restart(blobs: &MemoryBlobStore) -> Engine {
     engine
 }
 
-async fn in_error(engine: &Engine, id: &str) -> bool {
+async fn in_error(engine: &Engine, id: &PrincipalGenesis) -> bool {
     engine
         .assess(id)
         .await

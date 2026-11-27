@@ -479,13 +479,18 @@ async fn harness_evidence_items_are_verified_offline() {
         commit_ids: vec!["C0".into(), "C1".into(), "C2".into()],
         ..ChainView::default()
     };
-    let ok = async |item: &Value| verify_evidence(item, "PG", &keys, &peers, &chain).await;
+    let requested = cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![1; 32])
+        .expect("labelled id");
+    let ok = async |item: &Value| verify_evidence(item, &requested, &keys, &peers, &chain).await;
 
-    let fork = json!({"kind": "principal-fork", "pg": "PG", "height": 0, "pre": null,
+    let fork = json!({"kind": "principal-fork", "pg": requested.wire_digest(), "height": 0, "pre": null,
                       "a": {"txs": [["AA"]]}, "b": {"txs": [["BB"]]}});
     assert!(ok(&fork).await.is_err(), "no chain to replay a fork from");
     let mut other = fork.clone();
-    other["pg"] = "OTHER".into();
+    other["pg"] = cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![2; 32])
+        .expect("labelled id")
+        .wire_digest()
+        .into();
     assert!(ok(&other).await.is_err(), "another principal's item");
 
     let view = |size: u64, id: &str, signer: (&str, &str, &[u8])| {
@@ -498,9 +503,9 @@ async fn harness_evidence_items_are_verified_offline() {
         )
     };
     let peer = (peer_tmb.as_str(), peer_pub.as_str(), peer_prv.as_slice());
-    let equiv = |a: Value, b: Value| json!({"kind": "peer-equivocation", "pg": "PG", "peer": "PEER", "a": a, "b": b});
+    let equiv = |a: Value, b: Value| json!({"kind": "peer-equivocation", "pg": requested.wire_digest(), "peer": "PEER", "a": a, "b": b});
     let proven = Ok(Proven::PeerEquivocation {
-        pg: "PG".into(),
+        pg: requested.wire_digest(),
         peer: "PEER".into(),
     });
     assert_eq!(
@@ -617,8 +622,9 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
     let mut base = cyphr::Principal::implicit(key_of(&g))
         .await
         .expect("genesis");
-    // A single-key genesis: the PG is the genesis key's thumbprint.
-    let id = g.tmb.to_b64();
+    // A single-key genesis: the id is the genesis key's thumbprint under
+    // its own hash (Ed25519: SHA-512), labelled.
+    let id = format!("SHA-512:{}", g.tmb.to_b64());
     base.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb),
         &[],
@@ -816,7 +822,7 @@ async fn harness_oracle_refuses_an_error_verdict_that_is_not_the_forks() {
         create_commit(&mut cur, &k, &signer(), 1_700_000_000 + i).await;
         states.push(cur.fork().await.expect("fork"));
     }
-    let id = k.tmb.to_b64();
+    let id = format!("SHA-512:{}", k.tmb.to_b64());
     let pr = Principal(id.clone());
     let bundle = |p: &cyphr::Principal| {
         cyphr::replay::WireBundle::of_commit(p.commits().last().expect("commit")).expect("bundle")

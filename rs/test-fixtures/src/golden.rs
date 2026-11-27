@@ -716,7 +716,7 @@ impl<'a> Generator<'a> {
         use cyphr::parsed_coz::typ::{DS_CREATE, PRINCIPAL_CREATE, has_suffix};
 
         if has_suffix(typ, PRINCIPAL_CREATE) {
-            scope.genesis_id()
+            scope.genesis_id().map(|pg| pg.to_string())
         } else if has_suffix(typ, DS_CREATE) {
             Ok(scope.data_tree_id()?.unwrap_or_else(|| pre.to_string()))
         } else {

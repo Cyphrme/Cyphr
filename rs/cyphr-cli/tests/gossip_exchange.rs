@@ -23,7 +23,10 @@ fn bundle_carries_commits_actions_and_both_fork_branches_between_clients() {
     let a = User::new();
     let id = a.new_identity();
     let b = a.clone_identity(&id);
-    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+    let (ident, signer) = (
+        format!("--identity={id}"),
+        format!("--signer={}", common::tmb(&id)),
+    );
     a.setup(&["data", "action", &ident, &signer, "--msg=carried"]);
     a.setup(&["data", "commit", &ident, &signer]);
     b.add_key(&id);

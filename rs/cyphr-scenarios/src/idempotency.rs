@@ -137,7 +137,8 @@ pub async fn replay_on_fresh_peer(
     http: &reqwest::Client,
 ) -> Result<ReplayAnswer, String> {
     let (golden, key_a) = (pool_key(GOLDEN)?, pool_key(KEY_A)?);
-    let id = golden.tmb.to_b64();
+    // An ES256 genesis key: its implicit id is labelled with its own hash.
+    let id = format!("SHA-256:{}", golden.tmb.to_b64());
 
     let mut p = Principal::implicit(key_of(&golden)?)
         .await

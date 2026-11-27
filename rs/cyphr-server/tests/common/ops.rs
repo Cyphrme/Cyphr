@@ -32,7 +32,7 @@ pub async fn push_all(data: &Path, bodies: Vec<String>) {
 }
 
 /// The standard principal's id and its two push bodies.
-pub async fn golden_chain() -> (String, String, String) {
+pub async fn golden_chain() -> (cyphr::PrincipalGenesis, String, String) {
     let pool = load_pool();
     let pr = golden_principal_id(&pool).await;
     let first = build_genesis_push_body(&pool, &pr, 1_700_000_000).await;
@@ -41,7 +41,7 @@ pub async fn golden_chain() -> (String, String, String) {
 }
 
 /// A second principal's id and its genesis push body.
-pub async fn alice_chain() -> (String, String) {
+pub async fn alice_chain() -> (cyphr::PrincipalGenesis, String) {
     let pool = load_pool();
     let id = genesis_push_id(&pool, "alice", "bob").await;
     let body = build_genesis_push_body_with(&pool, "alice", "bob", &id, 1_700_000_000).await;
@@ -67,7 +67,7 @@ pub fn server(data: &Path, args: &[&str], tail: &[&str]) -> Output {
 }
 
 /// `(commit_count, pr)` of every principal in the store at `data`.
-pub async fn tips(data: &Path) -> Vec<(String, u64, String)> {
+pub async fn tips(data: &Path) -> Vec<(cyphr::PrincipalGenesis, u64, String)> {
     use cyphr_storage::index::Indexer;
     let state = AppState::new(config_at(data)).expect("open store");
     state

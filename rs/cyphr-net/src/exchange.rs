@@ -12,6 +12,7 @@
 //! exporter is a mirror, as any peer is.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -63,7 +64,7 @@ pub struct ExchangeBundle {
     /// The file version.
     pub v: u64,
     /// The principal's id as the exporter knew it.
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     /// The chains: the record's own first, then one per fork it holds.
     pub chains: Vec<BundleChain>,
     /// Naked-revoke envelopes (`{pay, sig, key}`), unverified on read.
@@ -103,7 +104,7 @@ impl ExchangeBundle {
         }
         Self {
             v: BUNDLE_VERSION,
-            principal_id: record.principal_id().to_owned(),
+            principal_id: record.principal_id().clone(),
             chains,
             revoked,
         }

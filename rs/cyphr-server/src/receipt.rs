@@ -295,13 +295,13 @@ pub async fn held_report(
 /// field. At Level 1/2 a principal's genesis identifier IS its raw
 /// thumbprint via implicit promotion, so requiring a tag here would reject
 /// every Level 1/2 principal's receipt.
-fn validate(pg: &str, commit_id: &str, roots: &Roots) -> Result<(), ReceiptError> {
+fn validate(statement_pg: &str, commit_id: &str, roots: &Roots) -> Result<(), ReceiptError> {
     fn digest(field: &'static str, s: &str) -> Result<(), ReceiptError> {
         s.parse::<TaggedDigest>()
             .map(drop)
             .map_err(|source| ReceiptError::Field { field, source })
     }
-    parse_genesis_id_str(pg)
+    parse_genesis_id_str(statement_pg)
         .map(drop)
         .map_err(|source| ReceiptError::Field {
             field: "pg",

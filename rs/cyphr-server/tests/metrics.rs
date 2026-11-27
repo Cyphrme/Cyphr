@@ -221,7 +221,7 @@ async fn metrics_carry_no_identifier_and_bounded_labels() {
     }
 
     let (series, text) = scrape(&app).await;
-    for secret in [id.as_str(), golden.pub_key.as_str(), marker] {
+    for secret in [id.wire_digest().as_str(), golden.pub_key.as_str(), marker] {
         assert!(
             !text.contains(secret),
             "exposition leaks {secret:?}:\n{text}"

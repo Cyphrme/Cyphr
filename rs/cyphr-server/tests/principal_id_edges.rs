@@ -69,7 +69,7 @@ proptest! {
     fn a_labelled_pinned_genesis_loads_and_keeps_its_spelling((alg, bytes) in id_parts()) {
         let dir = tempfile::tempdir().expect("tempdir");
         let labelled = format!("{alg}:{}", Base64UrlUnpadded::encode_string(&bytes));
-        let config = load(dir.path(), &labelled).map_err(|e| TestCaseError::fail(e))?;
+        let config = load(dir.path(), &labelled).map_err(TestCaseError::fail)?;
         let peer = serde_json::to_value(&config.gossip.peers[0]).expect("peer serializes");
         prop_assert_eq!(peer["pg"].as_str(), Some(labelled.as_str()));
     }
@@ -162,6 +162,7 @@ proptest! {
 async fn a_held_principal_is_served_by_its_labelled_id_only() {
     let (state, _guard) = common::keyless_server();
     let (id, first, _) = common::ops::golden_chain().await;
+    let id = id.to_string();
     let (status, resp) = common::post_json(build_router(Arc::clone(&state)), "/push", first).await;
     assert_eq!(status, StatusCode::CREATED, "{resp:?}");
 

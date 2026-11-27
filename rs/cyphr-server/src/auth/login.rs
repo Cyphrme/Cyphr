@@ -33,8 +33,9 @@ use std::sync::{Arc, Mutex};
 
 use axum::Json;
 use axum::extract::State;
+use cyphr::PrincipalGenesis;
 use cyphr_net::login::{self, LoginRequest, ParsedRequest, SpentChallenges, VerifiedRequest};
-use cyphr_storage::engine::{EngineError, bare_digest};
+use cyphr_storage::engine::EngineError;
 use serde::Serialize;
 
 use super::{ServerIdentity, server_now};
@@ -49,6 +50,7 @@ impl From<login::VerifyError> for LoginError {
             login::VerifyError::MissingField(name) => Self::MissingField(name),
             login::VerifyError::NotALogin => Self::NotALogin,
             login::VerifyError::AudienceMissing => Self::AudienceMissing,
+            login::VerifyError::PgMalformed(why) => Self::PgMalformed(why),
             login::VerifyError::ChannelMalformed => Self::ChannelMismatch("`h` is not base64url"),
             login::VerifyError::ChallengeInvalid => Self::ChallengeInvalid,
             login::VerifyError::InvalidSignature => Self::InvalidSignature,
@@ -68,6 +70,11 @@ pub enum LoginError {
     /// A required field was absent from the signed payload.
     #[error("login payload is missing required field `{0}`")]
     MissingField(&'static str),
+
+    /// The signed `pg` is not a labelled principal id: a refusal that
+    /// shows the labelled form.
+    #[error("login payload `pg` is not a principal id: {0}")]
+    PgMalformed(String),
 
     /// `typ` is absent or is not a login request
     /// (`<audience>/user/login/request/create`).
@@ -238,7 +245,9 @@ pub struct LoginResponse {
 impl From<LoginError> for AppError {
     fn from(err: LoginError) -> Self {
         match err {
-            LoginError::Malformed(_) => AppError::bad_request(err.to_string()),
+            LoginError::Malformed(_) | LoginError::PgMalformed(_) => {
+                AppError::bad_request(err.to_string())
+            },
             _ => AppError::unauthorized(err.to_string()),
         }
     }
@@ -377,7 +386,7 @@ pub async fn login(
             if *h != p.0.handshake_hash {
                 return Err(LoginError::ChannelMismatch("`h` is not this session's hash").into());
             }
-            if p.0.tmb != parsed.tmb || bare_digest(&p.0.pg) != bare_digest(&canonical_id) {
+            if p.0.tmb != parsed.tmb || p.0.pg != canonical_id {
                 return Err(LoginError::ChannelMismatch(
                     "the session's principal and key did not sign this login",
                 )
@@ -414,14 +423,15 @@ pub async fn login(
         return Err(LoginError::TimestampOutOfWindow.into());
     }
 
-    // The subject is the principal's one canonical id, never the spelling
-    // the client typed: a relying party keys accounts on this, and two
-    // spellings of one identity must not yield two accounts.
-    let subject = bare_digest(&canonical_id).to_string();
+    // The subject is the principal's canonical id, whichever address
+    // the client named it by (its key or its PG): a relying party keys
+    // accounts on this, and two addresses of one identity must not yield
+    // two accounts.
+    let subject = canonical_id;
     let perms = state.login_policy.perms(&subject, &parsed.tmb);
     let token = identity
         .issue_login_token(
-            subject,
+            &subject,
             &parsed.tmb,
             perms,
             now,
@@ -440,7 +450,7 @@ pub async fn login(
 #[derive(Debug, Serialize)]
 pub struct SessionResponse {
     /// The session's principal.
-    pub pg: String,
+    pub pg: PrincipalGenesis,
     /// The key that opened the session, which it stands or falls with.
     pub key: String,
     /// `noise-handshake-hash` for a session bound to the Noise channel that

@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 use cyphr::eml::MemoryStorage;
 use cyphr::principal::{Clock, system_clock};
 use cyphr::replay::{Bundle, BundleId, WireBundle, WireError, replay_held};
-use cyphr::{Key, Principal};
+use cyphr::{Key, Principal, PrincipalGenesis};
 use serde::Deserialize as _;
 use serde_json::Value;
 
@@ -59,7 +59,7 @@ pub enum PeerFailure {
     #[error("pinned pg {pg} does not derive from the pinned genesis key (derives {derived})")]
     PinMismatch {
         /// The PG the caller pinned.
-        pg: String,
+        pg: PrincipalGenesis,
         /// The PG the pinned genesis key actually derives.
         derived: String,
     },
@@ -127,7 +127,7 @@ pub enum PeerFailure {
     #[error("the served chain does not derive the requested principal {id}")]
     PrincipalMismatch {
         /// The principal the verifier asked for.
-        id: String,
+        id: PrincipalGenesis,
     },
     /// A statement-triggered follow came inside the configured interval of
     /// the previous fetch from this peer, so nothing was fetched.
@@ -198,13 +198,16 @@ pub struct HeldTip {
 /// that every later call repeats.
 enum Pin {
     Held(Box<Principal<MemoryStorage>>),
-    Mismatch { pg: String, derived: String },
+    Mismatch {
+        pg: PrincipalGenesis,
+        derived: String,
+    },
 }
 
 /// A peer principal the client holds: the chain replayed so far, from a
 /// pinned PG and genesis key.
 pub struct PeerChain {
-    pg: String,
+    pg: PrincipalGenesis,
     pin: Pin,
     /// The identity of every bundle the held chain replayed, in order,
     /// action-only bundles included, so a follow can compare them all.
@@ -238,26 +241,26 @@ impl PeerChain {
     /// genesis key alone cannot match it: such a peer can never be pinned
     /// and fails closed with `PinMismatch`.
     #[must_use]
-    pub async fn pin(pg: &str, genesis: Key) -> Self {
+    pub async fn pin(pg: &PrincipalGenesis, genesis: Key) -> Self {
         let pin = match Principal::implicit(genesis.clone()).await {
-            Ok(principal) => match principal.pr_tagged() {
-                Ok(derived) if matches_pg(pg, &derived) => Pin::Held(Box::new(principal)),
+            Ok(principal) => match principal.pr_id() {
+                Ok(derived) if derived == *pg => Pin::Held(Box::new(principal)),
                 Ok(derived) => Pin::Mismatch {
-                    pg: pg.to_string(),
-                    derived,
+                    pg: pg.clone(),
+                    derived: derived.to_string(),
                 },
                 Err(err) => Pin::Mismatch {
-                    pg: pg.to_string(),
+                    pg: pg.clone(),
                     derived: format!("underivable: {err}"),
                 },
             },
             Err(err) => Pin::Mismatch {
-                pg: pg.to_string(),
+                pg: pg.clone(),
                 derived: format!("underivable: {err}"),
             },
         };
         Self {
-            pg: pg.to_string(),
+            pg: pg.clone(),
             pin,
             bundles: Vec::new(),
             followed: false,
@@ -331,7 +334,7 @@ impl PeerChain {
 
     /// The pinned PG.
     #[must_use]
-    pub fn pg(&self) -> &str {
+    pub fn pg(&self) -> &PrincipalGenesis {
         &self.pg
     }
 
@@ -484,7 +487,11 @@ impl PeerChain {
     /// naked revoke whose cutoff is at or before the statement's `now`;
     /// [`PeerFailure::Tip`] for any other refusal of the envelope;
     /// [`PeerFailure::PinMismatch`] for a refused pin.
-    pub fn verify_tip(&self, body: &Value, principal_id: &str) -> Result<TipReport, PeerFailure> {
+    pub fn verify_tip(
+        &self,
+        body: &Value,
+        principal_id: &PrincipalGenesis,
+    ) -> Result<TipReport, PeerFailure> {
         let chain = self.chain()?;
         let found = body.get("v").and_then(Value::as_u64).unwrap_or(0);
         if found != ENVELOPE_VERSION {
@@ -532,7 +539,7 @@ impl PeerChain {
         &mut self,
         connector: &C,
         body: &Value,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> Result<TipReport, PeerFailure> {
         let needs_follow = !self.followed
             || matches!(
@@ -561,11 +568,6 @@ impl PeerChain {
         self.follow(connector).await?;
         self.verify_tip(body, principal_id)
     }
-}
-
-/// Whether the pinned `pg` names the derived PR, labelled or bare.
-fn matches_pg(pg: &str, derived: &str) -> bool {
-    pg == derived || derived.split_once(':').is_some_and(|(_, bare)| pg == bare)
 }
 
 fn claimed_tmb(coz: &coz::CozJson) -> Option<coz::Thumbprint> {

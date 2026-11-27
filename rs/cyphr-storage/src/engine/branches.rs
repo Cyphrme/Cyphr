@@ -58,8 +58,8 @@ struct ForkCache {
 /// evicted first: losing one costs its principal one fork read.
 struct ForkCaches {
     capacity: usize,
-    entries: HashMap<String, ForkCache>,
-    order: std::collections::VecDeque<String>,
+    entries: HashMap<PrincipalGenesis, ForkCache>,
+    order: std::collections::VecDeque<PrincipalGenesis>,
 }
 
 impl ForkCaches {
@@ -71,24 +71,24 @@ impl ForkCaches {
         }
     }
 
-    fn touch(&mut self, principal_id: &str) {
+    fn touch(&mut self, principal_id: &PrincipalGenesis) {
         self.order.retain(|id| id != principal_id);
-        self.order.push_back(principal_id.to_string());
+        self.order.push_back(principal_id.clone());
     }
 
     /// The entry of `principal_id`, marked as just used.
-    fn get(&mut self, principal_id: &str) -> Option<&ForkCache> {
+    fn get(&mut self, principal_id: &PrincipalGenesis) -> Option<&ForkCache> {
         if self.entries.contains_key(principal_id) {
             self.touch(principal_id);
         }
         self.entries.get(principal_id)
     }
 
-    fn put(&mut self, principal_id: &str, cache: ForkCache) {
+    fn put(&mut self, principal_id: &PrincipalGenesis, cache: ForkCache) {
         if self.capacity == 0 {
             return;
         }
-        self.entries.insert(principal_id.to_string(), cache);
+        self.entries.insert(principal_id.clone(), cache);
         self.touch(principal_id);
         while self.entries.len() > self.capacity {
             match self.order.pop_front() {
@@ -283,7 +283,12 @@ pub struct Review {
 pub trait Recovery: Send + Sync {
     /// The head this strategy trusts for `principal_id`, given the
     /// protocol's verdict and every fork the viewer holds, resolved or not.
-    fn review(&self, principal_id: &str, protocol: Consensus, forks: &[ForkView]) -> Review;
+    fn review(
+        &self,
+        principal_id: &PrincipalGenesis,
+        protocol: Consensus,
+        forks: &[ForkView],
+    ) -> Review;
 }
 
 /// A head and when this engine first stored it.
@@ -411,7 +416,7 @@ pub(super) struct CachedFork {
 /// fork rule reads them ([`ForkCache`]): what keeps the fork read of a
 /// principal with a retained rival from costing its length on every reader.
 pub(super) struct BranchStore {
-    branches: std::sync::Mutex<HashMap<String, Vec<Retained>>>,
+    branches: std::sync::Mutex<HashMap<PrincipalGenesis, Vec<Retained>>>,
     forks: std::sync::Mutex<ForkCaches>,
 }
 
@@ -449,18 +454,18 @@ impl BranchStore {
 
     /// Replace every retained branch with `branches`: a rebuild re-derives
     /// them from the blobs.
-    pub(super) fn replace(&self, branches: HashMap<String, Vec<Retained>>) {
+    pub(super) fn replace(&self, branches: HashMap<PrincipalGenesis, Vec<Retained>>) {
         *self.branches.lock().unwrap_or_else(|p| p.into_inner()) = branches;
     }
 
     /// A copy of `principal_id`'s retained rivals.
-    pub(super) fn retained(&self, principal_id: &str) -> Vec<Retained> {
+    pub(super) fn retained(&self, principal_id: &PrincipalGenesis) -> Vec<Retained> {
         self.with(principal_id, <[Retained]>::to_vec)
     }
 
     /// Forget the retained rival `tip` at `sequence`, if held: the commit
     /// became canonical.
-    pub(super) fn forget(&self, principal_id: &str, tip: &str, sequence: u64) {
+    pub(super) fn forget(&self, principal_id: &PrincipalGenesis, tip: &str, sequence: u64) {
         if let Some(kept) = self
             .branches
             .lock()
@@ -472,7 +477,11 @@ impl BranchStore {
     }
 
     /// Read `principal_id`'s retained rivals under the lock.
-    pub(super) fn with<R>(&self, principal_id: &str, read: impl FnOnce(&[Retained]) -> R) -> R {
+    pub(super) fn with<R>(
+        &self,
+        principal_id: &PrincipalGenesis,
+        read: impl FnOnce(&[Retained]) -> R,
+    ) -> R {
         let kept = self.branches.lock().unwrap_or_else(|p| p.into_inner());
         read(kept.get(principal_id).map_or(&[][..], Vec::as_slice))
     }
@@ -480,15 +489,15 @@ impl BranchStore {
     /// Change `principal_id`'s retained rivals under the lock.
     pub(super) fn update<R>(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         change: impl FnOnce(&mut Vec<Retained>) -> R,
     ) -> R {
         let mut kept = self.branches.lock().unwrap_or_else(|p| p.into_inner());
-        change(kept.entry(principal_id.to_string()).or_default())
+        change(kept.entry(principal_id.clone()).or_default())
     }
 
     /// The principal that retains the commit whose Principal Root is `pr`.
-    pub(super) fn principal_of_pr(&self, pr: &str) -> Option<String> {
+    pub(super) fn principal_of_pr(&self, pr: &str) -> Option<PrincipalGenesis> {
         self.branches
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -500,7 +509,7 @@ impl BranchStore {
     /// The keys the principal's retained rivals disclose: a source of
     /// signers for a bundle extending one of them. O(retained), which
     /// [`BRANCH_LIMIT`] caps; nothing is read from the store.
-    pub(super) fn keys(&self, principal_id: &str) -> Vec<KeyEntry> {
+    pub(super) fn keys(&self, principal_id: &PrincipalGenesis) -> Vec<KeyEntry> {
         self.with(principal_id, |rs| {
             rs.iter().flat_map(|r| r.keys.clone()).collect()
         })
@@ -509,7 +518,7 @@ impl BranchStore {
     /// Whether a rival with these blobs and grouping is retained.
     pub(super) fn is_retained(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         hashes: &[Blake3Hash],
         shape: &Shape,
     ) -> bool {
@@ -519,7 +528,7 @@ impl BranchStore {
     }
 
     /// The retained rivals of `principal_id` as the fork rule reads them.
-    pub(super) fn held(&self, principal_id: &str) -> Vec<Held> {
+    pub(super) fn held(&self, principal_id: &PrincipalGenesis) -> Vec<Held> {
         self.with(principal_id, |rs| {
             rs.iter()
                 .map(|r| Held {
@@ -537,7 +546,7 @@ impl BranchStore {
     /// `from` and holds at most `count` commits; marked as just used.
     pub(super) fn cached_fork(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: u64,
         count: u64,
         tip_id: &str,
@@ -559,7 +568,7 @@ impl BranchStore {
     /// `from` to its tip `tip_id` of `count` commits.
     pub(super) fn cache_fork(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: u64,
         count: u64,
         tip_id: &str,
@@ -624,7 +633,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// Caller holds the principal's write lock.
     pub(super) async fn retain_rival(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: crate::Genesis,
         bundle: &WireBundle,
         tip: &cyphr::PrincipalState,
@@ -703,14 +712,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// or not the commit is kept), the refusal itself otherwise.
     pub(super) async fn answer_in_error(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         refusal: EngineError,
     ) -> EngineError {
         if matches!(refusal, EngineError::BranchLimit { .. })
             && self.is_errored(principal_id).await.unwrap_or(false)
         {
             return EngineError::Errored {
-                principal_id: principal_id.to_string(),
+                principal_id: principal_id.clone(),
             };
         }
         refusal
@@ -726,7 +735,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// Caller holds the principal's write lock.
     pub(super) async fn retain_pair(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: &crate::Genesis,
         parent: &WireBundle,
         bundle: &WireBundle,
@@ -863,7 +872,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// stands at `rival`.
     pub(super) async fn replay_line(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: &crate::Genesis,
         stored: &StoredChain,
         by_pr: &HashMap<(u64, &str), &Retained>,
@@ -956,7 +965,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// by an authenticated bundle, so an unauthenticated one never pays it.
     pub(super) async fn resolve_fork(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: &crate::Genesis,
         bundle: &WireBundle,
         tip: &cyphr::PrincipalState,
@@ -1019,7 +1028,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     // only where a slot is left.
                     self.keep_evidence(bundle, next_commit, &embedded).await;
                     return Err(EngineError::Errored {
-                        principal_id: principal_id.to_string(),
+                        principal_id: principal_id.clone(),
                     });
                 }
                 self.keep_branch(bundle, next_commit, &embedded).await?;
@@ -1046,7 +1055,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// shorter than the line.
     pub(super) async fn promote_branch(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         line: &[Retained],
         line_commits: &mut [IndexableCommit],
         next: Option<(&WireBundle, IndexableCommit, &[EmbeddedPin])>,
@@ -1168,7 +1177,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             EngineError::InvalidInput("a promotion names no retained commit".into())
         })?;
         Ok(IngestResult {
-            principal_id: principal_id.to_string(),
+            principal_id: principal_id.clone(),
             blob_hashes: head.blob_hashes.clone(),
             manifest_hash: next.as_ref().map(|(_, _, hash, _)| *hash),
             tip: Some(CommittedTip::of(head)),
@@ -1187,7 +1196,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn attach_line(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: &crate::Genesis,
         stored: &StoredChain,
         rivals: &[Retained],
@@ -1262,7 +1271,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// commit that does not verify, or when none reaches `target`.
     pub(super) async fn try_line(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         parent: &cyphr::Principal,
         sequence: u64,
         line: &[WireBundle],
@@ -1325,7 +1334,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// filter that needs no state.
     pub(super) async fn is_already_stored(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         bundle: &WireBundle,
     ) -> Result<bool, EngineError> {
         let hashes: Vec<Blake3Hash> = bundle
@@ -1358,10 +1367,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut positions = std::collections::BTreeSet::new();
         // The index files a coz under its digest in the principal's primary
         // algorithm at the time, which this does not know: each is asked.
-        for label in ID_LABELS {
-            let Ok(alg) = cyphr::state::hash_alg_named(label) else {
-                continue;
-            };
+        for alg in cyphr::state::HASH_ALGS {
             let named = format!(
                 "{alg}:{}",
                 Base64UrlUnpadded::encode_string(&czd.convert_to(alg))
@@ -1370,7 +1376,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 continue;
             };
             for holder in self.indexer.resolve_digest_holders(&digest).await? {
-                if holder.principal_id.as_deref() == Some(principal_id)
+                if holder.principal_id.as_ref() == Some(principal_id)
                     && let Some(at) = holder.sequence
                 {
                     positions.insert(at);
@@ -1411,7 +1417,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// rule X, run over the held commits plus the offer.
     pub(super) async fn changes_verdict(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         offer: &[&IndexableCommit],
     ) -> Result<bool, EngineError> {
         let lowest = offer.iter().map(|c| c.sequence).min();
@@ -1545,7 +1551,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// ([`Self::submit_commit`]) and kept as evidence of a fork. A
     /// principal that is not stored is [`EngineError::NotFound`].
     #[tracing::instrument(skip(self))]
-    pub async fn list_branches(&self, principal_id: &str) -> Result<Vec<BranchTip>, EngineError> {
+    pub async fn list_branches(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> Result<Vec<BranchTip>, EngineError> {
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
         let not_stored = || EngineError::NotFound(format!("principal {principal_id} not found"));
@@ -1584,7 +1593,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// the blobs answer alike. `false` for a principal that is not stored.
     /// No [`Recovery`] is consulted: what the engine admits is the protocol
     /// alone.
-    pub async fn is_errored(&self, principal_id: &str) -> Result<bool, EngineError> {
+    pub async fn is_errored(&self, principal_id: &PrincipalGenesis) -> Result<bool, EngineError> {
         Ok(self.assess(principal_id).await?.consensus == Consensus::Error)
     }
 
@@ -1593,7 +1602,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// revocations it holds: the rule [`Self::is_errored`] reads, with the
     /// live heads and settled forks a viewer reports. A principal that is
     /// not stored has no heads and no forks.
-    pub async fn assess(&self, principal_id: &str) -> Result<Assessment, EngineError> {
+    pub async fn assess(&self, principal_id: &PrincipalGenesis) -> Result<Assessment, EngineError> {
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
         let held = self.held(&principal_id).await?;
@@ -1604,7 +1613,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// while Active or not stored: what a reader is told in place of a tip.
     /// From the held commits alone, so a live engine and one rebuilt from
     /// the blobs answer alike (I1).
-    pub async fn error_state(&self, principal_id: &str) -> Result<Option<ErrorState>, EngineError> {
+    pub async fn error_state(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> Result<Option<ErrorState>, EngineError> {
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
         Ok(self
@@ -1619,7 +1631,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// `None` when either is not among them, canonical or retained.
     pub async fn extends(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         parent_id: &str,
         child_id: &str,
     ) -> Result<Option<bool>, EngineError> {
@@ -1641,7 +1653,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// principal that is not stored.
     pub async fn holds_commit(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         commit_id: &str,
     ) -> Result<bool, EngineError> {
         self.ensure_healed().await?;
@@ -1658,7 +1670,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Ok(false);
         };
         for holder in self.indexer.resolve_digest_holders(&digest).await? {
-            if holder.principal_id.as_deref() != Some(principal_id.as_str()) {
+            if holder.principal_id.as_ref() != Some(&principal_id) {
                 continue;
             }
             let Some(at) = holder.sequence else { continue };
@@ -1672,7 +1684,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     pub(super) async fn error_state_of(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> Result<Option<(ForkPoint, Vec<HeldHead>)>, EngineError> {
         let held = self.held(principal_id).await?;
         let assessed = self.assessed(principal_id, &held);
@@ -1713,7 +1725,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// retained rival of that id.
     pub(super) async fn branches_of(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         fork_point: &ForkPoint,
         heads: &[HeldHead],
     ) -> Result<Vec<PatchBranch>, EngineError> {
@@ -1786,7 +1798,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// [`assessment`] of `held` with the PoPs this engine holds for
     /// `principal_id`: the one rule every fork read here applies.
-    pub(super) fn assessed(&self, principal_id: &str, held: &[Held]) -> Assessment {
+    pub(super) fn assessed(&self, principal_id: &PrincipalGenesis, held: &[Held]) -> Assessment {
         assessment(held, &self.resyncs.asserted(principal_id))
     }
 
@@ -1804,7 +1816,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// history, on every write and every read of a tip or a proof. Both
     /// inputs are caches rebuilt from the blobs (I1), and nothing else is
     /// kept for it.
-    pub(super) async fn held(&self, principal_id: &str) -> Result<Vec<Held>, EngineError> {
+    pub(super) async fn held(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> Result<Vec<Held>, EngineError> {
         self.held_with(principal_id, None).await
     }
 
@@ -1813,7 +1828,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// be run over the held commits plus that offer.
     pub(super) async fn held_with(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         offer: Option<u64>,
     ) -> Result<Vec<Held>, EngineError> {
         let lowest_retained = self
@@ -1862,7 +1877,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// a prefix the new commits link to, which then reads only those. Anything else is read whole.
     pub(super) async fn canonical_held(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: u64,
         count: u64,
         tip_id: &str,
@@ -1908,7 +1923,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// index.
     pub(super) async fn held_canonical_from(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: u64,
     ) -> Result<Vec<Held>, EngineError> {
         let chain = self.chain(principal_id, Some(from), None).await?;
@@ -1935,7 +1950,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// from position `from` up.
     pub(super) async fn held_from(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: u64,
     ) -> Result<Vec<Held>, EngineError> {
         let mut held = self.held_canonical_from(principal_id, from).await?;
@@ -1950,8 +1965,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[tracing::instrument(skip(self))]
     pub async fn fork_evidence(
         &self,
-        principal_id: &str,
-    ) -> Result<(String, Vec<ForkEvidence>), EngineError> {
+        principal_id: &PrincipalGenesis,
+    ) -> Result<(PrincipalGenesis, Vec<ForkEvidence>), EngineError> {
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
         if self.indexer.get_tip(&principal_id).await?.is_none() {

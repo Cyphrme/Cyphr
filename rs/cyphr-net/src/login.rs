@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use coz::{CozJson, Thumbprint};
+use cyphr::PrincipalGenesis;
 use cyphr::signer::Signer;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,9 @@ pub enum VerifyError {
     /// A login-shaped `typ` whose authority segment is empty.
     #[error("login names no audience")]
     AudienceMissing,
+    /// The `pg` claim is not a labelled principal id.
+    #[error("login claim `pg` is not a principal id: {0}")]
+    PgMalformed(String),
     /// The channel claim is not base64url.
     #[error("login claim `h` is not base64url")]
     ChannelMalformed,
@@ -146,8 +150,8 @@ pub struct ParsedRequest {
     pub now: i64,
     /// The service the signer names (the `typ`'s authority segment).
     pub audience: String,
-    /// The claimed principal's genesis, as the signer spelled it.
-    pub pg: String,
+    /// The claimed principal's genesis.
+    pub pg: PrincipalGenesis,
     /// The challenge nonce the request answers, if any.
     pub nonce: Option<String>,
     /// The channel hash the request commits to, if any.
@@ -253,7 +257,9 @@ pub fn parse_request(request: &LoginRequest) -> Result<ParsedRequest, VerifyErro
         alg: str_claim(pay, "alg")?.to_owned(),
         now,
         audience: audience.to_owned(),
-        pg: str_claim(pay, field::PG)?.to_owned(),
+        pg: str_claim(pay, field::PG)?
+            .parse()
+            .map_err(|e: cyphr::Error| VerifyError::PgMalformed(e.to_string()))?,
         nonce: pay
             .get(field::CHALLENGE)
             .and_then(Value::as_str)
@@ -275,7 +281,7 @@ pub fn parse_request(request: &LoginRequest) -> Result<ParsedRequest, VerifyErro
 pub async fn sign_request<S: Signer>(
     signer: &S,
     audience: &str,
-    pg: &str,
+    pg: &PrincipalGenesis,
     now: i64,
     challenge: Option<&CozJson>,
     channel: Option<&[u8]>,
@@ -283,7 +289,7 @@ pub async fn sign_request<S: Signer>(
     let mut pay = Map::new();
     pay.insert("alg".into(), signer.alg().into());
     pay.insert("now".into(), now.into());
-    pay.insert(field::PG.into(), pg.into());
+    pay.insert(field::PG.into(), pg.to_string().into());
     pay.insert("tmb".into(), signer.tmb().to_b64().into());
     pay.insert(
         "typ".into(),

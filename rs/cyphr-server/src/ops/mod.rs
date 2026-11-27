@@ -18,6 +18,7 @@ pub mod snapshot;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use cyphr::PrincipalGenesis;
 use cyphr_storage::index::Indexer;
 
 use crate::AppState;
@@ -85,7 +86,9 @@ pub(crate) fn open(config: &ServerConfig) -> Result<AppState, OpsError> {
 
 /// Commit counts per stored principal, after healing the index from the
 /// durable manifests (the index is a cache, I1).
-pub(crate) async fn commit_counts(state: &AppState) -> Result<BTreeMap<String, u64>, OpsError> {
+pub(crate) async fn commit_counts(
+    state: &AppState,
+) -> Result<BTreeMap<PrincipalGenesis, u64>, OpsError> {
     state
         .engine
         .rebuild_index_from_manifests()

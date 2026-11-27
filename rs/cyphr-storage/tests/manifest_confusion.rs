@@ -56,7 +56,7 @@ fn load_golden(category: &str, name: &str) -> serde_json::Value {
     serde_json::from_str(&content).unwrap_or_else(|e| panic!("failed to parse {path:?}: {e}"))
 }
 
-fn genesis_of(fixture: &serde_json::Value) -> (Genesis, String) {
+fn genesis_of(fixture: &serde_json::Value) -> (Genesis, cyphr::PrincipalGenesis) {
     let gk = &fixture["genesis_keys"][0];
     let key = cyphr::Key::new(
         gk["alg"].as_str().unwrap().to_string(),
@@ -134,17 +134,22 @@ pub fn wire(blobs: &[Vec<u8>]) -> cyphr::replay::WireBundle {
     bundle
 }
 
+/// An id no principal owns.
+fn fake_pg(tag: u8) -> cyphr::PrincipalGenesis {
+    cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![tag; 32]).expect("valid id")
+}
+
 fn fake_digest(tag: u8) -> String {
     format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[tag; 32]))
 }
 
 /// A forged commit naming `principal_id`, at `sequence`.
-fn forged(principal_id: &str, sequence: u64, tag: u8) -> IndexableCommit {
+fn forged(principal_id: &cyphr::PrincipalGenesis, sequence: u64, tag: u8) -> IndexableCommit {
     let hash = Blake3Hash::from_bytes([tag; 32]);
     IndexableCommit {
         pg: Vec::new(),
         manifest: None,
-        principal_id: principal_id.to_string(),
+        principal_id: principal_id.clone(),
         commit_ids: vec![fake_digest(tag)],
         sequence,
         pre: None,
@@ -181,7 +186,7 @@ fn craft(mut blobs: Vec<serde_json::Value>, commit: &IndexableCommit) -> Vec<Vec
 
 async fn submit(
     engine: &Engine,
-    id: &str,
+    id: &cyphr::PrincipalGenesis,
     genesis: &Genesis,
     blobs: &[Vec<u8>],
 ) -> Result<(), cyphr_storage::engine::EngineError> {
@@ -193,7 +198,10 @@ async fn submit(
 
 /// Push `fixture`'s genesis commit (`commits[0]`) alone, so its later
 /// lines meet an established principal (a data action needs one).
-async fn push_genesis(engine: &Engine, fixture: &serde_json::Value) -> (Genesis, String) {
+async fn push_genesis(
+    engine: &Engine,
+    fixture: &serde_json::Value,
+) -> (Genesis, cyphr::PrincipalGenesis) {
     let (g, id) = genesis_of(fixture);
     let blobs: Vec<Vec<u8>> = raw_blobs(&fixture["commits"][0])
         .iter()
@@ -205,7 +213,10 @@ async fn push_genesis(engine: &Engine, fixture: &serde_json::Value) -> (Genesis,
     (g, id)
 }
 
-async fn submit_honest(engine: &Engine, fixture: &serde_json::Value) -> (Genesis, String) {
+async fn submit_honest(
+    engine: &Engine,
+    fixture: &serde_json::Value,
+) -> (Genesis, cyphr::PrincipalGenesis) {
     let (g, id) = genesis_of(fixture);
     for c in fixture["commits"].as_array().unwrap() {
         let blobs: Vec<Vec<u8>> = raw_blobs(c)
@@ -219,7 +230,7 @@ async fn submit_honest(engine: &Engine, fixture: &serde_json::Value) -> (Genesis
     (g, id)
 }
 
-async fn principals(engine: &Engine) -> Vec<(String, String, u64)> {
+async fn principals(engine: &Engine) -> Vec<(cyphr::PrincipalGenesis, String, u64)> {
     let mut p: Vec<_> = engine
         .indexer()
         .list_principals()
@@ -264,7 +275,7 @@ async fn crafted_transaction_blob_cannot_rewrite_another_principals_tip() {
     let others: Vec<_> = principals(&e)
         .await
         .into_iter()
-        .filter(|p| !p.0.ends_with(aid.split(':').next_back().unwrap()))
+        .filter(|p| p.0 != aid)
         .collect();
     assert_eq!(others, before_others);
 }
@@ -281,7 +292,7 @@ async fn crafted_action_blob_cannot_invent_a_principal() {
     let victim_fx = load_golden("edge_cases", "transaction_replay_order");
     let (_, victim) = submit_honest(&e, &victim_fx).await;
     let before = e.get_tip(&victim).await.unwrap().unwrap();
-    let phantom = fake_digest(0x20);
+    let phantom = fake_pg(0x20);
 
     let fx = load_golden("actions", "action_alone_leaves_pr");
     let (ag, aid) = push_genesis(&e, &fx).await;
@@ -340,7 +351,7 @@ async fn rebuild_recovers_exactly_the_honest_manifests() {
 /// sync (`sync.rs`): genesis comes from storage or from the blobs.
 async fn submit_as_witness(
     engine: &Engine,
-    id: &str,
+    id: &cyphr::PrincipalGenesis,
     blobs: &[Vec<u8>],
 ) -> Result<(), EngineError> {
     engine
@@ -432,7 +443,7 @@ async fn via_action_only_bundle_cannot_plant_aliases_or_digests() {
     let before = principals(&e).await;
 
     let mut hostile = forged(&aid, 0, 0x40);
-    hostile.pg = vec![victim.clone(), fake_digest(0x41)];
+    hostile.pg = vec![victim.to_string(), fake_digest(0x41)];
     let blobs = craft(
         raw_blobs_disclosing_genesis(&fx, &fx["commits"][1]),
         &hostile,
@@ -441,7 +452,7 @@ async fn via_action_only_bundle_cannot_plant_aliases_or_digests() {
 
     e.rebuild_index_from_scratch().await.unwrap();
 
-    assert!(e.get_tip(&fake_digest(0x41)).await.unwrap().is_none());
+    assert!(e.get_tip(&fake_pg(0x41)).await.unwrap().is_none());
     assert_eq!(
         e.get_tip(&victim).await.unwrap().unwrap().principal_id,
         victim,
@@ -514,7 +525,7 @@ async fn canonical_unsigned_extras_are_not_stored() {
         ("kind", MANIFEST_KIND.into()),
         (
             "commit",
-            serde_json::to_value(forged("x", 0, 0x50)).unwrap(),
+            serde_json::to_value(forged(&fake_pg(0x51), 0, 0x50)).unwrap(),
         ),
         ("typ", "cyphr.me/cyphr/key/create".into()),
     ]);
@@ -657,7 +668,7 @@ struct TipFailsAfterStore {
 impl Indexer for TipFailsAfterStore {
     fn get_tip(
         &self,
-        principal_id: &str,
+        principal_id: &cyphr::PrincipalGenesis,
     ) -> impl Future<Output = Result<Option<TipState>, IndexerError>> + Send {
         let fail = self.stored.load(Ordering::SeqCst);
         let inner = self.inner.get_tip(principal_id);
@@ -671,14 +682,14 @@ impl Indexer for TipFailsAfterStore {
 
     fn is_pg_established(
         &self,
-        principal_id: &str,
+        principal_id: &cyphr::PrincipalGenesis,
     ) -> impl Future<Output = Result<bool, IndexerError>> + Send {
         self.inner.is_pg_established(principal_id)
     }
 
     fn get_commit_chain(
         &self,
-        principal_id: &str,
+        principal_id: &cyphr::PrincipalGenesis,
         from: Option<u64>,
         to: Option<u64>,
     ) -> impl Future<Output = Result<Vec<CommitRef>, IndexerError>> + Send {
@@ -732,7 +743,7 @@ impl IndexerWrite for TipFailsAfterStore {
 
     fn replace_chain_from(
         &self,
-        principal_id: &str,
+        principal_id: &cyphr::PrincipalGenesis,
         sequence: u64,
         commits: &[IndexableCommit],
         token: &DeriveToken,
@@ -818,7 +829,7 @@ async fn rebuild_refuses_legacy_manifest_shaped_wire_blobs() {
     let e = engine();
     let legacy = serde_json::to_vec(&serde_json::json!({
         "kind": MANIFEST_KIND,
-        "commit": forged(&fake_digest(0x60), 0, 0x61),
+        "commit": forged(&fake_pg(0x60), 0, 0x61),
     }))
     .unwrap();
     cyphr_storage::blob::BlobStore::put(e.blob_store(), &legacy)
@@ -828,13 +839,7 @@ async fn rebuild_refuses_legacy_manifest_shaped_wire_blobs() {
     let err = e.rebuild_index_from_manifests().await.expect_err("refused");
     assert!(matches!(err, EngineError::LegacyManifest { .. }), "{err:?}");
     assert!(principals(&e).await.is_empty());
-    assert!(
-        e.indexer()
-            .get_tip(&fake_digest(0x60))
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(e.indexer().get_tip(&fake_pg(0x60)).await.unwrap().is_none());
 }
 
 /// The index state a hostile blob could try to move.
@@ -856,7 +861,10 @@ async fn snapshot(e: &Engine, probes: &[String]) -> String {
         lines.push(format!("{p:?} {tip:?} {chain:?}"));
     }
     for d in probes {
-        let alias = e.indexer().get_tip(d).await.unwrap();
+        let alias = match d.parse::<cyphr::PrincipalGenesis>() {
+            Ok(pg) => e.indexer().get_tip(&pg).await.unwrap(),
+            Err(_) => None,
+        };
         let entity = match d.parse::<cyphr::state::TaggedDigest>() {
             Ok(t) => e.indexer().resolve_digest(&t).await.unwrap(),
             Err(_) => None,
@@ -891,8 +899,13 @@ fn hostile() -> impl Strategy<Value = Option<Hostile>> {
 
 /// Serialize `blobs` with the manifest members; optionally spell the
 /// `kind` key with a JSON escape so no byte-string match can find it.
-fn craft_with(blobs: Vec<serde_json::Value>, h: &Hostile, victim: &str, own: &str) -> Vec<Vec<u8>> {
-    let target = [victim.to_string(), own.to_string(), fake_digest(0x70)][h.target].clone();
+fn craft_with(
+    blobs: Vec<serde_json::Value>,
+    h: &Hostile,
+    victim: &cyphr::PrincipalGenesis,
+    own: &cyphr::PrincipalGenesis,
+) -> Vec<Vec<u8>> {
+    let target = [victim.clone(), own.clone(), fake_pg(0x70)][h.target].clone();
     let mut commit = forged(&target, h.sequence, h.tag);
     if h.pg_victim {
         commit.pg = vec![victim.to_string(), fake_digest(h.tag ^ 9)];
@@ -908,7 +921,10 @@ fn craft_with(blobs: Vec<serde_json::Value>, h: &Hostile, victim: &str, own: &st
 
 /// Run honest victim history plus the attacker's three commits, each
 /// optionally carrying a hostile manifest-shaped blob.
-async fn run(plan: &[Option<Hostile>], hostile_on: bool) -> (Engine, String, Vec<String>) {
+async fn run(
+    plan: &[Option<Hostile>],
+    hostile_on: bool,
+) -> (Engine, cyphr::PrincipalGenesis, Vec<String>) {
     let e = engine();
     let (_, victim) =
         submit_honest(&e, &load_golden("edge_cases", "transaction_replay_order")).await;
@@ -925,7 +941,10 @@ async fn run(plan: &[Option<Hostile>], hostile_on: bool) -> (Engine, String, Vec
         };
         let _ = submit(&e, &aid, &g, &blobs).await;
     }
-    let probes = (0u8..16).map(fake_digest).chain([victim.clone()]).collect();
+    let probes = (0u8..16)
+        .map(fake_digest)
+        .chain([victim.to_string()])
+        .collect();
     (e, victim, probes)
 }
 
@@ -1013,7 +1032,7 @@ async fn rebuild_quarantines_manifest_not_bound_to_its_blobs() {
                 .unwrap(),
         );
     }
-    let phantom = fake_digest(0x70);
+    let phantom = fake_pg(0x70);
     let mut foreign = forged(&phantom, 0, 0x71);
     let mut second = foreign.cozies[0].clone();
     second.czd = fake_digest(0x72);
@@ -1033,10 +1052,7 @@ async fn rebuild_quarantines_manifest_not_bound_to_its_blobs() {
         matches!(report.quarantined[0].reason, QuarantineReason::Unbound(_)),
         "{report:?}"
     );
-    assert_eq!(
-        report.quarantined[0].principal_id.as_deref(),
-        Some(phantom.as_str())
-    );
+    assert_eq!(report.quarantined[0].principal_id.as_ref(), Some(&phantom));
     assert!(
         principals(&e).await.iter().any(|p| p.0 != phantom),
         "the honest principal still rebuilt"
@@ -1219,7 +1235,7 @@ mod replay {
     }
     pub async fn push<B: BlobStore, I: Indexer + IndexerWrite>(
         e: &StorageEngine<B, I>,
-        id: &str,
+        id: &cyphr::PrincipalGenesis,
         blobs: &[Vec<u8>],
     ) -> Result<IngestResult, EngineError> {
         e.submit_commit(id, None, &super::wire(blobs)).await
@@ -1231,7 +1247,7 @@ mod replay {
     pub async fn established<B: BlobStore, I: Indexer + IndexerWrite>(
         e: &StorageEngine<B, I>,
         pk: &test_fixtures::PoolKey,
-    ) -> (String, cyphr::Principal) {
+    ) -> (cyphr::PrincipalGenesis, cyphr::Principal) {
         let id = genesis_principal_id(&Genesis::Implicit(dk(pk))).unwrap();
         let mut client = cyphr::Principal::implicit(dk(pk)).await.unwrap();
         let blobs = test_fixtures::bundle::genesis_bundle(&mut client, pk, &[], T)
@@ -1246,7 +1262,7 @@ mod replay {
     /// The attacker principal (bob) adds the victim's (alice) public key.
     pub async fn attacker_with_victim_key<B: BlobStore, I: Indexer + IndexerWrite>(
         e: &StorageEngine<B, I>,
-    ) -> (String, cyphr::Principal) {
+    ) -> (cyphr::PrincipalGenesis, cyphr::Principal) {
         let p = pool();
         let (bob, alice) = (p.get("bob").unwrap(), p.get("alice").unwrap());
         let (aid, mut client) = established(e, bob).await;
@@ -1272,8 +1288,8 @@ mod replay {
 
     /// What a scenario leaves behind.
     pub struct Outcome {
-        pub vid: String,
-        pub aid: String,
+        pub vid: cyphr::PrincipalGenesis,
+        pub aid: cyphr::PrincipalGenesis,
         /// The replayed coz's czd.
         pub czd: cyphr::state::TaggedDigest,
         /// The victim's own push, made after the attacker replayed first.
@@ -1432,7 +1448,7 @@ mod replay {
     pub async fn holder_ids<B: BlobStore, I: Indexer + IndexerWrite>(
         e: &StorageEngine<B, I>,
         d: &cyphr::state::TaggedDigest,
-    ) -> Vec<String> {
+    ) -> Vec<cyphr::PrincipalGenesis> {
         e.indexer()
             .resolve_digest_holders(d)
             .await
@@ -1442,7 +1458,7 @@ mod replay {
             .collect()
     }
 
-    pub fn sorted(mut v: Vec<String>) -> Vec<String> {
+    pub fn sorted(mut v: Vec<cyphr::PrincipalGenesis>) -> Vec<cyphr::PrincipalGenesis> {
         v.sort();
         v
     }
@@ -1731,7 +1747,7 @@ async fn rebuild_quarantines_unindexable_manifests() {
     cyphr_storage::blob::BlobStore::put(e.blob_store(), &garbage)
         .await
         .unwrap();
-    let mut missing = forged(&fake_digest(0x80), 0, 0x81);
+    let mut missing = forged(&fake_pg(0x80), 0, 0x81);
     missing.blob_hashes = vec![Blake3Hash::from_bytes([0x82; 32])];
     missing.cozies[0].blob_hash = Blake3Hash::from_bytes([0x82; 32]);
     plant_manifest(&e, &missing).await;

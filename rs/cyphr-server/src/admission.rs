@@ -28,6 +28,7 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use cyphr::PrincipalGenesis;
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use futures::future::BoxFuture;
 use serde::Deserialize;
@@ -52,7 +53,7 @@ const STATE_CONSUMED: &[u8] = b"C";
 /// A residency probe: given a principal id, resolve whether it already has a
 /// resident tip. The sole protocol fact admission reads, reduced to a `bool`
 /// so no protocol type crosses into this module.
-pub type ResidentProbe = Arc<dyn Fn(String) -> BoxFuture<'static, bool> + Send + Sync>;
+pub type ResidentProbe = Arc<dyn Fn(PrincipalGenesis) -> BoxFuture<'static, bool> + Send + Sync>;
 
 /// Failures constructing or operating the admission fence.
 #[derive(Debug, thiserror::Error)]
@@ -370,10 +371,10 @@ fn refuse(status: StatusCode, error: &str) -> Response {
 /// parseable `principal_id` is.
 #[derive(Deserialize)]
 struct PrincipalIdPeek {
-    principal_id: String,
+    principal_id: PrincipalGenesis,
 }
 
-fn peek_principal_id(bytes: &[u8]) -> Option<String> {
+fn peek_principal_id(bytes: &[u8]) -> Option<PrincipalGenesis> {
     serde_json::from_slice::<PrincipalIdPeek>(bytes)
         .ok()
         .map(|peek| peek.principal_id)

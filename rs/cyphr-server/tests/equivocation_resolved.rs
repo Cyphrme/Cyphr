@@ -95,7 +95,7 @@ async fn resolved_fork() -> Resolved {
         .await
         .expect("genesis");
     let id = test_fixtures::bundle::genesis_id(&genesis).expect("id");
-    let enc = id.replace(':', "%3A");
+    let enc = id.to_string().replace(':', "%3A");
     let push = |b: WireBundle| {
         let app = app.clone();
         let id = id.clone();

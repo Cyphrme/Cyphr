@@ -20,6 +20,7 @@
 //! `COMMIT_MANIFEST_KIND` constant, neither reachable from this external
 //! test crate.
 
+use cyphr::{HashAlg, PrincipalGenesis};
 use cyphr_storage::blob::{Blake3Hash, BlobStore, MemoryBlobStore};
 use cyphr_storage::engine::StorageEngine;
 use cyphr_storage::index::{IndexableCommit, IndexableCoz, MemoryIndexer};
@@ -40,14 +41,19 @@ struct RawManifest<'a> {
     shape: serde_json::Value,
 }
 
+/// A valid-but-arbitrary principal id.
+fn pg(n: u8) -> PrincipalGenesis {
+    PrincipalGenesis::from_digest(HashAlg::Sha256, vec![n; 32]).expect("pg")
+}
+
 /// Build a durable-shaped commit for a given principal/sequence/timestamp,
 /// mirroring `engine::tests::make_meta`'s fixture shape.
-fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
+fn make_commit(principal_id: &PrincipalGenesis, seq: u64, timestamp: i64) -> IndexableCommit {
     let dummy_hash = Blake3Hash::from_bytes([0; 32]);
     IndexableCommit {
         pg: Vec::new(),
         manifest: None,
-        principal_id: principal_id.to_string(),
+        principal_id: principal_id.clone(),
         commit_ids: vec![format!("SHA-256:commit-{principal_id}-{seq}")],
         sequence: seq,
         pre: if seq == 0 {
@@ -102,8 +108,8 @@ async fn write_orphan_manifest(blob_store: &MemoryBlobStore, commit: &IndexableC
 /// `rebuild_index_from_manifests()` call anywhere in this test.
 #[tokio::test]
 async fn crash_heals_at_plain_engine_open() {
-    let principal_id = "alice";
-    let commit = make_commit(principal_id, 0, 1000);
+    let principal_id = pg(1);
+    let commit = make_commit(&principal_id, 0, 1000);
 
     let blob_store = MemoryBlobStore::new();
     write_orphan_manifest(&blob_store, &commit).await;
@@ -113,7 +119,7 @@ async fn crash_heals_at_plain_engine_open() {
     let engine = StorageEngine::new(blob_store, MemoryIndexer::new());
 
     let tip = engine
-        .get_tip(principal_id)
+        .get_tip(&principal_id)
         .await
         .expect("get_tip failed")
         .expect(
@@ -130,8 +136,8 @@ async fn crash_heals_at_plain_engine_open() {
 /// double-index or otherwise mutate the tip.
 #[tokio::test]
 async fn heal_is_idempotent_across_repeated_opens() {
-    let principal_id = "bob";
-    let commit = make_commit(principal_id, 0, 2000);
+    let principal_id = pg(2);
+    let commit = make_commit(&principal_id, 0, 2000);
 
     let blob_store = MemoryBlobStore::new();
     write_orphan_manifest(&blob_store, &commit).await;
@@ -141,14 +147,14 @@ async fn heal_is_idempotent_across_repeated_opens() {
     // restart would produce.
     let first_open = StorageEngine::new(blob_store.clone(), MemoryIndexer::new());
     let first_tip = first_open
-        .get_tip(principal_id)
+        .get_tip(&principal_id)
         .await
         .unwrap()
         .expect("first open must heal");
 
     let second_open = StorageEngine::new(blob_store.clone(), MemoryIndexer::new());
     let second_tip = second_open
-        .get_tip(principal_id)
+        .get_tip(&principal_id)
         .await
         .unwrap()
         .expect("second open must heal identically");
@@ -159,7 +165,7 @@ async fn heal_is_idempotent_across_repeated_opens() {
     // Repeated reads against the SAME already-healed instance must not
     // re-trigger indexing or otherwise change the tip.
     for _ in 0..3 {
-        let tip_again = first_open.get_tip(principal_id).await.unwrap().unwrap();
+        let tip_again = first_open.get_tip(&principal_id).await.unwrap().unwrap();
         assert_eq!(
             tip_again.commit_count, 1,
             "repeated reads on an already-healed instance must not double-index"

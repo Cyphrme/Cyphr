@@ -19,6 +19,7 @@
 use std::fmt::Write as _;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,7 +46,7 @@ pub struct PeerKey {
 #[derive(Debug, Clone, Copy)]
 pub struct PatchRequest<'a> {
     /// The principal to sync.
-    pub principal_id: &'a str,
+    pub principal_id: &'a PrincipalGenesis,
     /// The resync anchor: the caller's current tip PR digest, absent when
     /// it holds nothing yet and wants a full resync from genesis.
     pub anchor: Option<&'a str>,
@@ -58,7 +59,7 @@ impl PatchRequest<'_> {
     /// request; the encoding must not depend on any other guard.
     #[must_use]
     pub fn target(&self) -> String {
-        let pr = percent_encode_query_value(self.principal_id);
+        let pr = percent_encode_query_value(&self.principal_id.to_string());
         match self.anchor {
             Some(anchor) => format!("/patch?pg={pr}&from={}", percent_encode_query_value(anchor)),
             None => format!("/patch?pg={pr}"),
@@ -290,9 +291,12 @@ pub async fn fetch_patch_keyed<C: Connector>(
 /// hold; any other carrier failure.
 pub async fn fetch_tip_body<C: Connector>(
     connector: &C,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
 ) -> Result<Vec<u8>, PatchFailure> {
-    let target = format!("/tip?pg={}", percent_encode_query_value(principal_id));
+    let target = format!(
+        "/tip?pg={}",
+        percent_encode_query_value(&principal_id.to_string())
+    );
     Ok(connector.exchange(&Request::get(target)).await?)
 }
 
@@ -343,7 +347,7 @@ fn check_binding<C: Connector>(connector: &C, policy: BindingPolicy) -> Result<(
 /// entry is decoded, so a refusal hands the caller nothing to apply.
 pub fn verify_patch_body(
     body: &[u8],
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     expected: Option<&PeerKey>,
 ) -> Result<VerifiedPatch, PatchFailure> {
     let body: Value = serde_json::from_slice(body)
@@ -517,15 +521,15 @@ pub enum Statement {
 pub fn verify_authenticated_envelope(
     body: &Value,
     expected: &PeerKey,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
 ) -> Result<TipReport, PatchFailure> {
     let coz = signed_by(body, expected)?;
     let report = TipReport::parse(&coz).map_err(|_| PatchFailure::MalformedReport)?;
 
-    // `report.pg` (a bare b64ut genesis identifier, SPEC section 2.2.3's
-    // default form) and the bare form of `principal_id` share one wire
-    // form: a direct string comparison, no re-encoding.
-    if report.pg.to_string() != bare_digest(principal_id) {
+    // `report.pg` is the statement's bare b64ut genesis identifier (SPEC
+    // section 2.2.3's default form): it names `principal_id` when it is
+    // the digest of the id.
+    if !principal_id.names_wire_digest(&report.pg.to_string()) {
         return Err(PatchFailure::PrincipalMismatch);
     }
 
@@ -544,11 +548,11 @@ pub fn verify_authenticated_envelope(
 pub fn verify_held_envelope(
     body: &Value,
     expected: &PeerKey,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
 ) -> Result<HeldReport, PatchFailure> {
     let coz = signed_by(body, expected)?;
     let report = HeldReport::parse(&coz).map_err(|_| PatchFailure::MalformedReport)?;
-    if report.pg.to_string() != bare_digest(principal_id) {
+    if !principal_id.names_wire_digest(&report.pg.to_string()) {
         return Err(PatchFailure::PrincipalMismatch);
     }
     Ok(report)
@@ -579,12 +583,6 @@ fn signature_verifies(coz: &coz::CozJson, pub_key: &[u8]) -> bool {
         return false;
     };
     coz::verify_json(&pay_json, &coz.sig, alg, pub_key) == Some(true)
-}
-
-/// The digest part of a labelled id (`ALG:digest`); an unlabelled id is
-/// returned as is.
-fn bare_digest(id: &str) -> &str {
-    id.split_once(':').map_or(id, |(_, digest)| digest)
 }
 
 /// Percent-encode `value` for use as one query-string component, escaping
@@ -630,6 +628,10 @@ mod tests {
         .unwrap()
     }
 
+    fn pid() -> PrincipalGenesis {
+        PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![1; 32]).expect("valid id")
+    }
+
     /// Claim: a client fails closed on a response envelope version it does
     /// not know: the typed `UnsupportedVersion`, with nothing handed back to apply, even
     /// when no authority key is supplied. A known version still decodes.
@@ -638,9 +640,9 @@ mod tests {
     /// is `s10_hostile`, gated on transport.
     #[test]
     fn version_patch_envelope_unknown_is_refused() {
-        verify_patch_body(&patch_body(1), "pid", None).expect("v1 decodes");
+        verify_patch_body(&patch_body(1), &pid(), None).expect("v1 decodes");
         for unknown in [0u64, 99] {
-            let refused = verify_patch_body(&patch_body(unknown), "pid", None).err();
+            let refused = verify_patch_body(&patch_body(unknown), &pid(), None).err();
             assert!(
                 matches!(
                     refused,

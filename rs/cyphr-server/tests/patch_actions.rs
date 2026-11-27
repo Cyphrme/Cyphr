@@ -48,7 +48,7 @@ fn wire(pay: &[u8], sig: &[u8]) -> Vec<u8> {
     .expect("coz")
 }
 
-fn push_body(id: &str, blobs: &[Vec<u8>]) -> String {
+fn push_body(id: &cyphr::PrincipalGenesis, blobs: &[Vec<u8>]) -> String {
     common::push_blobs(id, blobs)
 }
 
@@ -86,7 +86,7 @@ async fn fresh_client_replays_a_chain_holding_a_ds_create() {
     let mut p = Principal::implicit(g.key().expect("golden key"))
         .await
         .expect("implicit genesis");
-    let id = p.pr_tagged().expect("PG");
+    let id = p.pr_id().expect("PG");
     let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T)
         .await
         .expect("genesis");
@@ -167,13 +167,18 @@ async fn fresh_client_replays_a_chain_holding_a_ds_create() {
 /// and its id; the genesis is pushed when `push_genesis` is set.
 async fn principal_on_server(
     push_genesis: bool,
-) -> (axum::Router, Principal, String, test_fixtures::Pool) {
+) -> (
+    axum::Router,
+    Principal,
+    cyphr::PrincipalGenesis,
+    test_fixtures::Pool,
+) {
     let pool = load_pool();
     let g = pool.get("golden").expect("golden");
     let mut p = Principal::implicit(g.key().expect("golden key"))
         .await
         .expect("implicit genesis");
-    let id = p.pr_tagged().expect("PG");
+    let id = p.pr_id().expect("PG");
     let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T)
         .await
         .expect("genesis");

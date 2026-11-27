@@ -56,7 +56,9 @@ async fn line(g: &Kp, keys: &[&Kp], t: i64) -> Line {
 
 struct Fixture {
     g: Kp,
+    /// The bare digest the server's evidence items carry on the wire.
     pg: String,
+    id: cyphr::PrincipalGenesis,
     canonical: Line,
     rival: Line,
     /// A branch of the same principal no served item forks from.
@@ -151,6 +153,9 @@ fn fixture() -> &'static Fixture {
             let sibling = line(&g, &[refs[DEPTH], refs[3 * DEPTH]], t).await;
             Fixture {
                 pg: g.tmb.to_b64(),
+                id: format!("SHA-512:{}", g.tmb.to_b64())
+                    .parse()
+                    .expect("labelled id"),
                 g,
                 canonical,
                 rival,
@@ -182,7 +187,7 @@ fn verdict(items: &[Value]) -> (BTreeSet<String>, BTreeSet<String>, usize) {
                 .collect();
         let ids: Vec<Option<String>> = f.canonical.ids.iter().cloned().map(Some).collect();
         let refs: Vec<&Value> = items.iter().collect();
-        let set = verify_fork_items(&refs, &f.pg, &base, &entries, &ids).await;
+        let set = verify_fork_items(&refs, &f.id, &base, &entries, &ids).await;
         let forks = set
             .forks
             .iter()
@@ -308,7 +313,7 @@ fn archrev_b2_honest_items_are_not_rejected_for_a_holder_on_the_other_branch() {
         let ids: Vec<Option<String>> = f.rival.ids.iter().cloned().map(Some).collect();
         let items: Vec<Value> = (1..=DEPTH).map(|h| f.valid(h)).collect();
         let refs: Vec<&Value> = items.iter().collect();
-        let set = verify_fork_items(&refs, &f.pg, &base, &entries, &ids).await;
+        let set = verify_fork_items(&refs, &f.id, &base, &entries, &ids).await;
         assert_eq!(set.forks.len(), 1, "the fork at 1 is proved");
         assert!(
             set.rejected.is_empty(),

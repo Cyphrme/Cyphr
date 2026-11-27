@@ -152,7 +152,7 @@ impl Connector for Fake {
 }
 
 /// A record of `held`, filled by one pull from a peer that serves it.
-async fn record_of(pg: &str, g: &Kp, held: &Line) -> Record {
+async fn record_of(pg: &cyphr::PrincipalGenesis, g: &Kp, held: &Line) -> Record {
     let mut rec = Record::new(pg, Anchor::GenesisKey(g.domain_key(T0))).with_clock(CLOCK);
     let source = Fake::new(held);
     pull(
@@ -180,7 +180,7 @@ async fn record_of(pg: &str, g: &Kp, held: &Line) -> Record {
 #[tokio::test]
 async fn whenever_a_peer_is_idle_a_full_pull_adds_nothing() {
     let (g, k1, k2, k3, k4) = (kp(), kp(), kp(), kp(), kp());
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let (c1, c2, c3) = ((&k1, T0 + 100), (&k2, T0 + 200), (&k3, T0 + 300));
     let held = line(&g, &[c1, c2]).await;
     let behind = line(&g, &[c1]).await;

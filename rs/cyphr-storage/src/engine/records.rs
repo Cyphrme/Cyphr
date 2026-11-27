@@ -181,7 +181,7 @@ pub const RESYNC_RECORD_PREFIX: &[u8] = b"\0cyphr-storage/resync-record/v1\0";
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct ResyncRecord {
     /// The canonical id of the principal whose tip the PoP asserts.
-    pub(super) principal_id: String,
+    pub(super) principal_id: cyphr::PrincipalGenesis,
     /// The asserted tip's PR: the coz's `id`.
     pub(super) tip: String,
     /// The verified `{pay, sig}` coz as received.
@@ -221,7 +221,7 @@ pub const ACTION_MANIFEST_PREFIX: &[u8] = b"\0cyphr-storage/action-manifest/v1\0
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct ActionManifest {
     pub(super) kind: String,
-    pub(super) principal_id: String,
+    pub(super) principal_id: cyphr::PrincipalGenesis,
     pub(super) blob_hashes: Vec<Blake3Hash>,
     /// As on [`CommitManifest`]: the embedded principals the actions were
     /// judged through, absent (and the manifest byte-identical to one

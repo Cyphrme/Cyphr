@@ -21,6 +21,7 @@
 //! property exists to survive, not a client-facing feature.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr_blob_fjall::FjallBlobStore;
 use cyphr_blob_fjall::storage_fjall::FjallStorage;
 use cyphr_index_fjall::FjallIndexer;
@@ -66,7 +67,7 @@ fn build_bundle(commit: &serde_json::Value) -> cyphr::replay::WireBundle {
 
 async fn submit_all_commits(
     engine: &StorageEngine<FjallBlobStore, FjallIndexer, FjallStorage>,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     genesis_key: &cyphr::Key,
     commits: &[serde_json::Value],
 ) {
@@ -94,7 +95,7 @@ struct EmlSnapshot {
 
 async fn snapshot(
     engine: &StorageEngine<FjallBlobStore, FjallIndexer, FjallStorage>,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     genesis: Genesis,
 ) -> EmlSnapshot {
     let principal = engine
@@ -132,7 +133,7 @@ async fn snapshot(
 
 /// Destroy `principal_id`'s durable EML log -- a real, observable deletion
 /// of every key of its scope, not a fresh store that never had the data.
-fn delete_principal_eml_log(db: &fjall::Database, principal_id: &str) {
+fn delete_principal_eml_log(db: &fjall::Database, principal_id: &PrincipalGenesis) {
     let logs = cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs");
     let generation = LogFactory::<FjallStorage>::generation(&logs, principal_id)
         .unwrap_or_else(|e| panic!("generation of {principal_id}: {e}"));
@@ -176,7 +177,7 @@ async fn replay_reconstructs_eml_after_keyspace_deletion() {
     let principal_id_b =
         cyphr_storage::engine::genesis_principal_id(&Genesis::Implicit(genesis_key_b.clone()))
             .expect("genesis-derived id b");
-    let (principal_id_a, principal_id_b) = (principal_id_a.as_str(), principal_id_b.as_str());
+    let (principal_id_a, principal_id_b) = (&principal_id_a, &principal_id_b);
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");

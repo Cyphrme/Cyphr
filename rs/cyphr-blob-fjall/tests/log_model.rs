@@ -1,8 +1,8 @@
 //! Property: `EmlLogs` behaves as a model of per-principal, per-generation
 //! logs over any interleaving of appends, regenerations, interrupted
 //! regenerations, crashes between recording a generation and retiring its
-//! predecessor, and reopens, for principal ids that are byte-prefixes of
-//! one another.
+//! predecessor, and reopens, for principal ids that share long common
+//! prefixes (and, across hash variants, the same digest bytes).
 //!
 //! Claims checked after every operation:
 //!
@@ -17,6 +17,7 @@
 
 use std::collections::BTreeSet;
 
+use cyphr::{HashAlg, PrincipalGenesis};
 use cyphr_blob_fjall::EmlLogs;
 use cyphr_blob_fjall::storage_fjall::FjallStorage;
 use cyphr_storage::engine::LogFactory;
@@ -60,9 +61,23 @@ fn op() -> impl Strategy<Value = Op> {
     ]
 }
 
-/// Ids that are prefixes of one another by construction.
-fn principals() -> impl Strategy<Value = Vec<String>> {
-    prop::collection::btree_set("SHA-256:[ab]{0,3}", 2..5).prop_map(|ids| ids.into_iter().collect())
+/// Ids that agree on all but their last bytes, in one or two hash variants.
+fn principals() -> impl Strategy<Value = Vec<PrincipalGenesis>> {
+    prop::collection::btree_set((any::<bool>(), prop::collection::vec(0u8..2, 0..4)), 2..5)
+        .prop_map(|ids| {
+            ids.into_iter()
+                .map(|(wide, tail)| {
+                    let (alg, width) = if wide {
+                        (HashAlg::Sha384, 48)
+                    } else {
+                        (HashAlg::Sha256, 32)
+                    };
+                    let mut digest = vec![0xAA; width - tail.len()];
+                    digest.extend(tail);
+                    PrincipalGenesis::from_digest(alg, digest).expect("valid id")
+                })
+                .collect()
+        })
 }
 
 type Log = FjallStorage;
@@ -142,7 +157,7 @@ struct Model {
     unswept: bool,
 }
 
-async fn run(ids: Vec<String>, ops: Vec<Op>) {
+async fn run(ids: Vec<PrincipalGenesis>, ops: Vec<Op>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = Database::builder(dir.path()).open().expect("db");
     let mut logs = EmlLogs::new(db.clone()).expect("logs");
@@ -175,7 +190,7 @@ async fn run(ids: Vec<String>, ops: Vec<Op>) {
                 }
                 if crash {
                     generations
-                        .insert(ids[p].as_bytes(), next.to_be_bytes())
+                        .insert(ids[p].to_string().as_bytes(), next.to_be_bytes())
                         .expect("record");
                     // The crash is the process dying: a restart forgets
                     // which principals it has swept.

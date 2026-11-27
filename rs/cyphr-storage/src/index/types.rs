@@ -5,6 +5,8 @@
 //! protocol objects. The engine (Phase 3) bridges protocol types to
 //! these index-level representations.
 
+use cyphr::PrincipalGenesis;
+
 use crate::blob::Blake3Hash;
 
 /// Per-Coz metadata for the canonical event log.
@@ -39,7 +41,7 @@ pub struct IndexableCoz {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexableCommit {
     /// Principal genesis identifier (tagged digest string).
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     /// Commit ID variants (tagged digest strings).
     pub commit_ids: Vec<String>,
     /// Commit sequence number within this principal (0-indexed).
@@ -98,7 +100,7 @@ pub struct PublicKeyInfo {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct TipState {
     /// Principal genesis identifier.
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     /// Current Principal Root.
     pub pr: String,
     /// Current State Root; `None` for a Dead principal with no data.
@@ -170,7 +172,7 @@ pub struct EntityRef {
     /// only (`None` in a record written before this field existed): any
     /// authorisation decision must re-verify against replayed state.
     #[serde(default)]
-    pub principal_id: Option<String>,
+    pub principal_id: Option<PrincipalGenesis>,
     /// Whether this digest is a Principal Root variant (as opposed to a
     /// commit id, state, auth or commit root, or a coz digest). Lets a
     /// caller tell a PR claim from any other digest without loading
@@ -198,7 +200,7 @@ pub enum EntityType {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct PrincipalSummary {
     /// Principal genesis identifier.
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     /// Current Principal Root.
     pub pr: String,
     /// Total number of commits.

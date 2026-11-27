@@ -70,7 +70,7 @@ async fn freeze_create_commit_survives_reload() {
     let genesis = Genesis::Implicit(keys[0].clone());
     let principal_id =
         cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
@@ -126,7 +126,7 @@ async fn rebuild_index_from_manifests_survives_index_deletion() {
     let genesis = Genesis::Disclosed(keys);
     let principal_id =
         cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");

@@ -159,13 +159,18 @@ fn peer<'a>(name: &'a str, m: &'a Mirror) -> PullPeer<'a, Mirror> {
 
 /// A login signed by `by`, the request the principal's device hands the
 /// relying party for `challenge`.
-fn login(by: &Kp, pg: &str, audience: &str, challenge: &coz::CozJson) -> LoginRequest {
+fn login(
+    by: &Kp,
+    pg: &cyphr::PrincipalGenesis,
+    audience: &str,
+    challenge: &coz::CozJson,
+) -> LoginRequest {
     login_signed(by, pg, audience, challenge, None)
 }
 
 fn login_signed(
     by: &Kp,
-    pg: &str,
+    pg: &cyphr::PrincipalGenesis,
     audience: &str,
     challenge: &coz::CozJson,
     h: Option<&ChannelBinding>,
@@ -175,7 +180,7 @@ fn login_signed(
         "now": T0,
         "tmb": by.tmb.to_b64(),
         "typ": format!("{audience}{}", login::REQUEST_TYP_SUFFIX),
-        "pg": pg,
+        "pg": pg.to_string(),
         "challenge": challenge.pay["nonce"],
     });
     if let Some(h) = h {
@@ -188,9 +193,8 @@ fn login_signed(
 }
 
 /// A genesis commit opened by `opener` over `{opener} + others`: its line
-/// and bare PG.
-async fn genesis_over(opener: &Kp, others: &[&Kp]) -> (Line, String) {
-    use cyphr::StateDigest as _;
+/// and PG.
+async fn genesis_over(opener: &Kp, others: &[&Kp]) -> (Line, cyphr::PrincipalGenesis) {
     let mut p = cyphr::Principal::implicit(opener.domain_key(T0))
         .await
         .expect("genesis");
@@ -198,19 +202,13 @@ async fn genesis_over(opener: &Kp, others: &[&Kp]) -> (Line, String) {
     p.commit_genesis(&opener.signer(), &others, T0, "cyphr.me")
         .await
         .expect("genesis commit");
-    let tagged = p
-        .pg()
-        .expect("PG")
-        .as_multihash()
-        .tagged_first()
-        .expect("pg")
-        .to_string();
+    let pg = p.pg().expect("PG").clone();
     let line = Line {
         entries: vec![wire_commit(p.commits().last().expect("commit"))],
         prs: vec![p.pr_tagged().expect("pr")],
         ids: vec![commit_id(&p)],
     };
-    (line, tagged.split_once(':').expect("tagged").1.to_owned())
+    (line, pg)
 }
 
 static PIN_CLOCK: AtomicI64 = AtomicI64::new(T0);
@@ -240,8 +238,12 @@ async fn pin_decides_which_chain_the_relying_party_trusts() {
 
     // The PG is not a pin: handed over as a genesis commit id it matches no
     // commit, so even the honest chain gives no view.
-    let mut pg_only =
-        RelyingParty::new(&pg, Anchor::GenesisCommit(pg.clone()), config(), pin_clock);
+    let mut pg_only = RelyingParty::new(
+        &pg,
+        Anchor::GenesisCommit(pg.to_string()),
+        config(),
+        pin_clock,
+    );
     pg_only.refresh(&[peer("pinned", &pinned)]).await;
     let c = pg_only.challenge().expect("challenge");
     assert_eq!(
@@ -327,7 +329,7 @@ fn life_clock() -> i64 {
 #[tokio::test]
 async fn session_ends_on_stale_view_and_on_replayed_removal() {
     let (g, device) = (kp(), kp());
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let mut chain = Chain::new(&g).await;
     let mut line = Line::of(&chain);
     let blobs = chain.commit(&device, T0 + 50).await;
@@ -400,7 +402,7 @@ fn ttl_clock() -> i64 {
 #[tokio::test]
 async fn a_session_ends_at_its_lifetime_with_a_current_view() {
     let (g, device) = (kp(), kp());
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let mut chain = Chain::new(&g).await;
     let mut line = Line::of(&chain);
     let blobs = chain.commit(&device, T0 + 50).await;
@@ -453,7 +455,7 @@ fn sweep_clock() -> i64 {
 #[tokio::test]
 async fn an_expired_session_is_swept_at_the_next_sign_in() {
     let (g, device) = (kp(), kp());
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let mut chain = Chain::new(&g).await;
     let mut line = Line::of(&chain);
     let blobs = chain.commit(&device, T0 + 50).await;
@@ -506,7 +508,7 @@ async fn anchor_is_reported_and_subject_is_the_replayed_pg() {
     let (a, b) = (kp(), kp());
     let (line, pg) = genesis_over(&a, &[&b]).await;
     assert_ne!(
-        pg,
+        pg.wire_digest(),
         a.tmb.to_b64(),
         "the fixture's PG must differ from the anchor"
     );
@@ -530,7 +532,7 @@ async fn anchor_is_reported_and_subject_is_the_replayed_pg() {
         .expect("signed in");
     assert_eq!(session.principal, pg, "the subject is the replayed PG");
     assert_ne!(
-        session.principal,
+        session.principal.wire_digest(),
         a.tmb.to_b64(),
         "not the anchor's thumbprint"
     );
@@ -559,7 +561,7 @@ impl Connector for OnChannel {
 /// `by`'s login for `challenge`, signing the channel `h` into it when given.
 fn login_committing(
     by: &Kp,
-    pg: &str,
+    pg: &cyphr::PrincipalGenesis,
     challenge: &coz::CozJson,
     h: Option<&ChannelBinding>,
 ) -> LoginRequest {
@@ -581,7 +583,7 @@ fn login_committing(
 #[tokio::test]
 async fn login_commits_to_its_channel_and_the_token_stays_on_it() {
     let g = kp();
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let chain = Chain::new(&g).await;
     let mirror = Mirror::of(Line::of(&chain));
     BIND_CLOCK.store(T0 + 100, Ordering::SeqCst);
@@ -668,7 +670,7 @@ fn fork_clock() -> i64 {
 #[tokio::test]
 async fn archrev_b1_proved_fork_survives_a_pull_the_rival_peer_misses() {
     let (g, device, rival_key) = (kp(), kp(), kp());
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let mut honest = Chain::new(&g).await;
     let mut honest_line = Line::of(&honest);
     let blobs = honest.commit(&device, T0 + 50).await;
@@ -727,12 +729,17 @@ async fn grown(g: &Kp, grow: &[(&Kp, i64)]) -> Line {
 }
 
 /// A peer holding both branches of the fork at `height`, and proving it.
-fn forked_peer(pg: &str, canonical: &Line, rival: &Line, height: usize) -> Mirror {
+fn forked_peer(
+    pg: &cyphr::PrincipalGenesis,
+    canonical: &Line,
+    rival: &Line,
+    height: usize,
+) -> Mirror {
     let mut peer = Mirror::of(canonical.clone());
     peer.rival = Some(rival.clone());
     peer.evidence = vec![json!({
         "kind": "principal-fork",
-        "pg": pg,
+        "pg": pg.wire_digest(),
         "height": height,
         "pre": height.checked_sub(1).map(|i| canonical.prs[i].clone()),
         "a": entry_bundle(height, &canonical.entries[height]),
@@ -754,7 +761,7 @@ fn forked_peer(pg: &str, canonical: &Line, rival: &Line, height: usize) -> Mirro
 #[tokio::test]
 async fn a_relying_party_signs_in_after_the_fork_it_proved_is_resolved() {
     let (g, device, k2, k3, k4) = (kp(), kp(), kp(), kp(), kp());
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let c1 = (&device, T0 + 50);
     let standing = grown(&g, &[c1, (&k2, T0 + 60)]).await;
     let abandoned = grown(&g, &[c1, (&k3, T0 + 61)]).await;
@@ -804,7 +811,7 @@ fn lost_clock() -> i64 {
 #[tokio::test]
 async fn a_relying_party_on_the_lost_branch_refuses_its_own_branchs_keys() {
     let (g, device, k2, thief, k4) = (kp(), kp(), kp(), kp(), kp());
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let c1 = (&device, T0 + 50);
     let abandoned = grown(&g, &[c1, (&thief, T0 + 61)]).await;
     let kept = grown(&g, &[c1, (&k2, T0 + 60), (&k4, T0 + 70)]).await;
@@ -935,7 +942,7 @@ fn located_clock() -> i64 {
 #[tokio::test]
 async fn a_lost_branch_is_refused_when_the_fork_is_located_by_proofs() {
     let (g, device, k2, thief, k4) = (kp(), kp(), kp(), kp(), kp());
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let c1 = (&device, T0 + 50);
     let (abandoned, abandoned_log) = grown_proving(&g, &[c1, (&thief, T0 + 61)]).await;
     let (kept, kept_log) = grown_proving(&g, &[c1, (&k2, T0 + 60), (&k4, T0 + 70)]).await;
@@ -1072,7 +1079,7 @@ async fn a_fork_across_a_rotation_is_located_on_the_proof_path() {
     let (first, second) = (proving(held_line, held_log), proving(rival_line, rival_log));
 
     let mut rp = RelyingParty::new(
-        &g.tmb.to_b64(),
+        &g.pg(),
         Anchor::GenesisKey(g.domain_key(T0)),
         config(),
         located_clock,

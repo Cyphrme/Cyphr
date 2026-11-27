@@ -37,11 +37,11 @@ use cyphr::fork::Held as HeldCommit;
 use cyphr::principal::{Clock, system_clock};
 use cyphr::proof::Root;
 use cyphr::replay::WireBundle;
-use cyphr::{Commit, Key, Principal, StateDigest as _};
+use cyphr::{Commit, Key, Principal, PrincipalGenesis, StateDigest as _};
 use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector, Request};
-use crate::evidence::{EvidenceFailure, names_pg, pg_names, verify_fork_items};
+use crate::evidence::{EvidenceFailure, pg_names, verify_fork_items};
 use crate::extension::{ExtensionFailure, ExtensionOffer, confirm_extension, verify_extension_at};
 use crate::patch::{
     ActionBundle, PatchEntry, PatchFailure, PatchRequest, Step, fetch_patch,
@@ -83,7 +83,7 @@ pub enum Anchor {
 /// [`Record::from_entries`], [`Record::resume`] and what [`pull`] verifies;
 /// it never regresses.
 pub struct Record {
-    id: String,
+    id: PrincipalGenesis,
     anchor: Anchor,
     clock: Clock,
     held: Option<Held>,
@@ -143,9 +143,9 @@ impl Record {
     /// An empty record of the principal `principal_id` (its PG), anchored
     /// at `anchor`. The first pull fills it.
     #[must_use]
-    pub fn new(principal_id: &str, anchor: Anchor) -> Self {
+    pub fn new(principal_id: &PrincipalGenesis, anchor: Anchor) -> Self {
         Self {
-            id: principal_id.to_owned(),
+            id: principal_id.clone(),
             anchor,
             clock: system_clock,
             held: None,
@@ -164,7 +164,7 @@ impl Record {
     /// The [`PeerFailure`] of the first entry that does not replay from the
     /// anchor.
     pub async fn from_entries(
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         anchor: Anchor,
         clock: Clock,
         entries: &[PatchEntry],
@@ -193,20 +193,20 @@ impl Record {
     /// [`PeerFailure::PrincipalMismatch`] if `principal` is not the
     /// principal `principal_id` names, or holds no commit.
     pub fn resume(
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         mut principal: Principal<MemoryStorage>,
         clock: Clock,
         source: Arc<dyn ChainSource>,
     ) -> Result<Self, PeerFailure> {
         let mut record = Self::new(principal_id, Anchor::GenesisCommit(String::new()));
         let mismatch = || PeerFailure::PrincipalMismatch {
-            id: principal_id.to_owned(),
+            id: principal_id.clone(),
         };
         let genesis = principal
             .commit_at(0)
             .and_then(commit_id_of)
             .ok_or_else(mismatch)?;
-        if !pg_names(&principal, record.bare_id()) {
+        if !pg_names(&principal, &record.id) {
             return Err(mismatch());
         }
         principal.set_clock(clock);
@@ -255,35 +255,9 @@ impl Record {
         &self.anchor
     }
 
-    /// The subject the replayed chain names: the bare digest of its PG (or,
-    /// for a principal with no genesis commit, its PR) in the algorithm the
-    /// record was pinned under. Read from the replay, not from the id the
-    /// record was opened with; replay refuses a chain that does not name
-    /// that id, so the two agree. `None` before the first verified pull.
-    #[must_use]
-    pub fn subject(&self) -> Option<String> {
-        let principal = &self.held.as_ref()?.principal;
-        let want = self.bare_id();
-        let named = |tagged: String| {
-            let (_, bare) = tagged.split_once(':')?;
-            names_pg(want, bare).then(|| bare.to_owned())
-        };
-        if let Some(pg) = principal.pg() {
-            let digest = pg.as_multihash();
-            if let Some(bare) = digest
-                .algorithms()
-                .filter_map(|alg| digest.tagged(alg).ok())
-                .find_map(|t| named(t.to_string()))
-            {
-                return Some(bare);
-            }
-        }
-        principal.pr_tagged().ok().and_then(named)
-    }
-
     /// The principal this record is of, as given to [`Record::new`].
     #[must_use]
-    pub fn principal_id(&self) -> &str {
+    pub fn principal_id(&self) -> &PrincipalGenesis {
         &self.id
     }
 
@@ -580,10 +554,6 @@ impl Record {
             .await
     }
 
-    fn bare_id(&self) -> &str {
-        self.id.split_once(':').map_or(&self.id, |(_, bare)| bare)
-    }
-
     /// The chain `entries` form from the anchor, replayed from scratch.
     async fn replay_full(
         &self,
@@ -598,9 +568,7 @@ impl Record {
             .await
             .map_err(|source| PeerFailure::Replay { commit: 0, source })?;
         principal.set_clock(self.clock);
-        let named_by_key = principal
-            .pr_tagged()
-            .is_ok_and(|pr| names_pg(self.bare_id(), &pr));
+        let named_by_key = principal.pr_id().is_ok_and(|pr| pr == self.id);
         let mut held = Held {
             principal,
             base: 0,
@@ -613,7 +581,7 @@ impl Record {
         {
             return Err(PeerFailure::AnchorMismatch);
         }
-        if !named_by_key && !pg_names(&held.principal, self.bare_id()) {
+        if !named_by_key && !pg_names(&held.principal, &self.id) {
             return Err(PeerFailure::PrincipalMismatch {
                 id: self.id.clone(),
             });
@@ -994,9 +962,12 @@ impl PeerHeads {
 /// in the envelope shape.
 pub async fn peer_heads<C: Connector>(
     connector: &C,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
 ) -> Result<Option<PeerHeads>, PatchFailure> {
-    let target = format!("/branches?pg={}", percent_encode_query_value(principal_id));
+    let target = format!(
+        "/branches?pg={}",
+        percent_encode_query_value(&principal_id.to_string())
+    );
     match fetch_payload(connector, &target).await {
         Ok(payload) => Ok(Some(PeerHeads(parse_heads(&payload)?))),
         Err(PatchFailure::NonSuccess(404)) => Ok(None),
@@ -1411,7 +1382,10 @@ async fn offered_extension<C: Connector>(record: &Record, connector: &C) -> Offe
     // met again by the fetch that follows, which reports it.
     let Ok(payload) = fetch_payload(
         connector,
-        &format!("/tip?pg={}", percent_encode_query_value(&record.id)),
+        &format!(
+            "/tip?pg={}",
+            percent_encode_query_value(&record.id.to_string())
+        ),
     )
     .await
     else {
@@ -1429,7 +1403,7 @@ async fn offered_extension<C: Connector>(record: &Record, connector: &C) -> Offe
     }
     let target = format!(
         "/proof?pg={}&size={}&claim=extends:{held_size}",
-        percent_encode_query_value(&record.id),
+        percent_encode_query_value(&record.id.to_string()),
         head.size
     );
     let Ok(payload) = fetch_payload(connector, &target).await else {
@@ -1483,7 +1457,7 @@ async fn locate_fork<C: Connector>(
         }
         let target = format!(
             "/proof?pg={}&size={}&claim=extends:{k}",
-            percent_encode_query_value(&record.id),
+            percent_encode_query_value(&record.id.to_string()),
             head.size
         );
         let payload = fetch_payload(connector, &target).await.ok()?;
@@ -1517,7 +1491,10 @@ async fn locate_fork<C: Connector>(
         },
         None => None,
     };
-    let mut target = format!("/patch?pg={}", percent_encode_query_value(&record.id));
+    let mut target = format!(
+        "/patch?pg={}",
+        percent_encode_query_value(&record.id.to_string())
+    );
     if let Some(pre) = &pre {
         target.push_str(&format!("&from={}", percent_encode_query_value(pre)));
     }
@@ -1536,7 +1513,7 @@ async fn locate_fork<C: Connector>(
     let proved = |rival: &WireBundle| {
         serde_json::json!({
             "kind": "principal-fork",
-            "pg": record.bare_id(),
+            "pg": record.id.wire_digest(),
             "height": height,
             "pre": pre,
             "a": ours,
@@ -1547,7 +1524,7 @@ async fn locate_fork<C: Connector>(
     let mut state = None;
     let proof = match crate::evidence::verify_principal_fork_reusing(
         &proved(&rival),
-        record.bare_id(),
+        &record.id,
         &base,
         prefix,
         &mut state,
@@ -1565,7 +1542,7 @@ async fn locate_fork<C: Connector>(
             }
             let proof = crate::evidence::verify_principal_fork_reusing(
                 &proved(&with_actions),
-                record.bare_id(),
+                &record.id,
                 &base,
                 prefix,
                 &mut state,
@@ -1759,7 +1736,10 @@ async fn evidence<C: Connector>(
     sink: &mut Sink<'_>,
 ) {
     let Some(held) = &record.held else { return };
-    let target = format!("/evidence?pg={}", percent_encode_query_value(&record.id));
+    let target = format!(
+        "/evidence?pg={}",
+        percent_encode_query_value(&record.id.to_string())
+    );
     let Ok(payload) = fetch_payload(connector, &target).await else {
         outcome.rejected_evidence.push(EvidenceFailure::Malformed(
             "the evidence could not be fetched",
@@ -1783,7 +1763,7 @@ async fn evidence<C: Connector>(
     };
     let items: Vec<&Value> = items.iter().take(MAX_EVIDENCE_ITEMS).collect();
     let chain_ids: Vec<Option<String>> = held.principal.commits().map(commit_id_of).collect();
-    let set = verify_fork_items(&items, record.bare_id(), &base, &prefix, &chain_ids).await;
+    let set = verify_fork_items(&items, &record.id, &base, &prefix, &chain_ids).await;
     for (proof, rival) in set.forks {
         let height = usize::try_from(proof.height).unwrap_or(usize::MAX);
         if let Some((id, pr)) = proof.rival(&chain_ids) {
@@ -1845,11 +1825,11 @@ pub async fn fetch_revoked<C: Connector>(
 /// not the envelope shape.
 pub async fn fetch_resyncs<C: Connector>(
     connector: &C,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
 ) -> Result<Vec<Value>, PatchFailure> {
     let target = format!(
         "/resync?pg={}",
-        crate::patch::percent_encode_query_value(principal_id)
+        crate::patch::percent_encode_query_value(&principal_id.to_string())
     );
     let mut found = fetch_payload(connector, &target)
         .await?

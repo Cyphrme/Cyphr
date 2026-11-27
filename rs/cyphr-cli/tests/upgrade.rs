@@ -8,7 +8,7 @@ use common::User;
 
 fn level_one(u: &User) -> String {
     let g = u.setup(&["key", "generate", "--algo", "ES256"]);
-    g["tmb"].as_str().expect("tmb").to_owned()
+    common::labelled("ES256", g["tmb"].as_str().expect("tmb"))
 }
 
 fn commits(u: &User, id: &str) -> u64 {
@@ -28,7 +28,7 @@ fn level_one_moves_up_only_when_the_user_says_so() {
     let u = User::new();
     let id = level_one(&u);
     let ident = format!("--identity={id}");
-    let signer = format!("--signer={id}");
+    let signer = format!("--signer={}", common::tmb(&id));
 
     for args in [
         vec!["key", "add", &ident, &signer],
@@ -61,7 +61,7 @@ fn level_one_moves_up_only_when_the_user_says_so() {
         "key",
         "add",
         &format!("--identity={vid}"),
-        &format!("--signer={vid}"),
+        &format!("--signer={}", common::tmb(&vid)),
         "--upgrade",
     ]);
     assert_eq!(added["identity"], vid.as_str(), "the identity is unchanged");

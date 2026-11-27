@@ -67,7 +67,7 @@ pub struct QuarantinedManifest {
     /// BLAKE3 hash of the manifest blob.
     pub manifest: Blake3Hash,
     /// The principal id the manifest claims, when it parsed far enough.
-    pub principal_id: Option<String>,
+    pub principal_id: Option<PrincipalGenesis>,
     /// Why it was left out.
     pub reason: QuarantineReason,
 }
@@ -84,7 +84,7 @@ pub struct RebuildReport {
 
 /// Every PR a stored manifest records, by principal and position: the
 /// commits a rebuild holds, canonical or not.
-pub(super) type HeldRoots = std::collections::HashSet<(String, u64, String)>;
+pub(super) type HeldRoots = std::collections::HashSet<(PrincipalGenesis, u64, String)>;
 
 /// The stored manifests split by [`walk_chains`].
 pub(super) struct Walk {
@@ -119,13 +119,13 @@ pub(super) struct Walk {
 pub(super) fn walk_chains(
     commits: Vec<(Blake3Hash, CommitManifest)>,
     branches: Vec<(Blake3Hash, CommitManifest)>,
-    unbound: &HashMap<String, String>,
+    unbound: &HashMap<PrincipalGenesis, String>,
     asserted: &Resyncs,
 ) -> Walk {
     use std::collections::BTreeMap;
 
     type Position = Vec<(bool, Blake3Hash, CommitManifest)>;
-    let mut by_principal: BTreeMap<String, BTreeMap<u64, Position>> = BTreeMap::new();
+    let mut by_principal: BTreeMap<PrincipalGenesis, BTreeMap<u64, Position>> = BTreeMap::new();
     let tagged = commits
         .into_iter()
         .map(|(h, m)| (false, h, m))
@@ -343,7 +343,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // The earliest sequence at which a principal's chain broke, for any
         // reason; every later commit of that principal is orphaned, so the
         // indexed chain is always a gapless prefix.
-        let mut broken_from: HashMap<String, u64> = HashMap::new();
+        let mut broken_from: HashMap<PrincipalGenesis, u64> = HashMap::new();
         let mut manifests: Vec<(Blake3Hash, CommitManifest)> = Vec::new();
         let mut branch_manifests: Vec<(Blake3Hash, CommitManifest)> = Vec::new();
         let mut action_manifests: Vec<(Blake3Hash, ActionManifest)> = Vec::new();
@@ -584,7 +584,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // One memo for the whole rebuild: each embedded principal is replayed
         // once, whatever number of commits and actions pin it.
         let pins = PinSource::manifests(&manifests, &branch_manifests);
-        let mut replays: HashMap<String, cyphr::Principal<cyphr::eml::MemoryStorage>> =
+        let mut replays: HashMap<PrincipalGenesis, cyphr::Principal<cyphr::eml::MemoryStorage>> =
             HashMap::new();
         // What the last replaying rebuild quarantined: a pass that does
         // not replay cannot judge those manifests, so it keeps them out.
@@ -679,7 +679,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // arrives after it (SPEC 14.12). A replaying pass keeps the ones its
         // replay accepts; one that does not replay keeps those of a
         // principal the index holds.
-        let mut actions: HashMap<String, Vec<StoredActions>> = HashMap::new();
+        let mut actions: HashMap<PrincipalGenesis, Vec<StoredActions>> = HashMap::new();
         for (principal_id, history) in histories {
             let mut orphaned = |bundle: ActionBundle, reason| {
                 quarantined.push(QuarantinedManifest {
@@ -758,8 +758,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         manifests: Vec<(Blake3Hash, ActionManifest)>,
         skip: &HashMap<Blake3Hash, String>,
         quarantined: &mut Vec<QuarantinedManifest>,
-    ) -> Result<HashMap<String, ActionHistory>, EngineError> {
-        let mut histories: HashMap<String, ActionHistory> = HashMap::new();
+    ) -> Result<HashMap<PrincipalGenesis, ActionHistory>, EngineError> {
+        let mut histories: HashMap<PrincipalGenesis, ActionHistory> = HashMap::new();
         'manifests: for (hash, manifest) in manifests {
             let mut reject = |reason| {
                 quarantined.push(QuarantinedManifest {
@@ -824,11 +824,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         mut branch_manifests: Vec<(Blake3Hash, CommitManifest)>,
         held: &HeldRoots,
         quarantined: &mut Vec<QuarantinedManifest>,
-    ) -> Result<HashMap<String, Vec<Retained>>, EngineError> {
+    ) -> Result<HashMap<PrincipalGenesis, Vec<Retained>>, EngineError> {
         branch_manifests.sort_by_key(|(hash, m)| (m.commit.sequence, *hash.as_bytes()));
-        let mut kept: HashMap<String, Vec<Retained>> = HashMap::new();
+        let mut kept: HashMap<PrincipalGenesis, Vec<Retained>> = HashMap::new();
         // The PRs of the branches kept so far, by principal and position.
-        let mut kept_prs: std::collections::HashSet<(String, u64, String)> =
+        let mut kept_prs: std::collections::HashSet<(PrincipalGenesis, u64, String)> =
             std::collections::HashSet::new();
         for (hash, manifest) in branch_manifests {
             let CommitManifest {
@@ -947,8 +947,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     pub(super) async fn unbound_principals(
         &self,
         manifests: &[(Blake3Hash, CommitManifest)],
-    ) -> Result<HashMap<String, String>, EngineError> {
-        let mut firsts: HashMap<&str, &CommitManifest> = HashMap::new();
+    ) -> Result<HashMap<PrincipalGenesis, String>, EngineError> {
+        let mut firsts: HashMap<&PrincipalGenesis, &CommitManifest> = HashMap::new();
         for (_, manifest) in manifests {
             if manifest.commit.sequence == 0 {
                 firsts
@@ -957,16 +957,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
         }
         let mut unbound = HashMap::new();
-        let mut principals: Vec<&str> = manifests
+        let mut principals: Vec<&PrincipalGenesis> = manifests
             .iter()
-            .map(|(_, m)| m.commit.principal_id.as_str())
+            .map(|(_, m)| &m.commit.principal_id)
             .collect();
         principals.sort_unstable();
         principals.dedup();
         for principal_id in principals {
             let Some(first) = firsts.get(principal_id) else {
                 unbound.insert(
-                    principal_id.to_string(),
+                    principal_id.clone(),
                     "no sequence-0 manifest for the principal".to_string(),
                 );
                 continue;
@@ -980,7 +980,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 None => continue,
                 Some(Err(e)) => {
                     unbound.insert(
-                        principal_id.to_string(),
+                        principal_id.clone(),
                         format!("genesis not derivable from its blobs: {e}"),
                     );
                     continue;
@@ -993,9 +993,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // Strict by decision: the project is pre-1.0 with nothing
             // deployed, so a store keyed by a PG-to-be exists only in test
             // runs and needs no lenient branch.
-            if derived.as_deref() != Some(principal_id) {
+            if derived.as_ref() != Some(principal_id) {
                 unbound.insert(
-                    principal_id.to_string(),
+                    principal_id.clone(),
                     "its first commit does not derive this id as its key".to_string(),
                 );
             }
@@ -1013,7 +1013,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// commit (SPEC 5.1), so one that discloses none is quarantined.
     pub(super) async fn replay_manifest(
         &self,
-        replays: &mut HashMap<String, cyphr::Principal<cyphr::eml::MemoryStorage>>,
+        replays: &mut HashMap<PrincipalGenesis, cyphr::Principal<cyphr::eml::MemoryStorage>>,
         manifest: &CommitManifest,
         pins: &PinSource<'_>,
     ) -> Result<Result<(), String>, EngineError> {

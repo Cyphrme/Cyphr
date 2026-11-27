@@ -46,7 +46,7 @@ fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
 /// `toggled` in and out, one commit each: unbounded history from a finite
 /// key pool. Commit `i` is dated `NOW + 10 i`.
 pub struct Chain {
-    pub id: String,
+    pub id: cyphr::PrincipalGenesis,
     pub genesis: Genesis,
     shadow: cyphr::Principal,
     signer: Kp,
@@ -282,20 +282,20 @@ impl CIdx {
 }
 
 impl Indexer for CIdx {
-    async fn get_tip(&self, p: &str) -> Result<Option<TipState>, IndexerError> {
+    async fn get_tip(&self, p: &cyphr::PrincipalGenesis) -> Result<Option<TipState>, IndexerError> {
         let r = self.0.get_tip(p).await?;
         self.read(usize::from(r.is_some()));
         Ok(r)
     }
 
-    async fn is_pg_established(&self, p: &str) -> Result<bool, IndexerError> {
+    async fn is_pg_established(&self, p: &cyphr::PrincipalGenesis) -> Result<bool, IndexerError> {
         self.read(1);
         self.0.is_pg_established(p).await
     }
 
     async fn get_commit_chain(
         &self,
-        p: &str,
+        p: &cyphr::PrincipalGenesis,
         from: Option<u64>,
         to: Option<u64>,
     ) -> Result<Vec<CommitRef>, IndexerError> {
@@ -348,7 +348,7 @@ impl IndexerWrite for CIdx {
 
     async fn replace_chain_from(
         &self,
-        p: &str,
+        p: &cyphr::PrincipalGenesis,
         s: u64,
         c: &[IndexableCommit],
         t: &DeriveToken,

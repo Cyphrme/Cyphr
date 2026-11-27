@@ -7,11 +7,13 @@
 //! into the token. A route then states its requirement with
 //! [`require`](super::middleware::require).
 
+use cyphr::PrincipalGenesis;
+
 /// Decides the permissions a verified login is granted.
 pub trait LoginPolicy: Send + Sync {
-    /// The permissions to sign into the token for the principal `pg` (its
-    /// canonical bare genesis identifier) logging in with `login_key`.
-    fn perms(&self, pg: &str, login_key: &coz::Thumbprint) -> Vec<String>;
+    /// The permissions to sign into the token for the principal `pg`
+    /// logging in with `login_key`.
+    fn perms(&self, pg: &PrincipalGenesis, login_key: &coz::Thumbprint) -> Vec<String>;
 }
 
 /// The policy a server runs when its service supplies none: a login is
@@ -21,7 +23,7 @@ pub trait LoginPolicy: Send + Sync {
 pub struct NoPermissions;
 
 impl LoginPolicy for NoPermissions {
-    fn perms(&self, _pg: &str, _login_key: &coz::Thumbprint) -> Vec<String> {
+    fn perms(&self, _pg: &PrincipalGenesis, _login_key: &coz::Thumbprint) -> Vec<String> {
         Vec::new()
     }
 }

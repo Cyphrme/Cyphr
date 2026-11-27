@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
 use cyphr_net::HttpConnector;
 use cyphr_server::{AppState, build_router};
@@ -93,22 +94,22 @@ fn pop(tip: &cyphr::Principal, now: i64) -> serde_json::Value {
     })
 }
 
-fn resync_body(id: &str, coz: &serde_json::Value, line: &[WireBundle]) -> String {
+fn resync_body(id: &PrincipalGenesis, coz: &serde_json::Value, line: &[WireBundle]) -> String {
     serde_json::json!({
-        "principal_id": id, "coz": coz,
+        "principal_id": id.to_string(), "coz": coz,
         "line": line.iter().map(|b| serde_json::to_value(b).expect("bundle")).collect::<Vec<_>>(),
     })
     .to_string()
 }
 
-async fn push(app: &axum::Router, id: &str, b: &WireBundle) -> StatusCode {
+async fn push(app: &axum::Router, id: &PrincipalGenesis, b: &WireBundle) -> StatusCode {
     post_json(app.clone(), "/push", common::push_body(id, b))
         .await
         .0
 }
 
-fn enc(id: &str) -> String {
-    id.replace(':', "%3A")
+fn enc(id: &PrincipalGenesis) -> String {
+    id.to_string().replace(':', "%3A")
 }
 
 /// The fork of section 12: the chain C_0..C_2, the line L of four commits
@@ -116,7 +117,7 @@ fn enc(id: &str) -> String {
 /// and R of two over it; L_3, L_4 and R_3, R_4 are the contest's two
 /// extended branches.
 struct Fork {
-    id: String,
+    id: PrincipalGenesis,
     prefix: Vec<WireBundle>,
     l: Vec<WireBundle>,
     l_states: Vec<cyphr::Principal>,

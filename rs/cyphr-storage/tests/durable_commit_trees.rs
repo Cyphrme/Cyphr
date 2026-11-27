@@ -352,7 +352,7 @@ fn principal_replay_survives_disk_drop_and_reload() {
     let genesis = Genesis::Disclosed(keys);
     let principal_id =
         cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");

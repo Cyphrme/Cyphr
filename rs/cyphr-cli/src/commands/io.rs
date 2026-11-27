@@ -4,23 +4,23 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
-use cyphr::StateDigest;
+use cyphr::PrincipalGenesis;
 use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
 use super::common::{
-    block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id,
-    parse_principal_genesis, parse_store, save_principal_to_engine,
+    block_on, extract_genesis_from_commits, get_commits_from_engine, parse_store,
+    save_principal_to_engine,
 };
 use crate::{Cli, Error, OutputFormat};
 
 /// Run the export command.
-pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
+pub fn export(cli: &Cli, identity: &PrincipalGenesis, output: &Path) -> crate::Result<()> {
     let store = parse_store(cli)?;
     // Get commits from storage
     let commits = get_commits_from_engine(&store, identity)?;
 
     if commits.is_empty() {
-        return Err(Error::EmptyHistory(identity.to_owned()));
+        return Err(Error::EmptyHistory(identity.to_string()));
     }
 
     // Write commits to JSONL file
@@ -29,8 +29,7 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
 
     // Action-only lines follow the commits, as `export_commits` writes
     // them: actions hold no chain position (SPEC 4.8.1).
-    let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
-    let bundles = block_on(store.get_patch(&principal_id, None, None))??
+    let bundles = block_on(store.get_patch(identity, None, None))??
         .actions
         .into_iter();
     let action_line = |blobs: &[Vec<u8>]| -> crate::Result<String> {
@@ -114,15 +113,9 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     };
 
     // Check if identity already exists in storage
-    let pg_id = get_principal_id(&pg)?;
-    let tip = block_on(async { store.get_tip(&pg_id).await })??;
+    let tip = block_on(async { store.get_tip(&pg).await })??;
     if tip.is_some() {
-        use base64ct::{Base64UrlUnpadded, Encoding};
-        let pg_b64 = pg
-            .as_multihash()
-            .first_variant()
-            .map(Base64UrlUnpadded::encode_string)?;
-        return Err(Error::AlreadyExists(pg_b64));
+        return Err(Error::AlreadyExists(pg.to_string()));
     }
 
     // Store commits
@@ -130,13 +123,8 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
 
     match cli.format {
         OutputFormat::Json => {
-            use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            let pg_b64 = pg
-                .as_multihash()
-                .first_variant()
-                .map(Base64UrlUnpadded::encode_string)?;
             let result = serde_json::json!({
-                "identity": pg_b64,
+                "identity": pg,
                 "input": input.display().to_string(),
                 "commits": commits.len(),
                 "verified": true,
@@ -144,13 +132,8 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
             println!("{}", serde_json::to_string_pretty(&result)?);
         },
         OutputFormat::Table => {
-            use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            let pg_b64 = pg
-                .as_multihash()
-                .first_variant()
-                .map(Base64UrlUnpadded::encode_string)?;
             println!("Imported identity from {}", input.display());
-            println!("  identity: {}", pg_b64);
+            println!("  identity: {pg}");
             println!("  commits: {}", commits.len());
             println!("  verified: OK");
         },

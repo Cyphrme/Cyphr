@@ -24,7 +24,7 @@ pub struct StoredEntry {
 #[derive(Debug, Clone)]
 pub struct PatchResponse {
     /// Principal genesis identifier.
-    pub principal_id: String,
+    pub principal_id: cyphr::PrincipalGenesis,
     /// Ordered commit entries with their blob contents.
     pub entries: Vec<StoredEntry>,
     /// The chain position the range starts at: the position just after the
@@ -169,7 +169,7 @@ pub(super) type HeldRead<'a, S> = std::pin::Pin<
 /// the digest meanwhile has no tip (fails closed).
 pub(super) struct HeldTips<'e, B, I, S: cyphr::eml::Storage> {
     pub(super) engine: &'e StorageEngine<B, I, S>,
-    pub(super) own_id: &'e str,
+    pub(super) own_id: &'e PrincipalGenesis,
     pub(super) cache: &'e mut HeldCache<S>,
     /// The followed digests that name a held principal, read from `cache`.
     pub(super) found: std::collections::BTreeSet<String>,
@@ -228,7 +228,7 @@ pub(super) struct Frame {
 /// manifests in the blob store (I1), filled by the rebuild scan and by
 /// ingest.
 #[derive(Debug, Default)]
-pub(super) struct ActionStore(std::sync::Mutex<HashMap<String, Vec<StoredActions>>>);
+pub(super) struct ActionStore(std::sync::Mutex<HashMap<PrincipalGenesis, Vec<StoredActions>>>);
 
 impl ActionStore {
     pub(super) fn new() -> Self {
@@ -237,12 +237,12 @@ impl ActionStore {
 
     /// Replace every held bundle with `actions`: a rebuild re-derives them
     /// from the blobs.
-    pub(super) fn replace(&self, actions: HashMap<String, Vec<StoredActions>>) {
+    pub(super) fn replace(&self, actions: HashMap<PrincipalGenesis, Vec<StoredActions>>) {
         *self.0.lock().unwrap_or_else(|p| p.into_inner()) = actions;
     }
 
     /// The bundles held for `principal_id`, in acceptance order.
-    pub(super) fn of(&self, principal_id: &str) -> Vec<StoredActions> {
+    pub(super) fn of(&self, principal_id: &PrincipalGenesis) -> Vec<StoredActions> {
         self.0
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -253,7 +253,7 @@ impl ActionStore {
 
     /// Whether any held bundle of `principal_id` was admitted through an
     /// embedded principal.
-    pub(super) fn has_pins(&self, principal_id: &str) -> bool {
+    pub(super) fn has_pins(&self, principal_id: &PrincipalGenesis) -> bool {
         self.0
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -262,9 +262,9 @@ impl ActionStore {
     }
 
     /// List `stored` for `principal_id`, unless its manifest is listed.
-    pub(super) fn add(&self, principal_id: &str, stored: StoredActions) {
+    pub(super) fn add(&self, principal_id: &PrincipalGenesis, stored: StoredActions) {
         let mut held = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        let of_principal = held.entry(principal_id.to_string()).or_default();
+        let of_principal = held.entry(principal_id.clone()).or_default();
         if !of_principal.iter().any(|a| a.manifest == stored.manifest) {
             of_principal.push(stored);
         }
@@ -320,21 +320,22 @@ pub(super) fn log_is_stale<S: cyphr::eml::Storage>(
 
 /// The principal the manifests name `member` as (its key, its PG or a PR
 /// it held, in any manifest), if exactly one.
-pub(super) fn manifest_principal(source: &PinSource<'_>, member: &str) -> Option<String> {
+pub(super) fn manifest_principal(source: &PinSource<'_>, member: &str) -> Option<PrincipalGenesis> {
     let (canonical, rest) = source.manifests?;
-    let mut named: Vec<&str> = canonical
+    let as_id = member.parse::<PrincipalGenesis>().ok();
+    let mut named: Vec<&PrincipalGenesis> = canonical
         .iter()
         .chain(rest)
         .filter(|(_, m)| {
-            m.commit.principal_id == member
+            Some(&m.commit.principal_id) == as_id.as_ref()
                 || m.commit.prs.iter().chain(&m.commit.pg).any(|d| d == member)
         })
-        .map(|(_, m)| m.commit.principal_id.as_str())
+        .map(|(_, m)| &m.commit.principal_id)
         .collect();
     named.sort_unstable();
     named.dedup();
     match named.as_slice() {
-        [one] => Some((*one).to_string()),
+        [one] => Some((*one).clone()),
         _ => None,
     }
 }
@@ -344,12 +345,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// Delegates directly to the indexer.
     #[tracing::instrument(skip(self))]
-    pub async fn get_tip(&self, principal_id: &str) -> Result<Option<TipState>, EngineError> {
+    pub async fn get_tip(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> Result<Option<TipState>, EngineError> {
         self.ensure_healed().await?;
         let key = self.resolve_key(principal_id).await?;
         Ok(self
             .indexer
-            .get_tip(key.as_deref().unwrap_or(principal_id))
+            .get_tip(key.as_ref().unwrap_or(principal_id))
             .await?)
     }
 
@@ -371,7 +375,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[tracing::instrument(skip(self))]
     pub async fn get_patch(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: Option<&TaggedDigest>,
         to: Option<u64>,
     ) -> Result<PatchResponse, EngineError> {
@@ -387,7 +391,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[tracing::instrument(skip(self))]
     pub async fn get_served_patch(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: Option<&TaggedDigest>,
         to: Option<u64>,
     ) -> Result<PatchResponse, EngineError> {
@@ -396,14 +400,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     pub(super) async fn patch(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: Option<&TaggedDigest>,
         to: Option<u64>,
         fork_aware: bool,
     ) -> Result<PatchResponse, EngineError> {
         self.ensure_healed().await?;
         let key = self.resolve_key(principal_id).await?;
-        let principal_id = key.as_deref().unwrap_or(principal_id);
+        let principal_id = key.as_ref().unwrap_or(principal_id);
         let from_seq = match from {
             Some(anchor) => Some(self.resolve_anchor_position(principal_id, anchor).await?),
             None => None,
@@ -453,7 +457,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
 
         Ok(PatchResponse {
-            principal_id: principal_id.to_string(),
+            principal_id: principal_id.clone(),
             entries,
             from: from_seq,
             actions,
@@ -480,7 +484,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// several positions is [`EngineError::Ambiguous`].
     pub(super) async fn resolve_anchor_position(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         anchor: &TaggedDigest,
     ) -> Result<u64, EngineError> {
         // A digest names a set of holders; only a holder that is this
@@ -490,7 +494,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let holders = self.indexer.resolve_digest_holders(anchor).await?;
         let mut own = holders
             .iter()
-            .filter(|h| h.principal_id.as_deref() == Some(principal_id));
+            .filter(|h| h.principal_id.as_ref() == Some(principal_id));
         let entity = own.next().ok_or_else(|| {
             EngineError::NotFound(format!(
                 "resync anchor {anchor} not indexed (requested for principal {principal_id})"
@@ -513,7 +517,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// grouped as the commit was accepted, with the keys it introduced.
     pub(super) async fn commit_bundle(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         commit: &CommitRef,
     ) -> Result<WireBundle, EngineError> {
         Ok(self.commit_bundle_framed(principal_id, commit).await?.0)
@@ -523,7 +527,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// needs both and should not read the manifest twice.
     pub(super) async fn commit_bundle_framed(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         commit: &CommitRef,
     ) -> Result<(WireBundle, Frame), EngineError> {
         let mut blobs = Vec::with_capacity(commit.blob_hashes.len());
@@ -614,7 +618,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// Fails if the principal cannot be loaded from the blob store or if any
     /// referenced blob is missing or corrupt.
     #[tracing::instrument(skip(self))]
-    pub async fn rederive_roots(&self, principal_id: &str) -> Result<DerivedRoots, EngineError> {
+    pub async fn rederive_roots(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> Result<DerivedRoots, EngineError> {
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
         let genesis = self.resolve_genesis(&principal_id, &[]).await?;
@@ -627,7 +634,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[tracing::instrument(skip(self, genesis))]
     pub async fn rederive_roots_with_genesis(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: crate::Genesis,
     ) -> Result<DerivedRoots, EngineError> {
         self.ensure_healed().await?;
@@ -709,12 +716,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[tracing::instrument(skip(self, genesis))]
     pub async fn load_principal(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: crate::Genesis,
     ) -> Result<AtTip<S>, EngineError> {
         self.ensure_healed().await?;
         let key = self.resolve_key(principal_id).await?;
-        let stored = key.as_deref().unwrap_or(principal_id);
+        let stored = key.as_ref().unwrap_or(principal_id);
         // The writer's lock: a push appends to the durable log before it
         // writes the index, and a load in that window sees a log one leaf
         // ahead of the chain and regenerates it for nothing.
@@ -727,7 +734,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// be the stored spelling.
     pub(super) fn replay_stored<'a>(
         &'a self,
-        principal_id: &'a str,
+        principal_id: &'a PrincipalGenesis,
         genesis: crate::Genesis,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<cyphr::Principal<S>, EngineError>> + Send + 'a>,
@@ -752,7 +759,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // regenerated into a fresh generation from the blobs, one
             // regeneration at a time (the write lock may already be held by
             // this caller, so this one is separate).
-            let lock = self.principal_lock(&format!("eml-generation\0{principal_id}"));
+            let lock = self.named_lock(&format!("eml-generation\0{principal_id}"));
             let _regenerating = lock.lock().await;
             let current = self
                 .logs
@@ -780,7 +787,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// `generation` of its log.
     pub(super) async fn replay_generation(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: crate::Genesis,
         generation: u64,
     ) -> Result<cyphr::Principal<S>, EngineError> {
@@ -809,7 +816,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// ([`dead_key_in`]).
     pub(super) async fn replay_onto<T: cyphr::eml::Storage>(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         genesis: crate::Genesis,
         storage: T,
         through: Option<u64>,
@@ -856,7 +863,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// the blob store, in replay order.
     pub(super) async fn action_history(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> Result<ActionHistory, EngineError> {
         let held = self.actions.of(principal_id);
         let mut history = ActionHistory::new();
@@ -906,7 +913,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// parsed. No protocol check.
     pub(super) async fn stored_entries(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         through: Option<u64>,
     ) -> Result<StoredChain, EngineError> {
         let last = match through {
@@ -1117,14 +1124,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     pub(super) async fn principal_named(
         &self,
         member: &str,
-    ) -> Result<Option<String>, EngineError> {
-        if let Some(id) = self.stored_id(member).await? {
+    ) -> Result<Option<PrincipalGenesis>, EngineError> {
+        let Ok(named) = member.parse::<PrincipalGenesis>() else {
+            return Ok(None);
+        };
+        if let Some(id) = self.stored_id(&named).await? {
             return Ok(Some(id));
         }
         let Ok(digest) = member.parse::<TaggedDigest>() else {
             return Ok(None);
         };
-        let mut holders: Vec<String> = self
+        let mut holders: Vec<PrincipalGenesis> = self
             .indexer
             .resolve_digest_holders(&digest)
             .await?
@@ -1297,7 +1307,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// is not stored.
     pub async fn held_prefix(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         chain: &[WireBundle],
     ) -> Result<usize, EngineError> {
         let Some(tip) = self.get_tip(principal_id).await? else {
@@ -1344,7 +1354,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// respective bundle.
     pub async fn resolve_genesis(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         submitted: &[WireBundle],
     ) -> Result<crate::Genesis, EngineError> {
         self.ensure_healed().await?;
@@ -1362,7 +1372,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// its first stored commit's blobs.
     pub(super) async fn genesis_of_stored(
         &self,
-        stored_id: &str,
+        stored_id: &PrincipalGenesis,
     ) -> Result<crate::Genesis, EngineError> {
         let chain = self.chain(stored_id, Some(0), Some(0)).await?;
         let first_commit = chain.first().ok_or_else(|| {
@@ -1372,57 +1382,44 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Self::genesis_from_bundle(Some(&bundle))
     }
 
-    /// The spelling under which `principal_id` is stored, if a principal is.
+    /// The id under which `principal_id` is stored, if a principal is.
     ///
-    /// A labelled id (`ALG:digest`) is its own spelling. A bare digest
-    /// names whichever labelled spelling has a stored chain; at most one
-    /// can, because [`submit_commit`](Self::submit_commit) stores only the
-    /// canonical spelling. A Principal Root alias (the PG, or any other PR
-    /// the principal has had) resolves to the principal's canonical id.
+    /// The id's own spelling names a stored chain; so does a Principal
+    /// Root alias (the PG, or any other PR the principal has had), which
+    /// the index resolves to the principal's canonical id.
     pub(super) async fn stored_id(
         &self,
-        principal_id: &str,
-    ) -> Result<Option<String>, EngineError> {
-        let candidates: Vec<String> = if principal_id.contains(':') {
-            vec![principal_id.to_string()]
-        } else {
-            ID_LABELS
-                .iter()
-                .map(|label| format!("{label}:{principal_id}"))
-                .collect()
+        principal_id: &PrincipalGenesis,
+    ) -> Result<Option<PrincipalGenesis>, EngineError> {
+        // A tip with no stored chain is a corrupt index, not a stored
+        // principal.
+        let Some(tip) = self.indexer.get_tip(principal_id).await? else {
+            return Ok(None);
         };
-        for candidate in candidates {
-            // The index resolves a Principal Root alias to the stored id. A
-            // tip with no stored chain is a corrupt index, not a stored
-            // principal.
-            let Some(tip) = self.indexer.get_tip(&candidate).await? else {
-                continue;
-            };
-            let chain = self.chain(&candidate, Some(0), Some(0)).await?;
-            if !chain.is_empty() {
-                return Ok(Some(tip.principal_id));
-            }
-        }
-        Ok(None)
+        let chain = self.chain(principal_id, Some(0), Some(0)).await?;
+        Ok((!chain.is_empty()).then_some(tip.principal_id))
     }
 
     /// The id a principal is stored and reported under (its key), or
     /// `principal_id` unchanged if no such principal is stored. Read paths
     /// resolve on the key, so every address (key, PG or PG variant) reaches
     /// one chain.
-    pub async fn canonical_principal_id(&self, principal_id: &str) -> Result<String, EngineError> {
+    pub async fn canonical_principal_id(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> Result<PrincipalGenesis, EngineError> {
         self.ensure_healed().await?;
         Ok(self
             .resolve_key(principal_id)
             .await?
-            .unwrap_or_else(|| principal_id.to_string()))
+            .unwrap_or_else(|| principal_id.clone()))
     }
 
     /// The storage key `principal_id` addresses, if any.
     pub(super) async fn resolve_key(
         &self,
-        principal_id: &str,
-    ) -> Result<Option<String>, EngineError> {
+        principal_id: &PrincipalGenesis,
+    ) -> Result<Option<PrincipalGenesis>, EngineError> {
         self.stored_id(principal_id).await
     }
 

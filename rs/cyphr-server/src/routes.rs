@@ -9,6 +9,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
+use cyphr::PrincipalGenesis;
 use cyphr_storage::index::types::TipState;
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +25,7 @@ use crate::{AppState, receipt};
 #[derive(Debug, Deserialize)]
 pub struct TipQuery {
     /// Principal genesis identifier (tagged digest).
-    pub pg: String,
+    pub pg: PrincipalGenesis,
 }
 
 /// Query parameters for `GET /revoked`.
@@ -48,7 +49,7 @@ pub struct RevokedResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResyncRequest {
     /// Principal genesis identifier.
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     /// The `resync/create` coz, `{pay, sig}`: `pay.id` is the asserted
     /// tip's Principal Root, signed by a key active at that tip.
     pub coz: serde_json::Value,
@@ -76,7 +77,7 @@ pub struct ResyncResponse {
 #[derive(Debug, Deserialize)]
 pub struct ResyncQuery {
     /// Principal genesis identifier.
-    pub pg: String,
+    pub pg: PrincipalGenesis,
 }
 
 /// Response for `GET /resync`.
@@ -94,7 +95,7 @@ const MAX_REVOKED_ASKS: usize = 128;
 #[derive(Debug, Deserialize)]
 pub struct PatchQuery {
     /// Principal genesis identifier.
-    pub pg: String,
+    pub pg: PrincipalGenesis,
     /// Resync anchor: a tagged content digest (Zami #140; the anchor root
     /// is PR). Raw string here -- the `patch` handler parses it into a
     /// [`cyphr::state::TaggedDigest`] and refuses a malformed value with the
@@ -117,7 +118,7 @@ pub struct PatchQuery {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PushRequest {
     /// Principal genesis identifier.
-    pub principal_id: String,
+    pub principal_id: PrincipalGenesis,
     /// The session's bearer token, for a request that cannot carry an
     /// `Authorization` header (the Noise transport has none). A header, if
     /// both are present, wins.
@@ -338,7 +339,7 @@ pub enum IdentityResponse {
     /// base64url except `alg`), and the GENESIS key hint offline
     /// verification replays the chain from.
     Attestor {
-        pg: String,
+        pg: PrincipalGenesis,
         alg: String,
         #[serde(rename = "pub")]
         pub_key: String,
@@ -356,29 +357,10 @@ pub enum IdentityResponse {
 // Handlers
 // ========================================================================
 
-/// Whether `raw` is shaped like a principal identifier: an `ALG:digest`
-/// tagged digest or a bare canonical base64url digest of a supported
-/// length. Peer input, so checked before it can reach an outbound request.
-fn is_principal_ref(raw: &str) -> bool {
-    if raw.contains(':') {
-        raw.parse::<cyphr::state::TaggedDigest>().is_ok()
-    } else {
-        receipt::parse_genesis_id_str(raw).is_ok()
-    }
-}
-
-/// A read of `pr`: fetch it from the configured peers first when the node
-/// is set to (`[gossip] fetch_on_read`, on for a witness).
-///
-/// A `pr` that is not shaped like a principal identifier is never forwarded:
-/// the local lookup alone answers (not found), so unauthenticated garbage
-/// costs the node no outbound request.
-async fn fetch_on_read(state: &Arc<AppState>, pr: &str) {
-    if !is_principal_ref(pr) {
-        tracing::debug!("fetch on read skipped: pr is not a principal identifier");
-        return;
-    }
-    crate::gossip::fetch_on_read(state, pr).await;
+/// A read of `principal_id`: fetch it from the configured peers first when
+/// the node is set to (`[gossip] fetch_on_read`, on for a witness).
+async fn fetch_on_read(state: &Arc<AppState>, principal_id: &PrincipalGenesis) {
+    crate::gossip::fetch_on_read(state, principal_id).await;
 }
 
 /// `GET /tip?pg=<PG>` — current principal state.
@@ -419,7 +401,7 @@ pub async fn tip(
     let root = proving_log(&state, &t).await?.root_at(t.commit_count);
 
     let payload = TipResponse {
-        principal_id: cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
+        principal_id: t.principal_id.wire_digest(),
         pr: t.pr.clone(),
         sr: t.sr.clone(),
         ar: t.ar.clone(),
@@ -443,11 +425,11 @@ pub async fn tip(
 /// does.
 async fn error_tip(
     state: &Arc<AppState>,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     error: cyphr_storage::engine::ErrorState,
 ) -> Json<Envelope<ErrorTipResponse>> {
     let now = crate::auth::server_now();
-    let pg = cyphr_storage::engine::bare_digest(principal_id).to_string();
+    let pg = principal_id.wire_digest();
     let coz = held_statement(state, principal_id, &error).await;
     let payload = ErrorTipResponse {
         state: "error",
@@ -474,11 +456,11 @@ async fn error_tip(
 /// signer or when it cannot be signed (logged).
 async fn held_statement(
     state: &Arc<AppState>,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     error: &cyphr_storage::engine::ErrorState,
 ) -> Option<coz::CozJson> {
     let signer = state.attestor_signer()?;
-    let pg = cyphr_storage::engine::bare_digest(principal_id).to_string();
+    let pg = principal_id.wire_digest();
     let claims: Vec<receipt::HeldClaim> = error
         .heads
         .iter()
@@ -536,7 +518,7 @@ pub async fn branches(
 #[derive(Debug, Deserialize)]
 pub struct ProofQuery {
     /// Principal genesis identifier.
-    pub pg: String,
+    pub pg: PrincipalGenesis,
     /// The size, in commits, of the log the claim is about. Raw string,
     /// parsed in the handler so a malformed value is refused with the app's
     /// JSON error envelope. Asked for, never defaulted to the tip.
@@ -549,7 +531,7 @@ type LogStorage = cyphr_blob_fjall::storage_fjall::FjallStorage;
 
 /// The tip of a principal that has one log to prove against: 404 for an
 /// unknown principal, 409 for one in Error (SPEC 15.5).
-async fn provable_tip(state: &Arc<AppState>, pr: &str) -> Result<TipState, AppError> {
+async fn provable_tip(state: &Arc<AppState>, pr: &PrincipalGenesis) -> Result<TipState, AppError> {
     fetch_on_read(state, pr).await;
     let t = state
         .engine
@@ -605,7 +587,10 @@ fn parse_claim(raw: &str) -> Result<ProofClaim, AppError> {
             "claim must be member:<index> or extends:<from>, got {raw:?}"
         ))
     };
-    let (kind, arg) = raw.split_once(':').ok_or_else(bad)?;
+    let mut parts = raw.splitn(2, ':');
+    let (Some(kind), Some(arg)) = (parts.next(), parts.next()) else {
+        return Err(bad());
+    };
     match kind {
         "member" => Ok(ProofClaim::Member(arg.parse().map_err(|_| bad())?)),
         "extends" => Ok(ProofClaim::Extends(arg.parse().map_err(|_| bad())?)),
@@ -711,16 +696,6 @@ pub async fn evidence(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    // A malformed id is the caller's error (400), not an unknown principal
-    // (404): the harness probes for this route with an id that is not one.
-    if query.pg.parse::<cyphr::state::TaggedDigest>().is_err()
-        && receipt::parse_genesis_id_str(&query.pg).is_err()
-    {
-        return Err(AppError::bad_request(format!(
-            "pr is not a principal identifier: {}",
-            query.pg
-        )));
-    }
     fetch_on_read(&state, &query.pg).await;
 
     let (principal, forks) = state
@@ -728,7 +703,7 @@ pub async fn evidence(
         .fork_evidence(&query.pg)
         .await
         .map_err(AppError::engine)?;
-    let pg = cyphr_storage::engine::bare_digest(&principal).to_string();
+    let pg = principal.wire_digest();
     let items = forks
         .iter()
         .map(|f| {
@@ -808,7 +783,7 @@ pub async fn resync(
     Ok((
         StatusCode::OK,
         Json(Envelope::unsigned(ResyncResponse {
-            principal_id: receipt.principal_id,
+            principal_id: receipt.principal_id.to_string(),
             id: receipt.id,
             stored: receipt.stored,
             promoted: receipt.promoted,
@@ -915,7 +890,7 @@ async fn sign_tip_attestation(
     match receipt::tip_report(
         signer.as_ref(),
         crate::auth::server_now(),
-        cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
+        t.principal_id.wire_digest(),
         sequence,
         t.commit_id.clone(),
         &roots,
@@ -940,7 +915,7 @@ async fn sign_tip_attestation(
 /// unsigned (bounded range, no attestor, or a failure to sign).
 async fn held_patch_statement(
     state: &Arc<AppState>,
-    pr: &str,
+    pr: &PrincipalGenesis,
     bounded: bool,
 ) -> Option<coz::CozJson> {
     if bounded {
@@ -964,7 +939,7 @@ async fn held_patch_statement(
 async fn sign_patch_envelope(
     state: &Arc<AppState>,
     t: &TipState,
-    pr: &str,
+    pr: &PrincipalGenesis,
     bounded: bool,
     served_end: Option<&str>,
     from: Option<u64>,
@@ -1097,7 +1072,7 @@ pub async fn patch(
         .collect();
 
     let payload = PatchResponseBody {
-        principal_id: cyphr_storage::engine::bare_digest(&response.principal_id).to_string(),
+        principal_id: response.principal_id.wire_digest(),
         entries,
         actions,
         fork_point,
@@ -1185,25 +1160,6 @@ pub async fn push(
     )
     .await?;
 
-    // #168: an attestor server refuses to sign a post-commit receipt for a
-    // non-canonical `principal_id` (`receipt::commit_receipt`'s own
-    // `parse_genesis_id_str` gate) -- refusing HERE, before any durable
-    // write, keeps that refusal from being discovered only after
-    // `submit_commit` (below) has already landed the commit, which
-    // previously left a durable write standing behind a reported `500`.
-    // Scoped to attestor mode: a keyless or keyed-but-unbootstrapped
-    // server never attempts to sign a receipt, so it stays free to accept
-    // any storage-key-shaped `principal_id`, exactly as before.
-    if state.attestor_identity().is_some()
-        && receipt::parse_genesis_id_str(cyphr_storage::engine::bare_digest(&request.principal_id))
-            .is_err()
-    {
-        return Err(AppError::bad_request(format!(
-            "principal_id is not a canonical genesis identifier: {}",
-            request.principal_id
-        )));
-    }
-
     // Key death (SPEC §6.4) is refused by the engine at admission
     // (`EngineError::DeadKey`), for this route and every other that submits.
 
@@ -1281,7 +1237,7 @@ async fn push_response(
     match receipt::commit_receipt(
         signer,
         now,
-        cyphr_storage::engine::bare_digest(&result.principal_id).to_string(),
+        result.principal_id.wire_digest(),
         tip.sequence,
         tip.commit_id.clone(),
         &roots,
@@ -1351,7 +1307,7 @@ pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoRes
                     .ok_or_else(|| AppError::internal("signing identity thumbprint unavailable"))?;
                 let genesis_key = principal.genesis_key();
                 IdentityResponse::Attestor {
-                    pg: principal.pg().to_string(),
+                    pg: principal.pg().clone(),
                     alg: identity.alg().name().to_string(),
                     pub_key: Base64UrlUnpadded::encode_string(identity.pub_key()),
                     tmb: Base64UrlUnpadded::encode_string(tmb.as_bytes()),
@@ -1484,7 +1440,7 @@ mod commit_count_underflow_tests {
     ///
     /// Returns the principal id the genesis derives (its PG, SPEC 5.1), the
     /// only id the engine accepts for this commit.
-    async fn push_test_genesis(state: &AppState, now: i64) -> String {
+    async fn push_test_genesis(state: &AppState, now: i64) -> cyphr::PrincipalGenesis {
         push_test_genesis_ingest(state, now).await.0
     }
 
@@ -1492,7 +1448,7 @@ mod commit_count_underflow_tests {
     async fn push_test_genesis_ingest(
         state: &AppState,
         now: i64,
-    ) -> (String, cyphr_storage::engine::IngestResult) {
+    ) -> (cyphr::PrincipalGenesis, cyphr_storage::engine::IngestResult) {
         let g = push_test_genesis_full(state, now).await;
         (g.principal_id, g.ingest)
     }
@@ -1500,7 +1456,7 @@ mod commit_count_underflow_tests {
     /// A pushed genesis, with the live principal and the key that can sign
     /// its next commit.
     struct PushedGenesis {
-        principal_id: String,
+        principal_id: cyphr::PrincipalGenesis,
         ingest: cyphr_storage::engine::IngestResult,
         principal: cyphr::Principal,
         golden_kp: coz::KeyPair,
@@ -1895,6 +1851,10 @@ mod push_response_tests {
         format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[fill; 32]))
     }
 
+    fn pg(fill: u8) -> cyphr::PrincipalGenesis {
+        digest(fill).parse().expect("labelled id")
+    }
+
     fn identity() -> (crate::auth::ServerIdentity, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let kp = coz::Alg::Ed25519.generate_keypair();
@@ -1926,7 +1886,7 @@ mod push_response_tests {
             cr: digest(4),
         };
         let result = IngestResult {
-            principal_id: digest(9),
+            principal_id: pg(9),
             blob_hashes: Vec::new(),
             manifest_hash: None,
             tip: Some(tip.clone()),

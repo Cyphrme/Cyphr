@@ -88,7 +88,7 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
 
     let pool = load_pool();
     let principal_id_owned = golden_principal_id(&pool).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
@@ -103,10 +103,7 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     // facts directly, so no follow-up read is needed to verify them.
     // The receipt names the principal in its default wire spelling, the
     // bare digest (SPEC 2.2.3); the pushed id is the engine's labelled PG.
-    assert_eq!(
-        claims["pg"],
-        serde_json::json!(cyphr_storage::engine::bare_digest(principal_id))
-    );
+    assert_eq!(claims["pg"], serde_json::json!(principal_id.wire_digest()));
     assert_eq!(claims["sequence"], payload["sequence"]);
     assert_eq!(claims["commit_id"], payload["commit_id"]);
     assert_eq!(claims["roots"]["pr"], payload["roots"]["pr"]);
@@ -124,7 +121,7 @@ async fn attestor_tip_response_carries_signed_tip_report() {
 
     let pool = load_pool();
     let principal_id_owned = golden_principal_id(&pool).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_100;
     let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
@@ -139,10 +136,7 @@ async fn attestor_tip_response_carries_signed_tip_report() {
 
     // The receipt names the principal in its default wire spelling, the
     // bare digest (SPEC 2.2.3); the pushed id is the engine's labelled PG.
-    assert_eq!(
-        claims["pg"],
-        serde_json::json!(cyphr_storage::engine::bare_digest(principal_id))
-    );
+    assert_eq!(claims["pg"], serde_json::json!(principal_id.wire_digest()));
     assert_eq!(
         claims["sequence"],
         serde_json::json!(payload["commit_count"].as_u64().unwrap() - 1)
@@ -267,7 +261,7 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
 
     let pool = load_pool();
     let principal_id_owned = golden_principal_id(&pool).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_300;
     let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
@@ -336,7 +330,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
 
     let pool = load_pool();
     let principal_id_owned = golden_principal_id(&pool).await;
-    let principal_id = principal_id_owned.as_str();
+    let principal_id = &principal_id_owned;
     let now = 1_700_000_400;
     let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
@@ -351,7 +345,11 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     // Step 1: pin the PG and the genesis-key hint from discovery.
     let (_, discovery_envelope) = get_json(app.clone(), "/server").await;
     let discovery = &discovery_envelope["payload"];
-    let pinned_pg = discovery["pg"].as_str().expect("attestor pg").to_string();
+    let pinned_pg: cyphr::PrincipalGenesis = discovery["pg"]
+        .as_str()
+        .expect("attestor pg")
+        .parse()
+        .expect("a labelled attestor pg");
     let genesis = &discovery["genesis"];
     let genesis_key = cyphr::Key::new(
         genesis["alg"].as_str().expect("genesis alg").to_string(),
@@ -370,9 +368,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     let client = cyphr::Principal::implicit(genesis_key.clone())
         .await
         .expect("the published genesis key reconstructs the genesis");
-    let derived_pg = client
-        .pr_tagged()
-        .expect("pr_tagged for the reconstructed genesis");
+    let derived_pg = client.pr_id().expect("pr_id for the reconstructed genesis");
     assert_eq!(
         derived_pg, pinned_pg,
         "the genesis key must derive the pinned PG"

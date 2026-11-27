@@ -48,7 +48,11 @@ async fn replayer(body: Arc<Mutex<serde_json::Value>>) -> (String, tokio::task::
     (url, handle)
 }
 
-async fn push(app: &axum::Router, id: &str, bundle: &WireBundle) -> axum::http::StatusCode {
+async fn push(
+    app: &axum::Router,
+    id: &cyphr::PrincipalGenesis,
+    bundle: &WireBundle,
+) -> axum::http::StatusCode {
     common::post_json(app.clone(), "/push", common::push_body(id, bundle))
         .await
         .0
@@ -98,12 +102,7 @@ async fn witness_refuses_an_hour_old_tip_report() {
     );
     // The relay carries only the one body, so the witness already holds the
     // authority's server principal.
-    let pg = astate
-        .principal
-        .as_ref()
-        .expect("principal")
-        .pg()
-        .to_string();
+    let pg = astate.principal.as_ref().expect("principal").pg().clone();
     for entry in &astate
         .engine
         .get_patch(&pg, None, None)

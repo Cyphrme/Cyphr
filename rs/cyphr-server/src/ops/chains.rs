@@ -10,6 +10,7 @@
 use std::fmt;
 use std::path::Path;
 
+use cyphr::PrincipalGenesis;
 use cyphr_storage::CommitEntry;
 use cyphr_storage::engine::QuarantineReason;
 
@@ -19,7 +20,7 @@ use crate::config::ServerConfig;
 
 /// Write every stored principal's chain under `out` (created if absent);
 /// returns the principal ids written.
-pub async fn export(config: &ServerConfig, out: &Path) -> Result<Vec<String>, OpsError> {
+pub async fn export(config: &ServerConfig, out: &Path) -> Result<Vec<PrincipalGenesis>, OpsError> {
     let state = open(config)?;
     std::fs::create_dir_all(out).map_err(OpsError::io("creating", out))?;
     let mut written = Vec::new();
@@ -47,7 +48,7 @@ pub async fn export(config: &ServerConfig, out: &Path) -> Result<Vec<String>, Op
 
 /// Submit every chain of an [`export`] directory to `state`; returns the
 /// principal ids read.
-pub async fn import(state: &AppState, dir: &Path) -> Result<Vec<String>, OpsError> {
+pub async fn import(state: &AppState, dir: &Path) -> Result<Vec<PrincipalGenesis>, OpsError> {
     let mut read = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(OpsError::io("reading", dir))? {
         let path = entry.map_err(OpsError::io("reading", dir))?.path();
@@ -55,12 +56,15 @@ pub async fn import(state: &AppState, dir: &Path) -> Result<Vec<String>, OpsErro
         let mut lines = text.lines();
         let header: serde_json::Value = serde_json::from_str(lines.next().unwrap_or_default())
             .map_err(OpsError::store("parsing an export header"))?;
-        let id = header["principal"]
+        let id: PrincipalGenesis = header["principal"]
             .as_str()
             .ok_or_else(|| {
                 OpsError::Refused(format!("{}: no principal in the header", path.display()))
             })?
-            .to_owned();
+            .parse()
+            .map_err(|e| {
+                OpsError::Refused(format!("{}: the header's principal: {e}", path.display()))
+            })?;
         for line in lines {
             let bundle = CommitEntry::from_json(line)
                 .map_err(OpsError::store("parsing a bundle line"))?
@@ -81,7 +85,7 @@ pub async fn import(state: &AppState, dir: &Path) -> Result<Vec<String>, OpsErro
 #[derive(Debug, PartialEq, Eq)]
 pub struct Failure {
     /// The principal it belongs to, when known.
-    pub principal: Option<String>,
+    pub principal: Option<PrincipalGenesis>,
     pub why: String,
 }
 
@@ -98,7 +102,9 @@ impl fmt::Display for VerifyReport {
             writeln!(
                 f,
                 "FAIL {}: {}",
-                x.principal.as_deref().unwrap_or("(unknown principal)"),
+                x.principal
+                    .as_ref()
+                    .map_or_else(|| "(unknown principal)".to_owned(), ToString::to_string),
                 x.why
             )?;
         }

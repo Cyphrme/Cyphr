@@ -48,12 +48,12 @@ pub fn last_commit_bundle(principal: &cyphr::Principal) -> Result<WireBundle, St
 /// `principal/create` (SPEC 5.1 step 3), the id a multi-key principal is
 /// stored under. `None` when no transaction is a `principal/create`.
 #[must_use]
-pub fn genesis_id(bundle: &WireBundle) -> Option<String> {
+pub fn genesis_id(bundle: &WireBundle) -> Option<cyphr::PrincipalGenesis> {
     bundle.txs.iter().flatten().find_map(|blob| {
         let coz: serde_json::Value = serde_json::from_slice(blob).ok()?;
         let typ = coz.pointer("/pay/typ")?.as_str()?;
         cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::PRINCIPAL_CREATE)
-            .then(|| coz.pointer("/pay/id")?.as_str().map(str::to_owned))
+            .then(|| coz.pointer("/pay/id")?.as_str()?.parse().ok())
             .flatten()
     })
 }

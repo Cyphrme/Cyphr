@@ -386,7 +386,7 @@ impl Harness {
                 .unwrap_or_else(|e| panic!("peer `{name}`: evidence body: {e}"));
             let items = signed::evidence_items(status, &bytes)
                 .unwrap_or_else(|why| panic!("peer `{name}`: {why}"));
-            match signed::verify_evidence_set(&items, p.bare(), &keys, &by_peer, &chains[*name])
+            match signed::verify_evidence_set(&items, &p.pg(), &keys, &by_peer, &chains[*name])
                 .await
             {
                 Ok(set) => {
@@ -442,7 +442,7 @@ impl Harness {
         let Ok(bytes) = resp.bytes().await else {
             return signed::ChainView::default();
         };
-        signed::ChainView::from_patch(&bytes, p.bare())
+        signed::ChainView::from_patch(&bytes, &p.pg())
             .await
             .unwrap_or_else(|why| panic!("peer `{peer}`'s chain does not replay: {why}"))
     }

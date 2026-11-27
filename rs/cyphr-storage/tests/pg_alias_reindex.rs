@@ -96,7 +96,7 @@ async fn build(
     pool: &test_fixtures::Pool,
     genesis: &[&str],
     later: &[&str],
-) -> (cyphr::Principal, Genesis, String) {
+) -> (cyphr::Principal, Genesis, cyphr::PrincipalGenesis) {
     let g = kp(pool, "golden");
     let keys: Vec<cyphr::Key> = std::iter::once(key_of(&g))
         .chain(genesis.iter().map(|name| key_of(&kp(pool, name))))
@@ -119,14 +119,17 @@ async fn build(
     (p, Genesis::Disclosed(keys), id)
 }
 
-/// Every PG spelling: each hash-variant label and each bare digest.
-fn pg_spellings(p: &cyphr::Principal) -> Vec<String> {
+/// Every PG spelling: each labelled hash variant. A bare digest is no
+/// spelling of an id: the type refuses it.
+fn pg_spellings(p: &cyphr::Principal) -> Vec<cyphr::PrincipalGenesis> {
     let mh = p.pg().expect("PG established").as_multihash();
     mh.algorithms()
-        .flat_map(|alg| {
-            let tagged = mh.tagged(alg).expect("variant").to_string();
-            let bare = tagged.split_once(':').expect("tagged").1.to_string();
-            [tagged, bare]
+        .map(|alg| {
+            mh.tagged(alg)
+                .expect("variant")
+                .to_string()
+                .parse()
+                .expect("labelled variant is a PG")
         })
         .collect()
 }
@@ -135,8 +138,8 @@ fn pg_spellings(p: &cyphr::Principal) -> Vec<String> {
 /// spelling; what a reindex must preserve.
 async fn resolve_all<B, I>(
     engine: &StorageEngine<B, I>,
-    spellings: &[String],
-) -> BTreeMap<String, (String, Option<u64>)>
+    spellings: &[cyphr::PrincipalGenesis],
+) -> BTreeMap<cyphr::PrincipalGenesis, (cyphr::PrincipalGenesis, Option<u64>)>
 where
     B: cyphr_storage::blob::BlobStore,
     I: Indexer + IndexerWrite,
@@ -236,7 +239,7 @@ async fn alias_resolution_survives_reindex_on_fjall() {
 /// Backs SPEC §3.7.1: an explicit multi-algorithm genesis that establishes
 /// its PG in commit 0 has, as its PG, the genesis-time PR in every hash
 /// variant its keys span (ES256, ES384 and Ed25519 give SHA-256, SHA-384
-/// and SHA-512). Each variant label and bare digest must resolve to the
+/// and SHA-512). Each variant label must resolve to the
 /// one stored principal after that single commit. Turns red if only the
 /// canonical (first-variant) spelling, or the post-create PR's variants,
 /// resolve. End to end at the engine seam: yes.
@@ -247,7 +250,7 @@ async fn alias_explicit_genesis_create_in_commit_zero_resolves_every_pg_variant(
     let spellings = pg_spellings(&p);
     assert_eq!(
         spellings.len(),
-        6,
+        3,
         "premise: three PG variants: {spellings:?}"
     );
     assert!(
@@ -381,27 +384,26 @@ async fn established_principal_current_pr_is_refused_without_replay() {
             .await
             .unwrap_or_else(|e| panic!("commit {i}: {e}"));
     }
-    let current = p.pr_tagged().expect("current PR");
+    let current: cyphr::PrincipalGenesis = p
+        .pr_tagged()
+        .expect("current PR")
+        .parse()
+        .expect("a labelled digest");
     assert!(
         !pg_spellings(&p).contains(&current),
         "premise: the current PR is not the PG"
     );
 
     let before = gets.load(std::sync::atomic::Ordering::SeqCst);
-    for spelling in [
-        current.clone(),
-        cyphr_storage::engine::bare_digest(&current).to_string(),
-    ] {
-        let resolved = engine
-            .canonical_principal_id(&spelling)
-            .await
-            .expect("resolve");
-        assert_eq!(
-            resolved, spelling,
-            "the current PR must not name the principal"
-        );
-        assert!(engine.get_tip(&spelling).await.expect("tip").is_none());
-    }
+    let resolved = engine
+        .canonical_principal_id(&current)
+        .await
+        .expect("resolve");
+    assert_eq!(
+        resolved, current,
+        "the current PR must not name the principal"
+    );
+    assert!(engine.get_tip(&current).await.expect("tip").is_none());
     assert_eq!(
         gets.load(std::sync::atomic::Ordering::SeqCst),
         before,
@@ -448,17 +450,13 @@ async fn non_pr_digest_of_latest_commit_is_refused_without_replay() {
     let ar = entry.auth_root.clone().expect("a live principal has an AR");
     for digest in [&entry.commit_id, &sr, &ar] {
         assert_ne!(digest, &entry.pr, "premise: {digest} is not the PR");
-        for spelling in [
-            digest.to_string(),
-            cyphr_storage::engine::bare_digest(digest).to_string(),
-        ] {
-            assert!(!pg.contains(&spelling), "premise: {spelling} is not the PG");
-            let resolved = engine
-                .canonical_principal_id(&spelling)
-                .await
-                .expect("resolve");
-            assert_eq!(resolved, spelling, "a non-PR digest named the principal");
-        }
+        let spelling: cyphr::PrincipalGenesis = digest.parse().expect("a labelled digest");
+        assert!(!pg.contains(&spelling), "premise: {spelling} is not the PG");
+        let resolved = engine
+            .canonical_principal_id(&spelling)
+            .await
+            .expect("resolve");
+        assert_eq!(resolved, spelling, "a non-PR digest named the principal");
     }
     assert_eq!(
         gets.load(std::sync::atomic::Ordering::SeqCst),

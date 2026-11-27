@@ -23,6 +23,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::replay::WireBundle;
 use cyphr_server::AppState;
 use cyphr_server::auth::ServerIdentity;
@@ -204,21 +205,21 @@ pub fn wire_cozies(bundle: &serde_json::Value) -> Vec<serde_json::Value> {
 }
 
 /// [`push_body`] of [`bundle_of`]`(blobs)`.
-pub fn push_blobs(principal_id: &str, blobs: &[Vec<u8>]) -> String {
+pub fn push_blobs(principal_id: &PrincipalGenesis, blobs: &[Vec<u8>]) -> String {
     push_body(principal_id, &bundle_of(blobs))
 }
 
 /// A push body: `principal_id` and `bundle` in the wire form.
-pub fn push_body(principal_id: &str, bundle: &WireBundle) -> String {
+pub fn push_body(principal_id: &PrincipalGenesis, bundle: &WireBundle) -> String {
     let mut body = serde_json::to_value(bundle).expect("bundle serializes");
-    body["principal_id"] = principal_id.into();
+    body["principal_id"] = principal_id.to_string().into();
     body.to_string()
 }
 
 /// The id the fixture's genesis derives, i.e. the only `principal_id`
 /// `bootstrap_principal` may use for it: the PG its genesis commit names
 /// (SPEC 5.1), or for a fixture with none its genesis key's PR (SPEC 3.1).
-pub fn fixture_principal_id(fixture: &serde_json::Value) -> String {
+pub fn fixture_principal_id(fixture: &serde_json::Value) -> PrincipalGenesis {
     let named = fixture["commits"]
         .as_array()
         .and_then(|commits| commits.first())
@@ -235,7 +236,7 @@ pub fn fixture_principal_id(fixture: &serde_json::Value) -> String {
 /// the fixture's explicit genesis.
 pub async fn bootstrap_principal(
     state: &AppState,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     fixture: &serde_json::Value,
 ) {
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
@@ -336,13 +337,16 @@ pub async fn sign_key_create_commit(
 }
 
 /// The id a principal with an implicit genesis on pool key `name` derives
-/// (SPEC 3.1): that key's thumbprint, base64url. A principal that commits
-/// is keyed by its PG instead ([`genesis_push_id`]).
-pub fn implicit_principal_id(pool: &test_fixtures::Pool, name: &str) -> String {
-    pool.get(name)
+/// (SPEC 3.1): that key's thumbprint under its algorithm's hash. A
+/// principal that commits is keyed by its PG instead ([`genesis_push_id`]).
+pub fn implicit_principal_id(pool: &test_fixtures::Pool, name: &str) -> PrincipalGenesis {
+    let key = pool
+        .get(name)
         .expect("key in pool")
-        .compute_tmb_b64()
-        .expect("pool key tmb")
+        .key()
+        .expect("pool key");
+    cyphr_storage::engine::genesis_principal_id(&cyphr_storage::Genesis::Implicit(key))
+        .expect("pool key derives an id")
 }
 
 /// The principal [`build_genesis_push_body_with`] pushes and its genesis
@@ -381,14 +385,14 @@ pub async fn genesis_push_id(
     pool: &test_fixtures::Pool,
     genesis_name: &str,
     new_key_name: &str,
-) -> String {
+) -> PrincipalGenesis {
     let (_, bundle) = genesis_push(pool, genesis_name, new_key_name, 1).await;
     test_fixtures::bundle::genesis_id(&bundle).expect("genesis PG")
 }
 
 /// The id of the standard test principal, the one `build_genesis_push_body`
 /// builds: `golden` with `key_a`.
-pub async fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
+pub async fn golden_principal_id(pool: &test_fixtures::Pool) -> PrincipalGenesis {
     genesis_push_id(pool, "golden", "key_a").await
 }
 
@@ -413,7 +417,7 @@ pub async fn build_genesis_push_body_with(
     pool: &test_fixtures::Pool,
     genesis_name: &str,
     new_key_name: &str,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     now: i64,
 ) -> String {
     let (_, bundle) = genesis_push(pool, genesis_name, new_key_name, now).await;
@@ -423,7 +427,7 @@ pub async fn build_genesis_push_body_with(
 /// The standard genesis push: `golden` with `key_a`.
 pub async fn build_genesis_push_body(
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     now: i64,
 ) -> String {
     build_genesis_push_body_with(pool, "golden", "key_a", principal_id, now).await
@@ -434,7 +438,7 @@ pub async fn build_genesis_push_body(
 /// `key_b`, signed by `golden`.
 pub async fn build_second_commit_push_body(
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     genesis_now: i64,
     now: i64,
 ) -> String {
@@ -585,7 +589,7 @@ pub fn pinned_gossip(
         .as_ref()
         .expect("the authority holds a server principal")
         .pg()
-        .to_string();
+        .clone();
     cyphr_server::config::GossipConfig {
         peers: vec![cyphr_server::config::PeerEntry::Pinned {
             url: url.into(),

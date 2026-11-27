@@ -146,7 +146,7 @@ impl Connector for Http {
 
 /// Pin the server's PG and genesis key from `/server`, like a first-contact
 /// client. Returns the pinned chain (not yet followed) and the PG.
-async fn pin(http: &Http) -> (PeerChain, String) {
+async fn pin(http: &Http) -> (PeerChain, cyphr::PrincipalGenesis) {
     let discovery = http.get_json("/server").await;
     let d = &discovery["payload"];
     let g = &d["genesis"];
@@ -159,12 +159,16 @@ async fn pin(http: &Http) -> (PeerChain, String) {
     )
     .expect("key binds its tmb")
     .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
-    let pg = d["pg"].as_str().expect("pg").to_string();
+    let pg: cyphr::PrincipalGenesis = d["pg"]
+        .as_str()
+        .expect("pg")
+        .parse()
+        .expect("a labelled /server pg");
     (PeerChain::pin(&pg, genesis).await, pg)
 }
 
 /// The server's signed `/tip` for its own chain.
-async fn own_tip(http: &Http, pg: &str) -> serde_json::Value {
+async fn own_tip(http: &Http, pg: &cyphr::PrincipalGenesis) -> serde_json::Value {
     http.get_json(&format!("/tip?pg={pg}")).await
 }
 

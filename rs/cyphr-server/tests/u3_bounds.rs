@@ -199,7 +199,13 @@ async fn rival_get_rows(n: usize, path: &str) -> u64 {
     assert_ne!(st, StatusCode::CREATED, "a rival is retained, not served");
 
     let before = a.engine.chain_rows_read();
-    let (st, ..) = call(&app, "GET", &path.replace("{id}", &id), String::new()).await;
+    let (st, ..) = call(
+        &app,
+        "GET",
+        &path.replace("{id}", &id.to_string()),
+        String::new(),
+    )
+    .await;
     assert!(st.is_success() || st == StatusCode::LOCKED, "{st}");
     a.engine.chain_rows_read() - before
 }
@@ -324,7 +330,7 @@ impl Rig {
         Self::boot(config, kept).await
     }
 
-    async fn push(&self, id: &str, bundle: &cyphr::replay::WireBundle) {
+    async fn push(&self, id: &cyphr::PrincipalGenesis, bundle: &cyphr::replay::WireBundle) {
         let (st, ..) = call(&self.app, "POST", "/push", push_body(id, bundle)).await;
         assert_eq!(st, StatusCode::CREATED);
     }

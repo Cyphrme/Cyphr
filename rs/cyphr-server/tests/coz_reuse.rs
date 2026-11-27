@@ -115,7 +115,7 @@ async fn commit_blobs(p: &mut Principal, pool: &test_fixtures::Pool, tx: &Tx) ->
         .collect()
 }
 
-fn body(principal_id: &str, blobs: &[Vec<u8>]) -> String {
+fn body(principal_id: &cyphr::PrincipalGenesis, blobs: &[Vec<u8>]) -> String {
     common::push_blobs(principal_id, blobs)
 }
 
@@ -124,7 +124,7 @@ fn body(principal_id: &str, blobs: &[Vec<u8>]) -> String {
 /// (`create key_b`), as push bodies, plus D's wire blob and the principal
 /// id (its PG).
 struct Chain {
-    id: String,
+    id: cyphr::PrincipalGenesis,
     genesis_body: String,
     create_body: String,
     delete_body: String,
@@ -143,7 +143,7 @@ async fn build_chain(pool: &test_fixtures::Pool) -> Chain {
     let mut p = Principal::implicit(genesis_key)
         .await
         .expect("implicit genesis");
-    let id = p.pr_tagged().expect("PG");
+    let id = p.pr_id().expect("PG");
     let genesis_blobs = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T)
         .await
         .expect("genesis");

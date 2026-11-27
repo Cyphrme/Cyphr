@@ -51,6 +51,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coz::Thumbprint;
+use cyphr::PrincipalGenesis;
 use cyphr::principal::system_clock;
 use cyphr_net::{
     BindingPolicy, ChainSource, Connector, HttpConnector, PatchEntry, PatchFailure, PatchRequest,
@@ -85,7 +86,7 @@ pub struct Peer {
     pub connector: HttpConnector,
     /// The PG of the peer's server principal; `None` means its reports are
     /// not checked (R4: a verifier decides whose claims to accept).
-    pub pg: Option<String>,
+    pub pg: Option<PrincipalGenesis>,
 }
 
 impl Peer {
@@ -119,7 +120,7 @@ pub fn peers_of(state: &AppState) -> Vec<Peer> {
                 Ok(connector) => Some(Peer {
                     name: entry.url().to_owned(),
                     connector,
-                    pg: entry.pg().map(str::to_owned),
+                    pg: entry.pg().cloned(),
                 }),
                 Err(err) => {
                     warn!(peer = %entry.url(), %err, "gossip peer refused; not dialled");
@@ -160,7 +161,7 @@ pub fn spawn(state: &Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
 /// persisted, and after a restart is read again from the engine's state.
 #[derive(Default)]
 pub struct Gossip {
-    keys: HashMap<String, KeyMemo>,
+    keys: HashMap<PrincipalGenesis, KeyMemo>,
 }
 
 struct KeyMemo {
@@ -206,7 +207,7 @@ impl Gossip {
         &self,
         state: &Arc<AppState>,
         peers: &[Peer],
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> Option<Vec<Thumbprint>> {
         let tip = state.engine.get_tip(principal_id).await.ok()??;
         let ours = state.engine.assess(principal_id).await.ok()?;
@@ -270,7 +271,7 @@ async fn probe_revokes(state: &Arc<AppState>, peers: &[Peer], keys: &[Thumbprint
 /// The chain the engine stores, as a resumed record's store.
 struct StoredChain {
     state: Arc<AppState>,
-    principal_id: String,
+    principal_id: PrincipalGenesis,
 }
 
 impl ChainSource for StoredChain {
@@ -294,7 +295,10 @@ impl ChainSource for StoredChain {
 /// A record of `principal_id` at the engine's tip, opened over the
 /// engine's verified state of it (`StorageEngine::at_tip`): no commit is
 /// replayed here, whether or not a peer answers.
-async fn open_record(state: &Arc<AppState>, principal_id: &str) -> Result<Record, RoundError> {
+async fn open_record(
+    state: &Arc<AppState>,
+    principal_id: &PrincipalGenesis,
+) -> Result<Record, RoundError> {
     let at_tip = state
         .engine
         .at_tip(principal_id)
@@ -326,7 +330,7 @@ fn patch_entries(stored: &cyphr_storage::engine::PatchResponse) -> Vec<PatchEntr
 async fn round_principal(
     state: &Arc<AppState>,
     peers: &[Peer],
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
 ) -> Result<KeyMemo, RoundError> {
     let mut record = open_record(state, principal_id).await?;
     let tip = record.tip().ok_or(RoundError::Empty)?;
@@ -484,7 +488,7 @@ pub(crate) async fn fresh_resyncs<C: Connector>(
     state: &AppState,
     peer: &str,
     connector: &C,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
 ) -> Vec<serde_json::Value> {
     let served = match fetch_resyncs(connector, principal_id).await {
         Ok(served) => served,
@@ -518,7 +522,7 @@ async fn peer_resync_offer(
     state: &AppState,
     peer: &str,
     connector: &HttpConnector,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
 ) -> Option<(Vec<serde_json::Value>, Vec<cyphr::replay::WireBundle>)> {
     let pops = fresh_resyncs(state, peer, connector, principal_id).await;
     if pops.is_empty() {
@@ -546,7 +550,7 @@ async fn peer_resync_offer(
 /// Log the engine's answer to a commit gossip handed it. Most answers are
 /// refusals of what the node already holds, which are routine; a failed
 /// sync is not: the engine refuses every write until restart.
-fn refused(principal_id: &str, err: &cyphr_storage::engine::EngineError, what: &str) {
+fn refused(principal_id: &PrincipalGenesis, err: &cyphr_storage::engine::EngineError, what: &str) {
     if matches!(err, cyphr_storage::engine::EngineError::DurabilityLost(_)) {
         error!(principal = %principal_id, %err, "{what}: the record is not durable");
     } else {
@@ -575,7 +579,7 @@ pub(crate) async fn record_revokes(state: &AppState, revoked: &[cyphr_net::Revok
 
 /// The key of `peer`'s server principal that signed a statement, from the
 /// chain this node holds of it.
-async fn peer_key(state: &AppState, pg: &str, tmb: &Thumbprint) -> Option<PeerKey> {
+async fn peer_key(state: &AppState, pg: &PrincipalGenesis, tmb: &Thumbprint) -> Option<PeerKey> {
     let chain = state.engine.at_tip(pg).await.ok()??;
     chain
         .active_keys()
@@ -588,7 +592,11 @@ async fn peer_key(state: &AppState, pg: &str, tmb: &Thumbprint) -> Option<PeerKe
 
 /// Make sure this node holds `peer`'s server principal `pg`, fetching it
 /// from the peer through the same core as any other principal.
-async fn ensure_peer_chain(state: &Arc<AppState>, peer: &Peer, pg: &str) -> Result<(), String> {
+async fn ensure_peer_chain(
+    state: &Arc<AppState>,
+    peer: &Peer,
+    pg: &PrincipalGenesis,
+) -> Result<(), String> {
     if state
         .engine
         .get_tip(pg)
@@ -618,12 +626,12 @@ async fn ensure_peer_chain(state: &Arc<AppState>, peer: &Peer, pg: &str) -> Resu
 async fn verify_peer_tip(
     state: &Arc<AppState>,
     peer: &Peer,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
 ) -> Result<Option<Attested>, String> {
-    let Some(pg) = peer.pg.as_deref() else {
+    let Some(pg) = peer.pg.as_ref() else {
         return Ok(None);
     };
-    if bare(pg) == bare(principal_id) {
+    if pg == principal_id {
         return Ok(None);
     }
     ensure_peer_chain(state, peer, pg).await?;
@@ -660,10 +668,6 @@ enum Attested {
     Held(cyphr_net::HeldReport),
 }
 
-fn bare(id: &str) -> &str {
-    cyphr_storage::engine::bare_digest(id)
-}
-
 /// Whether the tip this node holds is the one `report` attests. `report`'s
 /// `sequence` is the attested commit's 0-indexed position, one below the
 /// held commit count.
@@ -691,7 +695,7 @@ fn tip_matches_report(
 }
 
 /// Ask `peer` for its branches and offer what comes back to the engine.
-async fn offer_peer_branches(state: &Arc<AppState>, peer: &Peer, principal_id: &str) {
+async fn offer_peer_branches(state: &Arc<AppState>, peer: &Peer, principal_id: &PrincipalGenesis) {
     let request = PatchRequest {
         principal_id,
         anchor: None,
@@ -738,18 +742,14 @@ async fn offer_peer_branches(state: &Arc<AppState>, peer: &Peer, principal_id: &
 async fn fetch_unheld(
     state: &Arc<AppState>,
     peer: &Peer,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     check: bool,
 ) -> Result<usize, String> {
     let request = PatchRequest {
         principal_id,
         anchor: None,
     };
-    let patch = match peer
-        .pg
-        .as_deref()
-        .filter(|pg| check && bare(pg) != bare(principal_id))
-    {
+    let patch = match peer.pg.as_ref().filter(|pg| check && *pg != principal_id) {
         None => fetch_patch(&peer.connector, &request, BindingPolicy::NotRequired, None).await,
         Some(pg) => {
             ensure_peer_chain(state, peer, pg).await?;
@@ -797,7 +797,7 @@ async fn fetch_unheld(
 async fn apply_fetched(
     state: &Arc<AppState>,
     peer: &Peer,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     patch: cyphr_net::VerifiedPatch,
 ) -> Result<usize, String> {
     // In Error `entries` ends with the canonical branch, which is handled
@@ -956,7 +956,7 @@ async fn apply_fetched(
 /// does not hold is fetched from genesis, from the peers in order, stopping
 /// at the first that yields it. A refusal or a failure leaves the local
 /// answer as it was.
-pub(crate) async fn fetch_on_read(state: &Arc<AppState>, principal_id: &str) {
+pub(crate) async fn fetch_on_read(state: &Arc<AppState>, principal_id: &PrincipalGenesis) {
     if state.config.fetches_on_read() {
         fetch_from_peers(state, principal_id).await;
     }
@@ -966,7 +966,7 @@ pub(crate) async fn fetch_on_read(state: &Arc<AppState>, principal_id: &str) {
 /// `principal_id` in step with the configured peers, as one gossip round
 /// does for a held principal and a fetch from genesis does for one that is
 /// not held.
-pub async fn fetch_from_peers(state: &Arc<AppState>, principal_id: &str) {
+pub async fn fetch_from_peers(state: &Arc<AppState>, principal_id: &PrincipalGenesis) {
     if let Err(why) = try_fetch_from_peers(state, principal_id).await {
         warn!(principal = %principal_id, %why, "fetch from peers: refused");
     }
@@ -980,7 +980,10 @@ pub async fn fetch_from_peers(state: &Arc<AppState>, principal_id: &str) {
 /// # Errors
 ///
 /// The reason a peer's answer was refused.
-pub async fn try_fetch_from_peers(state: &Arc<AppState>, principal_id: &str) -> Result<(), String> {
+pub async fn try_fetch_from_peers(
+    state: &Arc<AppState>,
+    principal_id: &PrincipalGenesis,
+) -> Result<(), String> {
     let peers = peers_of(state);
     let mut refusal = None;
     match state.engine.get_tip(principal_id).await {
@@ -1028,7 +1031,7 @@ pub async fn try_fetch_from_peers(state: &Arc<AppState>, principal_id: &str) -> 
 /// is bounded: this node's own standing and fork point do not depend on it.
 async fn head_is_bound(
     state: &Arc<AppState>,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     head: &cyphr::state::TaggedDigest,
     head_held: bool,
     branch_at: &[(String, Vec<usize>)],

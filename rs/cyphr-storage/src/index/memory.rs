@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use cyphr::PrincipalGenesis;
 use cyphr::state::TaggedDigest;
 
 use super::types::*;
@@ -16,25 +17,25 @@ use crate::blob::Blake3Hash;
 #[derive(Debug, Default)]
 struct MemoryState {
     /// Principal summaries keyed by principal_id.
-    principals: HashMap<String, PrincipalSummary>,
+    principals: HashMap<PrincipalGenesis, PrincipalSummary>,
     /// Commit chains keyed by principal_id, ordered by sequence.
-    commits: HashMap<String, Vec<CommitRef>>,
+    commits: HashMap<PrincipalGenesis, Vec<CommitRef>>,
     /// Tip state keyed by principal_id.
-    tips: HashMap<String, TipState>,
+    tips: HashMap<PrincipalGenesis, TipState>,
     /// Digest → entity reference lookup.
     digest_index: HashMap<String, Vec<EntityRef>>,
     /// Public keys keyed by thumbprint.
     public_keys: HashMap<String, PublicKeyInfo>,
     /// Alias table: Principal Root variant → the principal id it names.
     /// Derived state; see [`Indexer::get_tip`] for the resolution rule.
-    aliases: HashMap<String, String>,
+    aliases: HashMap<String, PrincipalGenesis>,
     /// Principals whose PG is established (see [`Indexer::is_pg_established`]).
-    established: std::collections::HashSet<String>,
+    established: std::collections::HashSet<PrincipalGenesis>,
     /// See [`IndexerWrite::set_quarantined`]; survives [`IndexerWrite::clear`].
     quarantined: Vec<(crate::blob::Blake3Hash, String)>,
     /// What each indexed commit wrote, by `(principal_id, sequence)`, so
     /// [`IndexerWrite::replace_chain_from`] can withdraw it.
-    written: HashMap<(String, u64), Written>,
+    written: HashMap<(PrincipalGenesis, u64), Written>,
 }
 
 /// The digest holders and PG aliases one indexed commit contributed.
@@ -47,11 +48,11 @@ struct Written {
 impl MemoryState {
     /// The stored principal id `id` names: itself if a principal is stored
     /// under it, else the principal its alias names, else `id` unchanged.
-    fn canonical<'a>(&'a self, id: &'a str) -> &'a str {
+    fn canonical<'a>(&'a self, id: &'a PrincipalGenesis) -> &'a PrincipalGenesis {
         if self.tips.contains_key(id) {
             id
         } else {
-            self.aliases.get(id).map_or(id, String::as_str)
+            self.aliases.get(&id.to_string()).unwrap_or(id)
         }
     }
 }
@@ -82,9 +83,9 @@ impl Default for MemoryIndexer {
 impl Indexer for MemoryIndexer {
     fn get_tip(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> impl std::future::Future<Output = Result<Option<TipState>, IndexerError>> + Send {
-        let principal_id = principal_id.to_string();
+        let principal_id = principal_id.clone();
         async move {
             let state = self
                 .state
@@ -96,9 +97,9 @@ impl Indexer for MemoryIndexer {
 
     fn is_pg_established(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send {
-        let principal_id = principal_id.to_string();
+        let principal_id = principal_id.clone();
         async move {
             let state = self
                 .state
@@ -110,11 +111,11 @@ impl Indexer for MemoryIndexer {
 
     fn get_commit_chain(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: Option<u64>,
         to: Option<u64>,
     ) -> impl std::future::Future<Output = Result<Vec<CommitRef>, IndexerError>> + Send {
-        let principal_id = principal_id.to_string();
+        let principal_id = principal_id.clone();
         async move {
             let state = self
                 .state
@@ -230,13 +231,17 @@ fn is_indexed(state: &MemoryState, commit: &IndexableCommit) -> Result<bool, Ind
 /// such a write names no new truth, it rewrites an old one. The only
 /// exclusive claim; digests name sets of holders.
 fn claims_conflict(state: &MemoryState, commit: &IndexableCommit) -> Result<(), IndexerError> {
-    for pr in commit.pg.iter().filter(|pr| **pr != commit.principal_id) {
-        let owner = state
-            .aliases
-            .get(pr)
-            .map(String::as_str)
-            .or_else(|| state.principals.contains_key(pr).then_some(pr.as_str()));
-        if owner.is_some_and(|o| o != commit.principal_id) {
+    for pr in commit
+        .pg
+        .iter()
+        .filter(|pr| **pr != commit.principal_id.to_string())
+    {
+        let owner = state.aliases.get(pr).or_else(|| {
+            pr.parse::<PrincipalGenesis>()
+                .ok()
+                .and_then(|id| state.principals.get_key_value(&id).map(|(k, _)| k))
+        });
+        if owner.is_some_and(|o| *o != commit.principal_id) {
             return Err(IndexerError::Conflict(format!(
                 "PG alias {pr} already names another principal; refusing to re-point it to {}",
                 commit.principal_id
@@ -302,7 +307,7 @@ fn index_one(state: &mut MemoryState, commit: &IndexableCommit) -> Result<(), In
     // Alias each PG variant to the principal. The conflict check
     // above guarantees none names anyone else.
     for pr in &commit.pg {
-        if *pr != commit.principal_id {
+        if *pr != commit.principal_id.to_string() {
             state
                 .aliases
                 .insert(pr.clone(), commit.principal_id.clone());
@@ -351,7 +356,7 @@ fn index_one(state: &mut MemoryState, commit: &IndexableCommit) -> Result<(), In
             pg: commit
                 .pg
                 .iter()
-                .filter(|pr| **pr != commit.principal_id)
+                .filter(|pr| **pr != commit.principal_id.to_string())
                 .cloned()
                 .collect(),
         },
@@ -401,7 +406,7 @@ impl IndexerWrite for MemoryIndexer {
 
     async fn replace_chain_from(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         sequence: u64,
         commits: &[IndexableCommit],
         _token: &DeriveToken,
@@ -422,7 +427,7 @@ impl IndexerWrite for MemoryIndexer {
         let state = &mut *state;
         let mut touched = std::collections::HashSet::new();
         for at in sequence..held {
-            let Some(written) = state.written.remove(&(principal_id.to_string(), at)) else {
+            let Some(written) = state.written.remove(&(principal_id.clone(), at)) else {
                 continue;
             };
             for (digest, holder) in written.entries {
@@ -447,7 +452,7 @@ impl IndexerWrite for MemoryIndexer {
         for at in 0..sequence {
             for (digest, holder) in state
                 .written
-                .get(&(principal_id.to_string(), at))
+                .get(&(principal_id.clone(), at))
                 .map_or(&[][..], |w| w.entries.as_slice())
             {
                 if touched.contains(&(digest.clone(), holder.entity_type as u8)) {

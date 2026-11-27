@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::{HashAlg, PrincipalGenesis};
 use cyphr_blob_fjall::FjallBlobStore;
 use cyphr_index_fjall::FjallIndexer;
 use cyphr_server::AppState;
@@ -86,13 +87,13 @@ async fn single_key_explicit_genesis_establishes_pg() {
         .await
         .expect("genesis");
     let pg_tagged = client
-        .pr_tagged()
-        .expect("pr_tagged for a fresh single-key genesis");
+        .pr_id()
+        .expect("pr_id for a fresh single-key genesis");
 
     let now = 1_700_000_000i64;
     let pc_pay = serde_json::json!({
         "alg": alg,
-        "id": pg_tagged,
+        "id": pg_tagged.to_string(),
         "now": now,
         "tmb": tmb_b64,
         "typ": "cyphr.me/cyphr/principal/create",
@@ -146,9 +147,8 @@ async fn single_key_explicit_genesis_establishes_pg() {
     let pg = client
         .pg()
         .expect("single-key explicit genesis MUST establish a PG");
-    let pg_from_chain = pg.to_string();
     assert_eq!(
-        pg_from_chain, pg_tagged,
+        pg, &pg_tagged,
         "PG equals the nascent PR declared as principal/create's id"
     );
 
@@ -201,7 +201,10 @@ async fn first_keyed_boot_creates_and_serves_the_principal() {
         .await
         .expect("first keyed boot bootstraps the principal");
 
-    assert!(!sp.pg().is_empty(), "a bootstrapped principal has a PG");
+    assert!(
+        !sp.pg().wire_digest().is_empty(),
+        "a bootstrapped principal has a PG"
+    );
 
     let tip = state
         .engine
@@ -209,7 +212,7 @@ async fn first_keyed_boot_creates_and_serves_the_principal() {
         .await
         .expect("get_tip ok")
         .expect("the server principal's chain is served under its PG");
-    assert_eq!(tip.principal_id, sp.pg(), "chain served under the PG");
+    assert_eq!(&tip.principal_id, sp.pg(), "chain served under the PG");
     assert_eq!(tip.commit_count, 1, "exactly one genesis commit exists");
 }
 
@@ -232,7 +235,7 @@ async fn second_boot_loads_without_duplicating_the_chain() {
     )
     .await
     .expect("first boot");
-    let pg1 = sp1.pg().to_string();
+    let pg1 = sp1.pg().clone();
     let count1 = state
         .engine
         .get_tip(&pg1)
@@ -246,7 +249,7 @@ async fn second_boot_loads_without_duplicating_the_chain() {
             .await
             .expect("second boot loads the existing principal");
 
-    assert_eq!(sp2.pg(), pg1, "second boot resolves the same PG");
+    assert_eq!(sp2.pg(), &pg1, "second boot resolves the same PG");
     let count2 = state
         .engine
         .get_tip(&pg1)
@@ -271,7 +274,7 @@ async fn rotation_preserves_pg_and_swaps_active_key() {
     let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
         .await
         .expect("bootstrap");
-    let pg_before = sp.pg().to_string();
+    let pg_before = sp.pg().clone();
 
     let old_tmb = tmb_of(&kp);
     let new_kp = coz::Alg::Ed25519.generate_keypair();
@@ -281,7 +284,7 @@ async fn rotation_preserves_pg_and_swaps_active_key() {
         .await
         .expect("rotation succeeds on the server's own chain");
 
-    assert_eq!(sp.pg(), pg_before, "PG is unchanged by rotation");
+    assert_eq!(sp.pg(), &pg_before, "PG is unchanged by rotation");
 
     // Reload the chain and inspect its key state.
     let principal = state
@@ -319,7 +322,7 @@ async fn reboot_after_rotation_loads_the_rotated_principal() {
     let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
         .await
         .expect("bootstrap");
-    let pg = sp.pg().to_string();
+    let pg = sp.pg().clone();
 
     let new_kp = coz::Alg::Ed25519.generate_keypair();
     sp.rotate(&state.engine, &new_kp)
@@ -338,7 +341,7 @@ async fn reboot_after_rotation_loads_the_rotated_principal() {
             .await
             .expect("a reboot after rotation must load the principal, not fail on a stale key");
 
-    assert_eq!(sp2.pg(), pg, "reboot resolves the same PG");
+    assert_eq!(sp2.pg(), &pg, "reboot resolves the same PG");
 }
 
 /// The principal must be able to rotate again after a rotation: the second
@@ -353,7 +356,7 @@ async fn principal_can_rotate_again_after_rotation() {
     let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
         .await
         .expect("bootstrap");
-    let pg = sp.pg().to_string();
+    let pg = sp.pg().clone();
 
     let kp1 = coz::Alg::Ed25519.generate_keypair();
     sp.rotate(&state.engine, &kp1)
@@ -364,7 +367,7 @@ async fn principal_can_rotate_again_after_rotation() {
         .await
         .expect("a second rotation must sign with the rotated-in key, not a retired one");
 
-    assert_eq!(sp.pg(), pg, "PG is stable across two rotations");
+    assert_eq!(sp.pg(), &pg, "PG is stable across two rotations");
 
     let principal = state
         .engine
@@ -417,7 +420,7 @@ async fn token_after_rotation_is_signed_by_the_new_key() {
         .as_ref()
         .expect("identity present after rotation")
         .issue_login_token(
-            "some-principal",
+            &PrincipalGenesis::from_digest(HashAlg::Sha256, vec![3; 32]).expect("id"),
             &tmb_of(&new_kp),
             vec!["read".to_string()],
             now,
@@ -454,24 +457,23 @@ async fn token_after_rotation_is_signed_by_the_new_key() {
 #[tokio::test]
 async fn own_tip_keyed_server_signs_its_own_pg_tip() {
     let (state, _identity, _dir) = common::attestor_server().await;
-    let pg = state
-        .principal
-        .as_ref()
-        .expect("bootstrapped")
-        .pg()
-        .to_string();
-    let bare = cyphr_storage::engine::bare_digest(&pg).to_string();
+    let pg = state.principal.as_ref().expect("bootstrapped").pg().clone();
+    let bare = pg.wire_digest();
     let app = cyphr_server::build_router(state);
 
-    for spelling in [pg.as_str(), bare.as_str()] {
-        let (status, env) = common::get_json(app.clone(), &format!("/tip?pg={spelling}")).await;
-        assert_eq!(status, axum::http::StatusCode::OK, "{spelling}: {env:?}");
-        assert_eq!(env["statement"]["kind"], "signed", "{spelling}: {env:?}");
-        assert_eq!(
-            env["statement"]["coz"]["pay"]["pg"], bare,
-            "the report attests the server's own PG"
-        );
-    }
+    let (status, env) = common::get_json(app.clone(), &format!("/tip?pg={pg}")).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{pg}: {env:?}");
+    assert_eq!(env["statement"]["kind"], "signed", "{pg}: {env:?}");
+    assert_eq!(
+        env["statement"]["coz"]["pay"]["pg"], bare,
+        "the report attests the server's own PG"
+    );
+
+    // The bare spelling is not an id any more: refused at the edge, never
+    // answered with an unsigned or signed tip. (The error text is pinned in
+    // `principal_id_edges.rs`; the refusal body is not JSON.)
+    let (status, env) = common::get_json(app, &format!("/tip?pg={bare}")).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{env:?}");
 }
 
 /// A rebooted server signs its own PG's tip with no derived roots
@@ -482,12 +484,7 @@ async fn own_tip_keyed_server_signs_its_own_pg_tip() {
 #[tokio::test]
 async fn rebooted_server_signs_its_own_pg_tip() {
     let (first, _identity, dir) = common::attestor_server().await;
-    let pg = first
-        .principal
-        .as_ref()
-        .expect("bootstrapped")
-        .pg()
-        .to_string();
+    let pg = first.principal.as_ref().expect("bootstrapped").pg().clone();
     drop(first);
     let key_path = dir.path().join("signing-key.json");
     let mut state = common::keyed_appstate(&dir.path().join("data"), &key_path);

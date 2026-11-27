@@ -108,31 +108,35 @@ const KNOWN_PARTITIONS: &[&str] = &[
 /// Build a durable-shaped commit, mirroring `tests/crash_recovery.rs`'s
 /// `make_commit` fixture, extended with one key so `index_public_keys`
 /// is populated too (exercised by the per-keyspace physical compare).
-fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
+fn make_commit(name: &str, seq: u64, timestamp: i64) -> IndexableCommit {
     let mut hash_bytes = [0u8; 32];
-    hash_bytes[0] = principal_id.as_bytes()[0];
+    hash_bytes[0] = name.as_bytes()[0];
     hash_bytes[1] = seq as u8;
     let dummy_hash = Blake3Hash::from_bytes(hash_bytes);
 
     IndexableCommit {
         pg: Vec::new(),
         manifest: None,
-        principal_id: principal_id.to_string(),
-        commit_ids: vec![format!("SHA-256:commit-{principal_id}-{seq}")],
+        principal_id: cyphr::PrincipalGenesis::from_digest(
+            cyphr::HashAlg::Sha256,
+            vec![name.as_bytes()[0]; 32],
+        )
+        .expect("valid id"),
+        commit_ids: vec![format!("SHA-256:commit-{name}-{seq}")],
         sequence: seq,
         pre: if seq == 0 {
             None
         } else {
-            Some(format!("SHA-256:pr-{principal_id}-{}", seq - 1))
+            Some(format!("SHA-256:pr-{name}-{}", seq - 1))
         },
-        prs: vec![format!("SHA-256:pr-{principal_id}-{seq}")],
-        srs: vec![format!("SHA-256:sr-{principal_id}-{seq}")],
-        ars: vec![format!("SHA-256:ar-{principal_id}-{seq}")],
-        crs: vec![format!("SHA-256:cr-{principal_id}-{seq}")],
+        prs: vec![format!("SHA-256:pr-{name}-{seq}")],
+        srs: vec![format!("SHA-256:sr-{name}-{seq}")],
+        ars: vec![format!("SHA-256:ar-{name}-{seq}")],
+        crs: vec![format!("SHA-256:cr-{name}-{seq}")],
         blob_hashes: vec![dummy_hash],
         cozies: vec![IndexableCoz {
             blob_hash: dummy_hash,
-            czd: format!("SHA-256:czd-{principal_id}-{seq}"),
+            czd: format!("SHA-256:czd-{name}-{seq}"),
             typ: "key/create".to_string(),
             tmb: "thumbprint".to_string(),
             alg: "ED25519".to_string(),
@@ -141,9 +145,9 @@ fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit 
         }],
         timestamp,
         keys: vec![PublicKeyInfo {
-            thumbprint: format!("thumbprint-{principal_id}-{seq}"),
+            thumbprint: format!("thumbprint-{name}-{seq}"),
             algorithm: "ED25519".to_string(),
-            public_key: format!("pubkey-{principal_id}-{seq}"),
+            public_key: format!("pubkey-{name}-{seq}"),
         }],
     }
 }

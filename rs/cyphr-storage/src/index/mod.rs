@@ -58,6 +58,7 @@ pub mod conformance;
 mod memory;
 pub mod types;
 
+use cyphr::PrincipalGenesis;
 use cyphr::state::TaggedDigest;
 pub use memory::MemoryIndexer;
 pub use types::*;
@@ -197,7 +198,7 @@ pub fn digest_entries(commit: &IndexableCommit) -> Result<Vec<(String, EntityRef
 ///
 /// [`IndexerError::Consistency`] naming the defect.
 pub fn check_replacement(
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     sequence: u64,
     held: u64,
     commits: &[IndexableCommit],
@@ -214,7 +215,7 @@ pub fn check_replacement(
         return refuse(format!("the indexed chain holds only {held} commits"));
     }
     for (offset, commit) in (0u64..).zip(commits) {
-        if commit.principal_id != principal_id {
+        if commit.principal_id != *principal_id {
             return refuse(format!("a commit of {}", commit.principal_id));
         }
         if commit.sequence != sequence + offset {
@@ -276,7 +277,7 @@ pub trait Indexer: Send + Sync {
     /// forged label resolves to nothing.
     fn get_tip(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> impl std::future::Future<Output = Result<Option<TipState>, IndexerError>> + Send;
 
     /// Whether the principal stored under exactly `principal_id` has
@@ -285,7 +286,7 @@ pub trait Indexer: Send + Sync {
     /// Derived state, rebuilt with the index (I1).
     fn is_pg_established(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
     ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send;
 
     /// Retrieve the commit chain between two sequence numbers.
@@ -295,7 +296,7 @@ pub trait Indexer: Send + Sync {
     /// extends to the current tip. Resolves aliases as [`Self::get_tip`].
     fn get_commit_chain(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: Option<u64>,
         to: Option<u64>,
     ) -> impl std::future::Future<Output = Result<Vec<CommitRef>, IndexerError>> + Send;
@@ -392,7 +393,7 @@ pub trait IndexerWrite: Send + Sync {
     /// [`Self::index_commit`]. Nothing is written on error.
     fn replace_chain_from(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         sequence: u64,
         commits: &[IndexableCommit],
         token: &DeriveToken,

@@ -163,7 +163,11 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
     // the round verifies the new commit and nothing else.
     assert_eq!(replayed(&p1), 1, "a revoke costs no replay");
     let want = owner.pr_tagged().expect("pr");
-    let (_, tip) = get_json(app1.clone(), &format!("/tip?pg={}", id.replace(':', "%3A"))).await;
+    let (_, tip) = get_json(
+        app1.clone(),
+        &format!("/tip?pg={}", id.to_string().replace(':', "%3A")),
+    )
+    .await;
     assert_eq!(
         envelope_payload(&tip)["pr"],
         want.as_str(),

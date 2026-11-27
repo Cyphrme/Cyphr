@@ -175,7 +175,7 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let db_path = dir.path().join("db");
     let index_path = dir.path().join("index");
     // A genesis commit keys its principal by PG (SPEC 5.1).
-    let principal_id = id_tagged.as_str();
+    let principal_id = &id_tagged;
 
     let db = fjall::Database::builder(&db_path).open().expect("open db");
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");

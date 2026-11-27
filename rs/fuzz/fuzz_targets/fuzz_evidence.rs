@@ -66,6 +66,8 @@ fuzz_target!(|data: &[u8]| {
         let Some(base) = genesis().await else {
             return;
         };
-        let _ = verify_principal_fork(&item, &b64(&[7; 32]), base, &[]).await;
+        let pg = cyphr::PrincipalGenesis::from_digest(cyphr::state::HashAlg::Sha256, vec![7; 32])
+            .expect("a 32-byte digest is a SHA-256 width");
+        let _ = verify_principal_fork(&item, &pg, base, &[]).await;
     });
 });

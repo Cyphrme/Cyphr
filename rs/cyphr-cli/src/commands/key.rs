@@ -1,4 +1,5 @@
 use base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::PrincipalGenesis;
 use cyphr::signer::Signer;
 use indexmap::IndexMap;
 use serde_json::Value;
@@ -57,7 +58,7 @@ pub fn run(cli: &Cli, command: &KeyCommands) -> crate::Result<()> {
             file,
             window,
         } => super::pair::accept(cli, identity, signer, file, *window),
-        KeyCommands::List { identity } => list(cli, identity.as_deref()),
+        KeyCommands::List { identity } => list(cli, identity.as_ref()),
     }
 }
 
@@ -92,7 +93,7 @@ fn generate(cli: &Cli, algo: &str, tag: Option<&str>) -> crate::Result<()> {
 /// Add a key to an identity.
 fn add(
     cli: &Cli,
-    identity: &str,
+    identity: &PrincipalGenesis,
     key_tmb: Option<&str>,
     signer_tmb: &str,
     authority: &str,
@@ -161,7 +162,7 @@ fn add(
 /// Revoke a key from an identity.
 fn revoke(
     cli: &Cli,
-    identity: &str,
+    identity: &PrincipalGenesis,
     key_tmb: &str,
     signer_tmb: &str,
     authority: &str,
@@ -198,7 +199,7 @@ fn revoke(
 /// Remove a key from an identity without marking it compromised.
 fn delete(
     cli: &Cli,
-    identity: &str,
+    identity: &PrincipalGenesis,
     key_tmb: &str,
     signer_tmb: &str,
     authority: &str,
@@ -232,7 +233,7 @@ fn delete(
 /// Swap the signing key for a new one in one commit.
 fn replace(
     cli: &Cli,
-    identity: &str,
+    identity: &PrincipalGenesis,
     key_tmb: Option<&str>,
     signer_tmb: &str,
     now: Option<i64>,
@@ -525,7 +526,7 @@ pub(crate) fn apply_key_revoke(
 }
 
 /// List keys - from keystore if identity is None, from identity if provided.
-fn list(cli: &Cli, identity: Option<&str>) -> crate::Result<()> {
+fn list(cli: &Cli, identity: Option<&PrincipalGenesis>) -> crate::Result<()> {
     match identity {
         None => list_keystore(cli),
         Some(pr) => list_identity(cli, pr),
@@ -579,7 +580,7 @@ fn list_keystore(cli: &Cli) -> crate::Result<()> {
 }
 
 /// List keys for an identity.
-fn list_identity(cli: &Cli, identity: &str) -> crate::Result<()> {
+fn list_identity(cli: &Cli, identity: &PrincipalGenesis) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
     let principal = load_principal_from_engine(&store, &keystore, identity)?;

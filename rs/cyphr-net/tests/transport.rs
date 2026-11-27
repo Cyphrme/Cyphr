@@ -54,8 +54,10 @@ fn kp() -> Kp {
 
 impl Kp {
     /// The implicit-genesis principal this key roots: its id is the tmb.
-    fn pg(&self) -> String {
-        self.tmb.to_b64()
+    fn pg(&self) -> cyphr::PrincipalGenesis {
+        format!("SHA-512:{}", self.tmb.to_b64())
+            .parse()
+            .expect("labelled genesis id")
     }
 
     fn domain_key(&self) -> cyphr::Key {
@@ -89,7 +91,7 @@ impl Kp {
 fn statement(
     signer: &Kp,
     claimed_tmb: &coz::Thumbprint,
-    pg: &str,
+    pg: &cyphr::PrincipalGenesis,
     role: &str,
     h: &[u8],
 ) -> Vec<u8> {
@@ -98,7 +100,7 @@ fn statement(
         "alg": signer.kp.alg.name(),
         "h": Base64UrlUnpadded::encode_string(h),
         "now": NOW,
-        "pg": pg,
+        "pg": pg.to_string(),
         "role": role,
         "tmb": claimed_tmb.to_b64(),
         "typ": BIND_TYP,
@@ -136,7 +138,7 @@ enum Mode {
     /// Claims the pinned key but the signature is by a key outside the chain.
     ForeignSignature,
     /// Signed by the pinned key, but names another principal as `pr`.
-    OtherPrincipal(String),
+    OtherPrincipal(cyphr::PrincipalGenesis),
 }
 
 /// What the fake saw of one session.
@@ -365,7 +367,7 @@ async fn sigma_initiator_is_hidden_from_an_unverified_responder() {
     for mode in [Mode::Missing, Mode::WrongHash, Mode::ForeignSignature] {
         let (srv, client) = (kp(), kp());
         let held = srv.pinned().await;
-        let (own_pg, own_tmb) = (client.pg(), client.tmb.to_b64());
+        let (own_pg, own_tmb) = (client.pg().to_string(), client.tmb.to_b64());
         let (outcome, seen) = run(srv, held, &client, vec![mode.clone()]).await;
         assert!(outcome.is_err(), "{mode:?} must be refused");
         for (frame, plain) in &seen[0].after {
@@ -407,7 +409,7 @@ async fn sigma_control_honest_responder_receives_the_initiator_statement() {
     assert_eq!(coz.pay["typ"], BIND_TYP);
     assert_eq!(coz.pay["role"], "initiator");
     assert_eq!(coz.pay["h"], Base64UrlUnpadded::encode_string(&seen.h));
-    assert_eq!(coz.pay["pg"], client.pg());
+    assert_eq!(coz.pay["pg"], client.pg().to_string());
     assert_eq!(coz.pay["tmb"], client.tmb.to_b64());
     let pay = serde_json::to_vec(&coz.pay).expect("pay");
     assert_eq!(

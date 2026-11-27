@@ -7,8 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64ct::{Base64UrlUnpadded, Encoding};
 use coz::Thumbprint;
-use cyphr::Key;
 use cyphr::replay::WireBundle;
+use cyphr::{Key, PrincipalGenesis};
 use cyphr_blob_fjall::FjallBlobStore;
 use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::engine::StorageEngine;
@@ -238,13 +238,7 @@ pub fn open_store(path: &std::path::Path, total_check: bool) -> crate::Result<Cl
     Ok(engine)
 }
 
-/// Get the principal ID string for a PrincipalGenesis
-pub fn get_principal_id(pg: &cyphr::PrincipalGenesis) -> crate::Result<String> {
-    use cyphr::StateDigest;
-    Ok(pg.as_multihash().tagged_first()?.to_string())
-}
-
-/// Get the principal ID string from a Principal.
+/// Get the principal ID from a Principal.
 ///
 /// This must be *stable*: it is used as the storage engine's lookup key for
 /// this principal's tip across its entire lifetime, so calling it again
@@ -269,20 +263,13 @@ pub fn get_principal_id(pg: &cyphr::PrincipalGenesis) -> crate::Result<String> {
 pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
     principal: &cyphr::Principal<S>,
     keystore: &impl KeyBackend,
-) -> crate::Result<String> {
-    use cyphr::StateDigest;
-
+) -> crate::Result<PrincipalGenesis> {
     if let Some(pg) = principal.pg() {
-        return Ok(pg.as_multihash().tagged_first()?.to_string());
+        return Ok(pg.clone());
     }
 
     let genesis_key = load_key_from_keystore(keystore, principal.genesis_key())?;
-    let genesis_principal = cyphr::PrincipalState::genesis(genesis_key)?;
-    Ok(genesis_principal
-        .pr()
-        .as_multihash()
-        .tagged_first()?
-        .to_string())
+    Ok(cyphr::PrincipalState::genesis(genesis_key)?.pr_id()?)
 }
 
 /// Load a principal from the storage engine, detached from its durable
@@ -291,13 +278,10 @@ pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
 pub fn load_principal_from_engine(
     engine: &CliStorageEngine,
     keystore: &impl KeyBackend,
-    identity: &str,
+    identity: &PrincipalGenesis,
 ) -> crate::Result<CliPrincipal> {
-    let pg = parse_principal_genesis(identity)?;
-    let principal_id = get_principal_id(&pg)?;
-
     block_on(async {
-        if let Some(at_tip) = engine.at_tip(&principal_id).await? {
+        if let Some(at_tip) = engine.at_tip(identity).await? {
             return Ok(at_tip.detach().await?);
         }
         // `identity` matching a keystore thumbprint directly IS implicit
@@ -305,10 +289,11 @@ pub fn load_principal_from_engine(
         // stored yet. A multi-key principal exists only through its
         // genesis commit (SPEC 5.1), so with no tip there is nothing to
         // resolve it from.
-        if keystore.public(identity).is_err() {
-            return Err(crate::Error::UnresolvableGenesis(identity.to_owned()));
+        let tmb = identity.wire_digest();
+        if keystore.public(&tmb).is_err() {
+            return Err(crate::Error::UnresolvableGenesis(identity.to_string()));
         }
-        let genesis_key = load_key_from_keystore(keystore, identity)?;
+        let genesis_key = load_key_from_keystore(keystore, &tmb)?;
         Ok(cyphr::Principal::implicit(genesis_key).await?)
     })?
 }
@@ -392,13 +377,10 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
 /// Retrieve all commits for an identity from the storage engine.
 pub fn get_commits_from_engine(
     engine: &CliStorageEngine,
-    identity: &str,
+    identity: &PrincipalGenesis,
 ) -> crate::Result<Vec<CommitEntry>> {
-    let pg = parse_principal_genesis(identity)?;
-    let principal_id = get_principal_id(&pg)?;
-
     block_on(async {
-        let patch = engine.get_patch(&principal_id, None, None).await?;
+        let patch = engine.get_patch(identity, None, None).await?;
         patch
             .entries
             .iter()
@@ -428,7 +410,7 @@ pub struct RawCommit {
 /// when the store holds nothing for `principal_id`.
 pub async fn raw_chain(
     engine: &CliStorageEngine,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
 ) -> crate::Result<Vec<RawCommit>> {
     if engine.get_tip(principal_id).await?.is_none() {
         return Ok(Vec::new());
@@ -448,34 +430,17 @@ pub async fn raw_chain(
 /// The genesis a locally held keystore can state for `identity`, if any:
 /// the key itself, when `identity` is a key's thumbprint. `None` means the
 /// genesis must come from stored blobs or the peer's.
-pub fn local_genesis(keystore: &impl KeyBackend, identity: &str) -> crate::Result<Option<Genesis>> {
-    if keystore.public(identity).is_ok() {
+pub fn local_genesis(
+    keystore: &impl KeyBackend,
+    identity: &PrincipalGenesis,
+) -> crate::Result<Option<Genesis>> {
+    let tmb = identity.wire_digest();
+    if keystore.public(&tmb).is_ok() {
         return Ok(Some(Genesis::Implicit(load_key_from_keystore(
-            keystore, identity,
+            keystore, &tmb,
         )?)));
     }
     Ok(None)
-}
-
-/// Parse a base64url principal genesis string into a PrincipalGenesis.
-///
-/// The digest is read under the hash its width names (SHA-256, SHA-384 or
-/// SHA-512), as the core builds it: a genesis key's thumbprint is hashed
-/// with that key's own algorithm, so an Ed25519 identity is 64 bytes.
-pub fn parse_principal_genesis(s: &str) -> crate::Result<cyphr::PrincipalGenesis> {
-    use coz::HashAlg;
-
-    let bytes = Base64UrlUnpadded::decode_vec(s)?;
-    let alg = [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512]
-        .into_iter()
-        .find(|a| a.digest_size() == bytes.len())
-        .ok_or_else(|| {
-            Error::InvalidArgument(format!(
-                "identity is {} bytes; expected 32, 48 or 64 (SHA-256, SHA-384, SHA-512)",
-                bytes.len()
-            ))
-        })?;
-    Ok(cyphr::PrincipalGenesis::from_digest(alg, bytes)?)
 }
 
 /// Decode base64url string to bytes.
@@ -527,7 +492,7 @@ pub fn sign_pay(
 /// ignored (SPEC 6.2); a stranger key's is not.
 async fn signed_by_held_key(
     engine: &CliStorageEngine,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     blob: &[u8],
 ) -> crate::Result<bool> {
     let coz = cyphr::replay::StoredCoz::from_wire(blob)
@@ -545,7 +510,7 @@ async fn signed_by_held_key(
 /// this history is ignored (SPEC 6.2). Returns the commits applied.
 pub async fn submit_history(
     engine: &CliStorageEngine,
-    principal_id: &str,
+    principal_id: &PrincipalGenesis,
     genesis: Option<Genesis>,
     commits: &[WireBundle],
     actions: &[Vec<Vec<u8>>],

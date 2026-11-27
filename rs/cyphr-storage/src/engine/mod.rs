@@ -35,6 +35,7 @@ pub use branches::{
     ForkView, HeldHead, PatchBranch, Recovery, Review,
 };
 use branches::{BranchStore, PairKept, Retained, held_of, in_error, retained_line, stays_errored};
+use cyphr::PrincipalGenesis;
 pub use cyphr::fork::{Assessment, Consensus, Contest, ForkPoint};
 use cyphr::fork::{Held, assessed_from, assessment};
 use cyphr::replay::WireBundle;
@@ -126,7 +127,7 @@ pub trait LogFactory<S>: Send + Sync {
     /// # Errors
     ///
     /// Why the record cannot be read.
-    fn generation(&self, principal_id: &str) -> Result<u64, String>;
+    fn generation(&self, principal_id: &PrincipalGenesis) -> Result<u64, String>;
 
     /// Open generation `generation` of `principal_id`'s log, independent
     /// of every other principal's and generation's. A generation above the
@@ -135,7 +136,7 @@ pub trait LogFactory<S>: Send + Sync {
     /// # Errors
     ///
     /// Why the log cannot be opened.
-    fn open(&self, principal_id: &str, generation: u64) -> Result<S, String>;
+    fn open(&self, principal_id: &PrincipalGenesis, generation: u64) -> Result<S, String>;
 
     /// Make `generation` the current generation of `principal_id`'s log,
     /// retiring the older ones.
@@ -143,7 +144,7 @@ pub trait LogFactory<S>: Send + Sync {
     /// # Errors
     ///
     /// Why the record cannot be written.
-    fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String>;
+    fn retire_below(&self, principal_id: &PrincipalGenesis, generation: u64) -> Result<(), String>;
 
     /// Whether a log outlives the principal that wrote it, so that opening
     /// it again finds the leaves it was given. Only then can a kept
@@ -160,19 +161,23 @@ pub trait LogFactory<S>: Send + Sync {
 pub struct MemoryLogs;
 
 impl LogFactory<cyphr::eml::MemoryStorage> for MemoryLogs {
-    fn generation(&self, _principal_id: &str) -> Result<u64, String> {
+    fn generation(&self, _principal_id: &PrincipalGenesis) -> Result<u64, String> {
         Ok(0)
     }
 
     fn open(
         &self,
-        _principal_id: &str,
+        _principal_id: &PrincipalGenesis,
         _generation: u64,
     ) -> Result<cyphr::eml::MemoryStorage, String> {
         Ok(cyphr::eml::MemoryStorage::new())
     }
 
-    fn retire_below(&self, _principal_id: &str, _generation: u64) -> Result<(), String> {
+    fn retire_below(
+        &self,
+        _principal_id: &PrincipalGenesis,
+        _generation: u64,
+    ) -> Result<(), String> {
         Ok(())
     }
 
@@ -189,8 +194,9 @@ const _: () = {
     #[allow(dead_code)]
     fn submit_commit_is_send<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage>(
         engine: &StorageEngine<B, I, S>,
+        id: &PrincipalGenesis,
     ) {
-        assert_send(&engine.submit_commit("", None, &WireBundle::default()));
+        assert_send(&engine.submit_commit(id, None, &WireBundle::default()));
     }
 };
 
@@ -262,7 +268,7 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// The four roots at each commit this engine admitted or derived,
     /// by principal id and commit id: a commit's roots depend on its
     /// history alone, so an entry is exact for the commit that names it.
-    roots_at: BoundedCache<(String, String), DerivedRoots>,
+    roots_at: BoundedCache<(PrincipalGenesis, String), DerivedRoots>,
     /// Whether a record sync has failed, and the gate that orders syncs
     /// ([`Self::persist_record`]).
     durability: Durability,
@@ -458,7 +464,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// engine makes goes through here.
     async fn chain(
         &self,
-        principal_id: &str,
+        principal_id: &PrincipalGenesis,
         from: Option<u64>,
         to: Option<u64>,
     ) -> Result<Vec<CommitRef>, crate::index::IndexerError> {
@@ -475,9 +481,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// now). A cache of the replay of the stored chain, exposed so a test
     /// can hold it to that.
     #[cfg(any(test, feature = "test-utils"))]
-    pub async fn kept_state(&self, principal_id: &str) -> Option<cyphr::PrincipalState> {
+    pub async fn kept_state(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> Option<cyphr::PrincipalState> {
         let key = self.resolve_key(principal_id).await.ok()?;
-        let stored = key.as_deref().unwrap_or(principal_id);
+        let stored = key.as_ref().unwrap_or(principal_id);
         let lock = self.principal_lock(stored);
         let write = Self::lock_writes(&lock, stored).await;
         let tip = self.indexer.get_tip(stored).await.ok()??;
@@ -504,10 +513,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// # Errors
     ///
     /// As [`Self::load_principal`].
-    pub async fn at_tip(&self, principal_id: &str) -> Result<Option<AtTip<S>>, EngineError> {
+    pub async fn at_tip(
+        &self,
+        principal_id: &PrincipalGenesis,
+    ) -> Result<Option<AtTip<S>>, EngineError> {
         self.ensure_healed().await?;
         let key = self.resolve_key(principal_id).await?;
-        let stored = key.as_deref().unwrap_or(principal_id);
+        let stored = key.as_ref().unwrap_or(principal_id);
         // Asked before the lock is made: an id that names nothing must not
         // grow the lock map.
         if self.indexer.get_tip(stored).await?.is_none() {
@@ -549,19 +561,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 }
 
-/// Hash labels an identifier may carry. A bare digest is mapped to one of
-/// these only by finding which labelled spelling names a stored principal
-/// (or, on first push, the one the genesis derives); the label is never
-/// inferred from the digest's length.
-const ID_LABELS: [&str; 3] = ["SHA-256", "SHA-384", "SHA-512"];
-
-/// The digest part of a labelled id (`ALG:digest`); an unlabelled id is
-/// returned as is. This is the wire spelling SPEC §2.2.3 gives identifiers
-/// by default (the engine stores the labelled spelling).
-pub fn bare_digest(id: &str) -> &str {
-    id.split_once(':').map_or(id, |(_, digest)| digest)
-}
-
 /// The id `genesis` derives (SPEC §3.1): the Principal Root of its genesis
 /// key, by singleton promotion that key's `tmb`, in the algorithm-labelled
 /// `ALG:digest` form, the one canonical spelling every storage and index
@@ -572,9 +571,9 @@ pub fn bare_digest(id: &str) -> &str {
 ///
 /// `NoActiveKeys` for an explicit genesis listing no key; otherwise the
 /// protocol error genesis construction raises.
-pub fn genesis_principal_id(genesis: &crate::Genesis) -> Result<String, EngineError> {
+pub fn genesis_principal_id(genesis: &crate::Genesis) -> Result<PrincipalGenesis, EngineError> {
     let key = genesis.key().ok_or(cyphr::Error::NoActiveKeys)?;
-    Ok(cyphr::PrincipalState::genesis(key.clone())?.pr_tagged()?)
+    Ok(cyphr::PrincipalState::genesis(key.clone())?.pr_id()?)
 }
 
 /// Format all variants of a [`MultihashDigest`] as tagged digest strings (`"alg:base64url"`).

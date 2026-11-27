@@ -106,9 +106,9 @@ struct Fake {
 }
 
 impl Fake {
-    fn new(pg: &str, line: &Line) -> Self {
+    fn new(pg: &cyphr::PrincipalGenesis, line: &Line) -> Self {
         Self {
-            pg: pg.to_owned(),
+            pg: pg.to_string(),
             line: line.clone(),
             rival: None,
             evidence: Vec::new(),
@@ -199,10 +199,10 @@ impl Connector for Fake {
     }
 }
 
-fn fork_item(pg: &str, a: &Line, b: &Line, height: usize) -> Value {
+fn fork_item(pg: &cyphr::PrincipalGenesis, a: &Line, b: &Line, height: usize) -> Value {
     json!({
         "kind": "principal-fork",
-        "pg": pg,
+        "pg": pg.wire_digest(),
         "height": height,
         "pre": height.checked_sub(1).map(|i| a.prs[i].clone()),
         "a": entry_bundle(height, &a.entries[height]),
@@ -237,7 +237,7 @@ fn naked_revoke(victim: &Kp, signer: &Kp, rvk: i64) -> Value {
     })
 }
 
-fn record(pg: &str, g: &Kp) -> Record {
+fn record(pg: &cyphr::PrincipalGenesis, g: &Kp) -> Record {
     Record::new(pg, Anchor::GenesisKey(g.domain_key(T0))).with_clock(CLOCK)
 }
 
@@ -275,7 +275,7 @@ fn standing<'a>(report: &'a cyphr_net::PullReport, name: &str) -> &'a PeerStandi
 async fn pull_classifies_peers_from_the_own_record() {
     let (g, other, k1, k2, k3) = (kp(), kp(), kp(), kp(), kp());
     let (c1, c2, c3) = ((&k1, T0 + 100), (&k2, T0 + 200), (&k3, T0 + 300));
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let held = line(&g, &[c1]).await;
     let ahead = line(&g, &[c1, c2, c3]).await;
     let behind = line(&g, &[]).await;
@@ -342,7 +342,7 @@ async fn pull_classifies_peers_from_the_own_record() {
 async fn pull_reports_a_fork_with_both_commits_and_keeps_the_record() {
     let (g, k1, k2, k3) = (kp(), kp(), kp(), kp());
     let c1 = (&k1, T0 + 100);
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let main = line(&g, &[c1, (&k2, T0 + 200)]).await;
     let rival = line(&g, &[c1, (&k3, T0 + 201)]).await;
     assert_eq!(main.prs[1], rival.prs[1], "one shared pre");
@@ -396,7 +396,7 @@ async fn pull_reports_a_fork_with_both_commits_and_keeps_the_record() {
 #[tokio::test]
 async fn pull_marks_a_key_inactive_from_a_verified_naked_revoke() {
     let (g, k1) = (kp(), kp());
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let main = line(&g, &[(&k1, T0 + 100)]).await;
     let mut rec = record(&pg, &g);
 
@@ -426,7 +426,7 @@ async fn pull_marks_a_key_inactive_from_a_verified_naked_revoke() {
 #[tokio::test]
 async fn record_cutoff_is_its_receipt_and_one_revoke_stands() {
     let (g, k1) = (kp(), kp());
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let main = line(&g, &[(&k1, T0 + 100)]).await;
     let mut rec = record(&pg, &g);
 
@@ -448,7 +448,7 @@ async fn record_cutoff_is_its_receipt_and_one_revoke_stands() {
 
 /// A genesis commit opened by `opener` over the key set `{opener} + others`:
 /// its line and bare PG.
-async fn genesis_over(opener: &Kp, others: &[&Kp]) -> (Line, String) {
+async fn genesis_over(opener: &Kp, others: &[&Kp]) -> (Line, cyphr::PrincipalGenesis) {
     let mut p = cyphr::Principal::implicit(opener.domain_key(T0))
         .await
         .expect("genesis");
@@ -456,17 +456,7 @@ async fn genesis_over(opener: &Kp, others: &[&Kp]) -> (Line, String) {
     p.commit_genesis(&opener.signer(), &others, T0, "cyphr.me")
         .await
         .expect("genesis commit");
-    let pg = {
-        use cyphr::StateDigest as _;
-        let tagged = p
-            .pg()
-            .expect("PG")
-            .as_multihash()
-            .tagged_first()
-            .expect("pg")
-            .to_string();
-        tagged.split_once(':').expect("tagged").1.to_owned()
-    };
+    let pg = p.pg().expect("PG").clone();
     let line = Line {
         entries: vec![wire_commit(p.commits().last().expect("commit"))],
         prs: vec![p.pr_tagged().expect("pr")],
@@ -544,7 +534,7 @@ async fn naked_revoked_peer_key_is_refused_from_receipt() {
     assert!(held.verify_tip(&tip_envelope(&k1), &pr).is_ok());
 
     let main = line(&g, &[(&k1, T0 + 100)]).await;
-    let mut serving = Fake::new("-", &main);
+    let mut serving = Fake::new(&subject().0, &main);
     serving.revoked = vec![
         naked_revoke(&k1, &g, T0 + 500),
         naked_revoke(&k1, &k1, T0 + 1_000_000_000),
@@ -598,7 +588,7 @@ async fn first_accepted_revoke_sets_the_cutoff() {
     let (pr, _) = subject();
 
     let main = line(&g, &[(&k1, T0 + 100)]).await;
-    let mut serving = Fake::new("-", &main);
+    let mut serving = Fake::new(&subject().0, &main);
     serving.revoked = vec![naked_revoke(&k1, &k1, T0 + 50), naked_revoke(&k1, &k1, 1)];
     let served = fetch_revoked(&serving, std::slice::from_ref(&k1.tmb))
         .await
@@ -682,7 +672,7 @@ async fn a_second_pull_replays_only_what_is_new_and_agrees_with_a_cold_build() {
         (&k3, T0 + 300),
         (&k4, T0 + 400),
     ];
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let short = line(&g, &grow[..2]).await;
     let long = line(&g, &grow).await;
     let (a, b) = (Fake::new(&pg, &short), Fake::new(&pg, &long));
@@ -728,7 +718,7 @@ impl cyphr_net::ChainSource for Stored {
 
 /// `held`'s verified state as a record that starts from it, with the
 /// chain it covers as its store.
-async fn resumed(pg: &str, held: &Record) -> Record {
+async fn resumed(pg: &cyphr::PrincipalGenesis, held: &Record) -> Record {
     let state = held
         .principal()
         .expect("held a chain")
@@ -754,7 +744,7 @@ async fn resumed(pg: &str, held: &Record) -> Record {
 async fn a_record_resumed_from_a_verified_state_pulls_as_a_replayed_one_does() {
     let (g, k1, k2, k3, k4) = (kp(), kp(), kp(), kp(), kp());
     let (c1, c2) = ((&k1, T0 + 100), (&k2, T0 + 200));
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
     let short = line(&g, &[c1]).await;
     let long = line(&g, &[c1, c2, (&k4, T0 + 300)]).await;
     let (a, b) = (Fake::new(&pg, &short), Fake::new(&pg, &long));
@@ -809,7 +799,7 @@ async fn a_record_resumed_from_a_verified_state_pulls_as_a_replayed_one_does() {
 #[tokio::test]
 async fn held_actions_are_not_replayed_and_the_whole_chain_path_counts_what_it_adds() {
     let (g, k1, k2, k3) = (kp(), kp(), kp(), kp());
-    let pg = g.tmb.to_b64();
+    let pg = g.pg();
 
     let mut chain = Chain::new(&g).await;
     let mut main = Line::of_genesis(&chain);

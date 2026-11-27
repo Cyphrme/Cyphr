@@ -66,9 +66,9 @@ pub fn keyless() -> (Arc<AppState>, tempfile::TempDir) {
     (Arc::new(state), dir)
 }
 
-pub fn push_body(id: &str, b: &WireBundle) -> String {
+pub fn push_body(id: &cyphr::PrincipalGenesis, b: &WireBundle) -> String {
     let mut v = serde_json::to_value(b).expect("bundle");
-    v["principal_id"] = id.into();
+    v["principal_id"] = id.to_string().into();
     v.to_string()
 }
 
@@ -136,7 +136,7 @@ pub async fn serve_counting(app: Router) -> (String, Arc<Wire>) {
     (format!("http://{addr}"), wire)
 }
 
-pub fn login_body(id: &str) -> String {
+pub fn login_body(id: &cyphr::PrincipalGenesis) -> String {
     let path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
     let pool = test_fixtures::Pool::load(&path).expect("pool");
@@ -153,8 +153,7 @@ pub fn login_body(id: &str) -> String {
     );
     pay.tmb = Some(s.compute_tmb().expect("tmb"));
     pay.typ = Some(format!("{AUDIENCE}/user/login/request/create"));
-    let bare = id.split_once(':').map_or(id, |(_, b)| b);
-    pay.extra.insert("pg".into(), bare.into());
+    pay.extra.insert("pg".into(), id.to_string().into());
     let bytes = serde_json::to_vec(&pay).expect("pay");
     let (sig, _) = coz::sign_json(&bytes, &s.alg, &prv, &pubb).expect("sign");
     serde_json::to_string(&coz::CozJson {

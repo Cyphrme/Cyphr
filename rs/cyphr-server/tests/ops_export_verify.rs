@@ -73,9 +73,7 @@ async fn verify_all_names_a_corrupted_chain() {
         let mut hit = None;
         for guard in blobs.iter() {
             let (k, v) = guard.into_inner().expect("entry");
-            if v.first() != Some(&0)
-                && String::from_utf8_lossy(&v)
-                    .contains(&golden[golden.find(':').map_or(0, |i| i + 1)..])
+            if v.first() != Some(&0) && String::from_utf8_lossy(&v).contains(&golden.wire_digest())
             {
                 hit = Some(k);
                 break;

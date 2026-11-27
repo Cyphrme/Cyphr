@@ -32,7 +32,7 @@ use common::{
 async fn tip_after_bootstrap() {
     let fixture = load_golden("mutations", "key_add_changes_state");
     let principal_id = fixture_principal_id(&fixture);
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
 
     let (state, _dir) = keyless_server();
     bootstrap_principal(&state, principal_id, &fixture).await;
@@ -51,7 +51,7 @@ async fn tip_after_bootstrap() {
     );
     assert_eq!(
         tip["principal_id"],
-        cyphr_storage::engine::bare_digest(principal_id),
+        principal_id.wire_digest(),
         "the wire spelling of an id is its bare digest"
     );
 
@@ -73,7 +73,7 @@ async fn tip_after_bootstrap() {
 async fn patch_after_bootstrap() {
     let fixture = load_golden("mutations", "key_add_changes_state");
     let principal_id = fixture_principal_id(&fixture);
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
 
     let (state, _dir) = keyless_server();
     bootstrap_principal(&state, principal_id, &fixture).await;
@@ -86,7 +86,7 @@ async fn patch_after_bootstrap() {
 
     assert_eq!(
         patch["principal_id"],
-        cyphr_storage::engine::bare_digest(principal_id),
+        principal_id.wire_digest(),
         "the wire spelling of an id is its bare digest"
     );
     let entries = patch["entries"].as_array().unwrap();
@@ -115,7 +115,7 @@ async fn patch_after_bootstrap() {
 async fn patch_with_range() {
     let fixture = load_golden("mutations", "transaction_sequence_replay");
     let principal_id = fixture_principal_id(&fixture);
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
 
     let (state, _dir) = keyless_server();
     bootstrap_principal(&state, principal_id, &fixture).await;
@@ -149,8 +149,18 @@ async fn tip_unknown_principal() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
 
-    let (status, _) = get_json(app, "/tip?pg=nonexistent").await;
+    let unknown =
+        cyphr::PrincipalGenesis::from_digest(cyphr::HashAlg::Sha256, vec![7; 32]).expect("digest");
+    let (status, _) = get_json(
+        app.clone(),
+        &format!("/tip?pg={}", unknown.to_string().replace(':', "%3A")),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // An unlabelled id is refused at the edge, never looked up.
+    let (status, _) = get_json(app, "/tip?pg=nonexistent").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 /// GET /e/{bad-digest} → 400 (malformed digest parse failure).
@@ -248,7 +258,7 @@ async fn push_malformed_json_rejected() {
 async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
     let fixture = load_golden("mutations", "transaction_sequence_replay");
     let principal_id = fixture_principal_id(&fixture);
-    let principal_id = principal_id.as_str();
+    let principal_id = &principal_id;
 
     let (state, _dir) = keyless_server();
     let pool = load_pool();
@@ -290,7 +300,7 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
     let mut handles = Vec::with_capacity(n);
     for new_key_name in candidate_keys {
         let state = state.clone();
-        let principal_id = principal_id.to_string();
+        let principal_id = principal_id.clone();
         let genesis_keys = genesis_keys.clone();
         let fresh_principal = cyphr_storage::load_principal_from_commits(
             make_genesis(&genesis_keys),
@@ -391,20 +401,20 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
     struct GatedLogs {
         inner: cyphr_blob_fjall::EmlLogs,
         gate: Arc<Gate>,
-        parked_id: String,
+        parked_id: cyphr::PrincipalGenesis,
     }
 
     impl LogFactory<cyphr_blob_fjall::storage_fjall::FjallStorage> for GatedLogs {
-        fn generation(&self, principal_id: &str) -> Result<u64, String> {
+        fn generation(&self, principal_id: &cyphr::PrincipalGenesis) -> Result<u64, String> {
             self.inner.generation(principal_id)
         }
 
         fn open(
             &self,
-            principal_id: &str,
+            principal_id: &cyphr::PrincipalGenesis,
             generation: u64,
         ) -> Result<cyphr_blob_fjall::storage_fjall::FjallStorage, String> {
-            if principal_id.ends_with(self.parked_id.as_str()) {
+            if principal_id.wire_digest() == self.parked_id.wire_digest() {
                 let mut s = self.gate.state.lock().unwrap();
                 if s.0 {
                     s.1 = true;
@@ -417,7 +427,11 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
             self.inner.open(principal_id, generation)
         }
 
-        fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+        fn retire_below(
+            &self,
+            principal_id: &cyphr::PrincipalGenesis,
+            generation: u64,
+        ) -> Result<(), String> {
             self.inner.retire_below(principal_id, generation)
         }
     }
@@ -441,7 +455,7 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
             .expect("key binds its tmb"),
         )
     };
-    let principal_ids: Vec<String> = signers
+    let principal_ids: Vec<cyphr::PrincipalGenesis> = signers
         .iter()
         .map(|s| implicit_principal_id(&pool, s))
         .collect();
@@ -633,10 +647,7 @@ async fn push_new_principal_happy_path() {
     assert_eq!(tip_status, StatusCode::OK);
     let tip = envelope_payload(&tip_envelope);
     // `/tip` names the principal by its bare canonical digest.
-    assert_eq!(
-        tip["principal_id"],
-        principal_id.split_once(':').expect("labelled PG").1
-    );
+    assert_eq!(tip["principal_id"], principal_id.wire_digest());
     assert_eq!(tip["commit_count"].as_u64().unwrap(), 1);
 
     let (patch_status, patch_envelope) = get_json(app, &format!("/patch?pg={principal_id}")).await;
