@@ -67,7 +67,8 @@ impl Commit {
     ///
     /// # Errors
     ///
-    /// Returns `EmptyCommit` if `transactions` is empty.
+    /// Returns `EmptyCommit` if `transactions` is empty and `MissingCommit`
+    /// if the last is not a commit transaction.
     pub(crate) fn new(
         transactions: Vec<crate::transaction::Transaction>,
         tr: crate::transaction_root::TransactionRoot,
@@ -78,6 +79,9 @@ impl Commit {
     ) -> crate::error::Result<Self> {
         let mut mutations = transactions;
         let commit_tx = mutations.pop().ok_or(crate::error::Error::EmptyCommit)?;
+        if !commit_tx.is_commit() {
+            return Err(crate::error::Error::MissingCommit);
+        }
         Ok(Self {
             mutations,
             commit_tx,
