@@ -419,6 +419,21 @@ async fn keyless_revoke_body_is_rejected() {
     );
 }
 
+/// SPEC 4.6.1 prohibits the singular `key`: an otherwise valid self-signed
+/// revoke that carries `key` beside `keys` is refused (400), because the route
+/// hands the body to core's rule as received.
+#[tokio::test]
+async fn singular_key_beside_keys_is_rejected() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    bootstrap_golden_key_a(&state, &pool).await;
+
+    let mut coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
+    coz["key"] = coz["keys"][0].clone();
+    let (status, json) = post_revoke(&state, coz).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "key beside keys: {json:?}");
+}
+
 /// FORGE STAYS CLOSED (bind path): a revoke naming the victim's `tmb` but
 /// disclosing a NON-victim key (`H(disclosed) != victim tmb`) is rejected, and
 /// the victim key stays alive. The attacker `alice` discloses her own key and

@@ -1309,7 +1309,7 @@ async fn push_response(
 #[tracing::instrument(skip(state, envelope))]
 pub async fn revoke(
     State(state): State<Arc<AppState>>,
-    AppJson(envelope): AppJson<crate::revoke::NakedRevokeEnvelope>,
+    AppJson(envelope): AppJson<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     let verified = crate::revoke::interpret(&envelope).await?;
