@@ -83,3 +83,11 @@ fn keys_of_any_other_size_or_shape_is_malformed() {
     assert_malformed(&with("keys", json!([key.clone(), key.clone()])), "two keys");
     assert_malformed(&with("keys", key), "keys as an object, not an array");
 }
+
+#[test]
+fn a_singular_key_beside_keys_is_malformed() {
+    let (_, key) = signed();
+    let mut envelope = with("keys", json!([key.clone()]));
+    envelope["key"] = key;
+    assert_malformed(&envelope, "`key` is prohibited even beside a valid `keys`");
+}
